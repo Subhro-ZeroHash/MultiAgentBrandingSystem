@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(node --version)",
+      "PowerShell(pnpm --version)",
+      "PowerShell(python --version)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(git config *)"
+    ]
+  }
+}

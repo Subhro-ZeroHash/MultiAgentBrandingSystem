@@ -1,0 +1,21 @@
+# Ownership map. Keeps the two workstreams from stepping on each other and
+# routes review automatically. Replace the placeholders with GitHub handles.
+
+# Shared foundations — both owners review changes here.
+/packages/                  @subhrajyoti @colleague
+/.github/                   @subhrajyoti @colleague
+/docker-compose.yml         @subhrajyoti @colleague
+/turbo.json                 @subhrajyoti @colleague
+/tsconfig.base.json         @subhrajyoti @colleague
+
+# GEO workstream
+/apps/geo-api/              @subhrajyoti
+/apps/geo-worker/           @subhrajyoti
+/packages/db/src/schema/geo.ts   @subhrajyoti
+/packages/shared/src/geo/   @subhrajyoti
+
+# Content generation workstream
+/apps/content-api/          @colleague
+/apps/content-worker/       @colleague
+/packages/db/src/schema/content.ts   @colleague
+/packages/shared/src/content/        @colleague

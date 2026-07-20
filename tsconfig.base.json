@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "incremental": true,
+    // Keep the build info *inside* the output dir. Left at its default
+    // (next to tsconfig.json) it survives `deleteOutDir` / `pnpm clean`, and
+    // tsc then reports success while emitting nothing into an empty dist.
+    "tsBuildInfoFile": "${configDir}/dist/.tsbuildinfo",
+    "composite": false,
+    "isolatedModules": true
+  },
+  "exclude": ["node_modules", "dist", ".next", "coverage"]
+}

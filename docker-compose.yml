@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bmas-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bmas
+      POSTGRES_PASSWORD: bmas
+      POSTGRES_DB: bmas
+    # Non-default host port: a locally-installed PostgreSQL commonly owns 5432,
+    # and the clash surfaces as a confusing auth failure rather than a bind error.
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bmas -d bmas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: bmas-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    # Non-default host port, same reason as postgres above.
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Local S3-compatible storage. Stands in for Cloudflare R2 in development so
+  # no code path depends on which one is behind the S3 API.
+  minio:
+    image: minio/minio:latest
+    container_name: bmas-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: bmas
+      MINIO_ROOT_PASSWORD: bmas-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

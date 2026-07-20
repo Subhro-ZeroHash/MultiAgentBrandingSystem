@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./base.json",
+  "compilerOptions": {
+    // NodeNext (not CommonJS) so the Nest apps stay ESM like the workspace
+    // packages they consume. Relative imports therefore need explicit `.js`
+    // extensions — that is a NodeNext requirement, not a typo.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "isolatedModules": false,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "strictPropertyInitialization": false,
+    "noUncheckedIndexedAccess": false
+  }
+}
