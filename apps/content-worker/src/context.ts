@@ -1,6 +1,15 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createAiRegistryFromEnv, type AiRegistry } from '@bmas/ai';
 import { createDatabase, type Database } from '@bmas/db';
+import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
+
+// Loaded at module scope, not inside createContext: main.ts calls
+// createContext() at import time, and the AI registry reads process.env too.
+// See apps/content-api/src/main.ts for why the path is resolved from here.
+const here = dirname(fileURLToPath(import.meta.url));
+loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 
 const envSchema = z.object({
   DATABASE_URL: z.string().url(),
