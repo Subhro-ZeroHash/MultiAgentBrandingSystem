@@ -1,0 +1,21 @@
+# Normalise line endings in the repository to LF regardless of contributor OS.
+# Without this, a Windows checkout commits CRLF and every file shows as fully
+# rewritten to a collaborator on macOS/Linux, which buries real diffs in review.
+* text=auto eol=lf
+
+# Binary / generated: never touch, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+
+# Lockfile is generated — collapse it in reviews.
+pnpm-lock.yaml linguist-generated=true -diff
+
+# Drizzle migrations are generated and must not be hand-edited.
+packages/db/migrations/**/*.sql linguist-generated=true
+packages/db/migrations/meta/*.json linguist-generated=true -diff
