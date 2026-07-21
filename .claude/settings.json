@@ -6,7 +6,8 @@
       "PowerShell(python --version)",
       "Skill(claude-api)",
       "Skill(claude-api:*)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(git fetch *)"
     ]
   }
 }
