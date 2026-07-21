@@ -154,6 +154,9 @@ importers:
       bullmq:
         specifier: ^5.80.9
         version: 5.80.9
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
@@ -206,6 +209,9 @@ importers:
       bullmq:
         specifier: ^5.80.9
         version: 5.80.9
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
