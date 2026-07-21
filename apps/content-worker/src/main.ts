@@ -6,6 +6,10 @@ import { runGeneration } from './pipeline/generate.js';
 
 const ctx = createContext();
 
+// A fresh MinIO volume has no buckets, so the first upload would fail with
+// NoSuchBucket. Done at boot rather than per job so the cost is paid once.
+await ctx.storage.ensureBucket();
+
 const generationWorker = new Worker(
   QUEUES.contentGeneration,
   async (job) => runGeneration(ctx, contentGenerationJobSchema.parse(job.data)),

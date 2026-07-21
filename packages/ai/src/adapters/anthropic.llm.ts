@@ -13,6 +13,10 @@ import type { ProviderContext, ProviderResult } from '../types.js';
 export interface AnthropicAdapterConfig {
   apiKey: string | undefined;
   models: Record<ModelRole, string>;
+  /** Overrides the API host. Unset in every deployed environment; exists so
+   *  local development and CI can point at a mock and exercise this adapter's
+   *  real request/response handling without credentials or spend. */
+  baseUrl?: string;
 }
 
 /**
@@ -24,7 +28,12 @@ export class AnthropicLlmAdapter implements LlmService {
   private readonly client: Anthropic | null;
 
   constructor(private readonly config: AnthropicAdapterConfig) {
-    this.client = config.apiKey ? new Anthropic({ apiKey: config.apiKey }) : null;
+    this.client = config.apiKey
+      ? new Anthropic({
+          apiKey: config.apiKey,
+          ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
+        })
+      : null;
   }
 
   private require(): Anthropic {

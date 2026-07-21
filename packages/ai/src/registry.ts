@@ -21,6 +21,9 @@ export interface AiConfig {
   openaiApiKey?: string;
   perplexityApiKey?: string;
 
+  /** Local-only API host override; see AnthropicAdapterConfig.baseUrl. */
+  anthropicBaseUrl?: string;
+
   models?: Partial<Record<ModelRole, string>>;
   geminiImageModel?: string;
   falEditModel?: string;
@@ -54,6 +57,7 @@ export class AiRegistry {
     this.llmService = new AnthropicLlmAdapter({
       apiKey: config.anthropicApiKey,
       models: { ...DEFAULT_MODELS, ...config.models },
+      ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
     });
 
     this.images = {
@@ -107,6 +111,7 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     falApiKey: env.FAL_KEY,
     openaiApiKey: env.OPENAI_API_KEY,
     perplexityApiKey: env.PERPLEXITY_API_KEY,
+    ...(env.ANTHROPIC_BASE_URL ? { anthropicBaseUrl: env.ANTHROPIC_BASE_URL } : {}),
     models: {
       ...(env.LLM_MODEL_ORCHESTRATOR ? { orchestrator: env.LLM_MODEL_ORCHESTRATOR } : {}),
       ...(env.LLM_MODEL_VOLUME ? { volume: env.LLM_MODEL_VOLUME } : {}),
