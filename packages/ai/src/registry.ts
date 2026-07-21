@@ -18,6 +18,8 @@ export interface AiConfig {
   perplexityApiKey?: string;
 
   models?: Partial<Record<ModelRole, string>>;
+  /** Model the Gemini GEO probe asks; distinct from the image model. */
+  geminiEngineModel?: string;
   geminiImageModel?: string;
   falEditModel?: string;
 
@@ -62,7 +64,10 @@ export class AiRegistry {
       ['claude', new ClaudeAnswerEngine({ apiKey: config.anthropicApiKey })],
       ['perplexity', new PerplexityAnswerEngine({ apiKey: config.perplexityApiKey })],
       ['chatgpt', new OpenAiAnswerEngine({ apiKey: config.openaiApiKey })],
-      ['gemini', new GeminiAnswerEngine({ apiKey: config.googleApiKey })],
+      [
+        'gemini',
+        new GeminiAnswerEngine({ apiKey: config.googleApiKey, model: config.geminiEngineModel }),
+      ],
     ]);
   }
 
@@ -103,6 +108,7 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
       ...(env.LLM_MODEL_VOLUME ? { volume: env.LLM_MODEL_VOLUME } : {}),
       ...(env.LLM_MODEL_QA ? { qa: env.LLM_MODEL_QA } : {}),
     },
+    geminiEngineModel: env.GEO_MODEL_GEMINI,
     geminiImageModel: env.IMAGE_MODEL_GEMINI,
     falEditModel: env.IMAGE_MODEL_FAL_EDIT,
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as 'gemini' | 'fal' | undefined,
