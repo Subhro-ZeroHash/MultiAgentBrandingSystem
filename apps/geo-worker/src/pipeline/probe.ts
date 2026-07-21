@@ -34,7 +34,24 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
     .from(schema.competitors)
     .where(eq(schema.competitors.brandId, job.brandId));
 
-  const answer = await client.ask({ prompt: prompt.text, locale: prompt.locale });
+  let answer: Awaited<ReturnType<typeof client.ask>>;
+  try {
+    answer = await client.ask({ prompt: prompt.text, locale: prompt.locale });
+  } catch (error) {
+    // A failed probe is data, not an absence of data. Recorded before rethrowing
+    // so a rate-limited engine is distinguishable from one that simply didn't
+    // name the brand — the roll-up excludes these rows rather than counting them
+    // as a miss. Every attempt lands, which is what makes a retry storm visible.
+    await ctx.db.insert(schema.probeRuns).values({
+      promptId: prompt.id,
+      brandId: brand.id,
+      engine: job.engine as AnswerEngine,
+      model: 'unknown',
+      answerText: '',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 
   const [run] = await ctx.db
     .insert(schema.probeRuns)
