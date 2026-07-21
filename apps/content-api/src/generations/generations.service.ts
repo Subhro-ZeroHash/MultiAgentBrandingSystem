@@ -2,13 +2,15 @@ import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { desc, eq, schema, type Database } from '@bmas/db';
 import { QUEUES, type CreativeRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
-import { DATABASE, GENERATION_QUEUE } from '../core/core.module.js';
+import type { AssetUrls } from '../core/asset-urls.js';
+import { ASSET_URLS, DATABASE, GENERATION_QUEUE } from '../core/core.module.js';
 
 @Injectable()
 export class GenerationsService {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(GENERATION_QUEUE) private readonly queue: Queue,
+    @Inject(ASSET_URLS) private readonly assetUrls: AssetUrls,
   ) {}
 
   /**
@@ -70,7 +72,10 @@ export class GenerationsService {
       this.db.select().from(schema.copyPacks).where(eq(schema.copyPacks.jobId, jobId)),
     ]);
 
-    return { ...job, assets, copy };
+    // Clients get a URL they can load directly; `storageKey` alone is unusable
+    // outside the cluster. Signed per request rather than stored, so the link
+    // expires and the bucket can stay private.
+    return { ...job, assets: await this.assetUrls.signAll(assets), copy };
   }
 
   /** Generation history per brand (FR-5.2). */
