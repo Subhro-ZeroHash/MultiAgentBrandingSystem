@@ -12,6 +12,7 @@ export const QUEUES = {
   contentEdit: 'content-edit',
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
+  geoSweep: 'geo-sweep',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -44,3 +45,15 @@ export const geoRollupJobSchema = z.object({
   periodEnd: z.coerce.date(),
 });
 export type GeoRollupJob = z.infer<typeof geoRollupJobSchema>;
+
+/**
+ * What the cron schedulers fire. These are orchestration jobs, not work: the
+ * sweep worker turns one of these into the fan-out of probe or roll-up jobs.
+ * Keeping that indirection means a cron tick carries no per-brand payload, so
+ * adding a prompt doesn't require rewriting a scheduler's job template.
+ */
+export const geoSweepJobSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('prompt'), promptId: entityIdSchema }),
+  z.object({ kind: z.literal('rollup') }),
+]);
+export type GeoSweepJob = z.infer<typeof geoSweepJobSchema>;

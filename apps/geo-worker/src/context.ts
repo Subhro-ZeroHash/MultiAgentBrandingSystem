@@ -16,6 +16,12 @@ const envSchema = z.object({
   REDIS_URL: z.string().url(),
   /** Probes are provider-bound, not CPU-bound; concurrency is about rate limits. */
   GEO_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  /** When roll-ups run. Per-prompt probe cadence lives in tracked_prompts.schedule. */
+  GEO_ROLLUP_CRON: z.string().default('0 7 * * *'),
+  /** Trailing window each roll-up aggregates, in days. */
+  GEO_ROLLUP_WINDOW_DAYS: z.coerce.number().int().positive().default(7),
+  /** How often the worker reconciles prompt schedulers against the database. */
+  GEO_SCHEDULER_SYNC_MS: z.coerce.number().int().positive().default(60_000),
 });
 
 export interface WorkerContext {
@@ -23,6 +29,7 @@ export interface WorkerContext {
   ai: AiRegistry;
   redis: { host: string; port: number; password?: string };
   concurrency: number;
+  scheduler: { rollupCron: string; rollupWindowDays: number; syncIntervalMs: number };
 }
 
 export function createContext(): WorkerContext {
@@ -46,5 +53,10 @@ export function createContext(): WorkerContext {
       ...(url.password ? { password: url.password } : {}),
     },
     concurrency: env.GEO_WORKER_CONCURRENCY,
+    scheduler: {
+      rollupCron: env.GEO_ROLLUP_CRON,
+      rollupWindowDays: env.GEO_ROLLUP_WINDOW_DAYS,
+      syncIntervalMs: env.GEO_SCHEDULER_SYNC_MS,
+    },
   };
 }
