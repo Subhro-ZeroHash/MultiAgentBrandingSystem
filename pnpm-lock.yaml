@@ -298,6 +298,9 @@ importers:
       openai:
         specifier: ^6.48.0
         version: 6.48.0(ws@8.21.1)(zod@4.4.3)
+      sharp:
+        specifier: ^0.35.3
+        version: 0.35.3(@types/node@22.20.1)
       zod:
         specifier: ^4.4.3
         version: 4.4.3

@@ -6,9 +6,13 @@ import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
+import { StubImageAdapter } from './adapters/stub.image.js';
 import type { AnswerEngineClient } from './engine.js';
 import type { ImageGenService } from './image.js';
 import type { LlmService, ModelRole } from './llm.js';
+
+/** `stub` draws placeholders locally — see adapters/stub.image.ts. */
+export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 
 export interface AiConfig {
   anthropicApiKey?: string;
@@ -20,10 +24,12 @@ export interface AiConfig {
   models?: Partial<Record<ModelRole, string>>;
   geminiImageModel?: string;
   falEditModel?: string;
+  /** Artificial per-image latency for the stub adapter, ms. */
+  stubImageLatencyMs?: number;
 
   /** Which adapter serves each image operation. */
-  imageProviderPrimary?: 'gemini' | 'fal';
-  imageProviderEdit?: 'gemini' | 'fal';
+  imageProviderPrimary?: ImageProviderName;
+  imageProviderEdit?: ImageProviderName;
 }
 
 const DEFAULT_MODELS: Record<ModelRole, string> = {
@@ -41,7 +47,7 @@ const DEFAULT_MODELS: Record<ModelRole, string> = {
  */
 export class AiRegistry {
   private readonly llmService: LlmService;
-  private readonly images: Record<'gemini' | 'fal', ImageGenService>;
+  private readonly images: Record<ImageProviderName, ImageGenService>;
   private readonly engines: Map<AnswerEngine, AnswerEngineClient>;
 
   constructor(private readonly config: AiConfig) {
@@ -56,6 +62,9 @@ export class AiRegistry {
         model: config.geminiImageModel,
       }),
       fal: new FalImageAdapter({ apiKey: config.falApiKey, editModel: config.falEditModel }),
+      ...(config.stubImageLatencyMs === undefined
+        ? { stub: new StubImageAdapter() }
+        : { stub: new StubImageAdapter({ latencyMs: config.stubImageLatencyMs }) }),
     };
 
     this.engines = new Map<AnswerEngine, AnswerEngineClient>([
@@ -105,7 +114,10 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     },
     geminiImageModel: env.IMAGE_MODEL_GEMINI,
     falEditModel: env.IMAGE_MODEL_FAL_EDIT,
-    imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as 'gemini' | 'fal' | undefined,
-    imageProviderEdit: env.IMAGE_PROVIDER_EDIT as 'gemini' | 'fal' | undefined,
+    ...(env.IMAGE_STUB_LATENCY_MS
+      ? { stubImageLatencyMs: Number(env.IMAGE_STUB_LATENCY_MS) }
+      : {}),
+    imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
+    imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,
   });
 }
