@@ -3,6 +3,7 @@ import { createAiRegistryFromEnv, type AiRegistry } from '@bmas/ai';
 import { closeDatabase, createDatabase, type Database } from '@bmas/db';
 import { QUEUES } from '@bmas/shared';
 import { createAssetUrls, type AssetUrls } from './asset-urls.js';
+import { createObjectStore, type ObjectStore } from './object-store.js';
 import { Queue } from 'bullmq';
 import { loadEnv } from '../config/env.js';
 
@@ -10,6 +11,7 @@ export const DATABASE = Symbol('DATABASE');
 export const AI_REGISTRY = Symbol('AI_REGISTRY');
 export const GENERATION_QUEUE = Symbol('GENERATION_QUEUE');
 export const ASSET_URLS = Symbol('ASSET_URLS');
+export const OBJECT_STORE = Symbol('OBJECT_STORE');
 
 function redisConnection() {
   const url = new URL(loadEnv().REDIS_URL);
@@ -45,11 +47,25 @@ function redisConnection() {
       },
     },
     {
+      provide: OBJECT_STORE,
+      useFactory: (): ObjectStore => {
+        const env = loadEnv();
+        return createObjectStore({
+          region: env.S3_REGION,
+          bucket: env.S3_BUCKET,
+          accessKeyId: env.S3_ACCESS_KEY_ID,
+          secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+          forcePathStyle: env.S3_FORCE_PATH_STYLE,
+          ...(env.S3_ENDPOINT ? { endpoint: env.S3_ENDPOINT } : {}),
+        });
+      },
+    },
+    {
       provide: GENERATION_QUEUE,
       useFactory: () => new Queue(QUEUES.contentGeneration, { connection: redisConnection() }),
     },
   ],
-  exports: [DATABASE, AI_REGISTRY, GENERATION_QUEUE, ASSET_URLS],
+  exports: [DATABASE, AI_REGISTRY, GENERATION_QUEUE, ASSET_URLS, OBJECT_STORE],
 })
 export class CoreModule implements OnApplicationShutdown {
   constructor(

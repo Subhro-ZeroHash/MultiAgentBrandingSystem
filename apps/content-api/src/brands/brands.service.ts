@@ -1,7 +1,22 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { eq, schema, type Database } from '@bmas/db';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { and, eq, schema, type Database } from '@bmas/db';
 import type { CreateBrandKitInput, CreateProductInput } from '@bmas/shared';
-import { DATABASE } from '../core/core.module.js';
+import { DATABASE, OBJECT_STORE } from '../core/core.module.js';
+import { productImageKey, type ObjectStore } from '../core/object-store.js';
+
+/** Reference photos are conditioning input, not arbitrary uploads. Bounded so a
+ *  single request cannot exhaust memory, and restricted to the types the image
+ *  models accept. */
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const ALLOWED_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+export interface ProductImageUpload {
+  base64: string;
+  mediaType: string;
+  isPrimary?: boolean;
+  width?: number;
+  height?: number;
+}
 
 /**
  * The Brand Kit is shared with the GEO system (`core.brands`). Read/write it
@@ -9,7 +24,10 @@ import { DATABASE } from '../core/core.module.js';
  */
 @Injectable()
 export class BrandsService {
-  constructor(@Inject(DATABASE) private readonly db: Database) {}
+  constructor(
+    @Inject(DATABASE) private readonly db: Database,
+    @Inject(OBJECT_STORE) private readonly store: ObjectStore,
+  ) {}
 
   async findOne(brandId: string) {
     const [brand] = await this.db
@@ -60,5 +78,62 @@ export class BrandsService {
 
     if (!product) throw new Error('Insert returned no row');
     return product;
+  }
+
+  /**
+   * Stores a product reference photo (FR-3.1) and records it in
+   * content.product_images. The image stage loads these rows and passes the
+   * bytes to the image model as visual conditioning, so an uploaded photo needs
+   * no further wiring to reach generation.
+   *
+   * TODO(content): the asset-prep step (FR-3.6) that background-removes the
+   * photo into cleanedStorageKey is not built; the raw upload is used as-is.
+   */
+  async addProductImage(brandId: string, productId: string, input: ProductImageUpload) {
+    if (!ALLOWED_MEDIA_TYPES.has(input.mediaType)) {
+      throw new BadRequestException(
+        `Unsupported image type "${input.mediaType}". Use png, jpeg, or webp.`,
+      );
+    }
+
+    // Reject before decoding the whole payload: base64 is ~4/3 the raw size, so
+    // this bounds the buffer we are about to allocate.
+    if (input.base64.length > MAX_IMAGE_BYTES * 1.4) {
+      throw new BadRequestException('Image exceeds the maximum size (12 MB).');
+    }
+
+    // Confirm the product exists and belongs to the brand, so an upload cannot
+    // attach to another brand's product or a missing one.
+    const [product] = await this.db
+      .select()
+      .from(schema.products)
+      .where(and(eq(schema.products.id, productId), eq(schema.products.brandId, brandId)))
+      .limit(1);
+    if (!product) throw new NotFoundException(`Product ${productId} not found for brand ${brandId}`);
+
+    const bytes = Buffer.from(input.base64, 'base64');
+    if (bytes.length === 0) throw new BadRequestException('Image data is empty or not valid base64.');
+    if (bytes.length > MAX_IMAGE_BYTES) {
+      throw new BadRequestException('Image exceeds the maximum size (12 MB).');
+    }
+
+    const id = crypto.randomUUID();
+    const storageKey = productImageKey(brandId, productId, id, input.mediaType);
+    await this.store.put(storageKey, bytes, input.mediaType);
+
+    const [row] = await this.db
+      .insert(schema.productImages)
+      .values({
+        id,
+        productId,
+        storageKey,
+        width: input.width ?? null,
+        height: input.height ?? null,
+        isPrimary: input.isPrimary ?? false,
+      })
+      .returning();
+
+    if (!row) throw new Error('Insert returned no row');
+    return row;
   }
 }

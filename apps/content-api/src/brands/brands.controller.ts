@@ -1,7 +1,20 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { createBrandKitSchema, createProductSchema } from '@bmas/shared';
+import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { BrandsService } from './brands.service.js';
+
+/** Upload contract for a product reference photo. Kept local to content-api
+ *  rather than in @bmas/shared: it is an intake shape, not a cross-workstream
+ *  entity, and the GEO side never sends one. */
+const productImageUploadSchema = z.object({
+  base64: z.string().min(1),
+  mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  isPrimary: z.boolean().optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+});
+type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 
 @Controller('brands')
 export class BrandsController {
@@ -35,5 +48,14 @@ export class BrandsController {
       ...(body as Omit<Parameters<BrandsService['createProduct']>[0], 'brandId'>),
       brandId: id,
     });
+  }
+
+  @Post(':id/products/:productId/images')
+  addProductImage(
+    @Param('id') id: string,
+    @Param('productId') productId: string,
+    @Body(new ZodValidationPipe(productImageUploadSchema)) body: unknown,
+  ) {
+    return this.brands.addProductImage(id, productId, body as ProductImageUploadInput);
   }
 }

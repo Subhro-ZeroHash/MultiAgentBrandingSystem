@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { config as loadDotenv } from 'dotenv';
 import { AppModule } from './app.module.js';
 import { loadEnv } from './config/env.js';
@@ -17,7 +18,12 @@ loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Product reference photos arrive base64 in the JSON body, so the default
+  // 100kb limit would reject any real phone photo. Bounded well above the 12 MB
+  // per-image cap the upload route enforces, allowing for base64 overhead.
+  app.useBodyParser('json', { limit: '20mb' });
 
   app.setGlobalPrefix('api');
   // No global ValidationPipe: request validation goes through ZodValidationPipe
