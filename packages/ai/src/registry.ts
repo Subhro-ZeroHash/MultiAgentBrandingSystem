@@ -4,6 +4,7 @@ import { ClaudeAnswerEngine } from './adapters/claude.engine.js';
 import { FalImageAdapter } from './adapters/fal.image.js';
 import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
+import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
 import type { AnswerEngineClient } from './engine.js';
@@ -18,6 +19,13 @@ export interface AiConfig {
   perplexityApiKey?: string;
 
   models?: Partial<Record<ModelRole, string>>;
+  /**
+   * Which provider backs `llm()`. Defaults to Anthropic; `gemini` is a stopgap
+   * so GEO's analyser can run on a Google key before an Anthropic key exists.
+   */
+  llmProvider?: 'anthropic' | 'gemini';
+  /** Model the Gemini LLM backend uses when llmProvider is 'gemini'. */
+  geminiLlmModel?: string;
   /** Model the Gemini GEO probe asks; distinct from the image model. */
   geminiEngineModel?: string;
   geminiImageModel?: string;
@@ -47,10 +55,15 @@ export class AiRegistry {
   private readonly engines: Map<AnswerEngine, AnswerEngineClient>;
 
   constructor(private readonly config: AiConfig) {
-    this.llmService = new AnthropicLlmAdapter({
-      apiKey: config.anthropicApiKey,
-      models: { ...DEFAULT_MODELS, ...config.models },
-    });
+    // Anthropic by default; Gemini only when explicitly selected. The content
+    // workstream's ai.llm() usage rides on the default and is unaffected.
+    this.llmService =
+      config.llmProvider === 'gemini'
+        ? new GeminiLlmAdapter({ apiKey: config.googleApiKey, model: config.geminiLlmModel })
+        : new AnthropicLlmAdapter({
+            apiKey: config.anthropicApiKey,
+            models: { ...DEFAULT_MODELS, ...config.models },
+          });
 
     this.images = {
       gemini: new GeminiImageAdapter({
@@ -108,6 +121,8 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
       ...(env.LLM_MODEL_VOLUME ? { volume: env.LLM_MODEL_VOLUME } : {}),
       ...(env.LLM_MODEL_QA ? { qa: env.LLM_MODEL_QA } : {}),
     },
+    llmProvider: env.LLM_PROVIDER === 'gemini' ? 'gemini' : undefined,
+    geminiLlmModel: env.LLM_MODEL_GEMINI,
     geminiEngineModel: env.GEO_MODEL_GEMINI,
     geminiImageModel: env.IMAGE_MODEL_GEMINI,
     falEditModel: env.IMAGE_MODEL_FAL_EDIT,

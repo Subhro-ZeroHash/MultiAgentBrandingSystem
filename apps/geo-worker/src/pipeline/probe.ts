@@ -42,7 +42,7 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
   const existing = await findRunInBucket(ctx, prompt.id, job.engine as AnswerEngine);
   const run = existing ?? (await probeAndPersist(ctx, { client, prompt, brand, engine: job.engine }));
 
-  const { analysis, costMicroUsd } = await analyzeAnswer(ctx.ai, {
+  const { analysis, cost: analysisCost } = await analyzeAnswer(ctx.ai, {
     answerText: run.answerText,
     citations: run.citations,
     brandName: brand.name,
@@ -79,14 +79,20 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
     }
   });
 
+  // Record the analyser spend against whichever provider actually served it —
+  // not a hardcoded 'anthropic'. The backend is swappable (LLM_PROVIDER), so the
+  // ledger has to read the real provider/model back off the returned cost.
   await ctx.db.insert(schema.costEvents).values({
     brandId: brand.id,
     system: 'geo',
     referenceId: run.id,
-    provider: 'anthropic',
-    model: 'analysis',
+    provider: analysisCost.provider,
+    model: analysisCost.model,
     operation: 'geo:analyze',
-    costMicroUsd,
+    inputTokens: analysisCost.inputTokens ?? null,
+    outputTokens: analysisCost.outputTokens ?? null,
+    latencyMs: analysisCost.latencyMs ?? null,
+    costMicroUsd: analysisCost.costMicroUsd,
   });
 }
 

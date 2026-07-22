@@ -12,6 +12,7 @@
     "OPENAI_API_KEY",
     "PERPLEXITY_API_KEY",
     "GEO_*",
+    "LLM_*",
     "S3_*",
     "R2_*"
   ],

@@ -1,5 +1,5 @@
 import type { AiRegistry } from '@bmas/ai';
-import type { Sentiment } from '@bmas/shared';
+import type { CostEvent, Sentiment } from '@bmas/shared';
 
 /**
  * Turns a raw engine answer into structured mentions.
@@ -57,7 +57,7 @@ interface RawMention {
 export async function analyzeAnswer(
   ai: AiRegistry,
   input: AnalyzeInput,
-): Promise<{ analysis: AnalysisResult; costMicroUsd: number }> {
+): Promise<{ analysis: AnalysisResult; cost: CostEvent }> {
   const competitorList = input.competitors
     .map((c) => `- ${c.name}${c.aliases.length ? ` (also: ${c.aliases.join(', ')})` : ''}`)
     .join('\n');
@@ -100,7 +100,7 @@ export async function analyzeAnswer(
     parse: (raw) => raw as AnalysisResult,
   });
 
-  return { analysis: result.value, costMicroUsd: result.cost.costMicroUsd };
+  return { analysis: result.value, cost: result.cost };
 }
 
 export interface AnalysisResult {
