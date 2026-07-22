@@ -43,17 +43,26 @@ export class GenerationsService {
 
     if (!job) throw new Error('Insert returned no row');
 
-    await this.queue.add(
-      QUEUES.contentGeneration,
-      { jobId: job.id, brandId: job.brandId, idempotencyKey },
-      {
-        jobId: idempotencyKey,
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 10_000 },
-        removeOnComplete: 1_000,
-        removeOnFail: 5_000,
-      },
-    );
+    try {
+      await this.queue.add(
+        QUEUES.contentGeneration,
+        { jobId: job.id, brandId: job.brandId, idempotencyKey },
+        {
+          jobId: idempotencyKey,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 10_000 },
+          removeOnComplete: 1_000,
+          removeOnFail: 5_000,
+        },
+      );
+    } catch (error) {
+      // The row is committed but no worker will ever pick it up (e.g. Redis
+      // was unreachable). Left in place, the idempotency check would return
+      // this dead 'queued' row forever and never re-enqueue. Removing it lets
+      // the client retry cleanly.
+      await this.db.delete(schema.generationJobs).where(eq(schema.generationJobs.id, job.id));
+      throw error;
+    }
 
     return job;
   }
@@ -78,13 +87,15 @@ export class GenerationsService {
     return { ...job, assets: await this.assetUrls.signAll(assets), copy };
   }
 
-  /** Generation history per brand (FR-5.2). */
+  /** Generation history per brand (FR-5.2). The controller clamps `limit`;
+   *  this guard keeps a bad value from reaching Postgres if called elsewhere. */
   async listByBrand(brandId: string, limit = 20) {
+    const bounded = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.floor(limit))) : 20;
     return this.db
       .select()
       .from(schema.generationJobs)
       .where(eq(schema.generationJobs.brandId, brandId))
       .orderBy(desc(schema.generationJobs.createdAt))
-      .limit(limit);
+      .limit(bounded);
   }
 }
