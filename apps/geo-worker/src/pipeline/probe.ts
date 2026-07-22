@@ -12,6 +12,12 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
   const client = ctx.ai.answerEngine(job.engine as AnswerEngine);
   if (!client || !client.isConfigured()) {
     // Not an error: engines without credentials are simply out of scope for now.
+    // Logged rather than silent — otherwise a probe for an unconfigured engine
+    // (e.g. a seeded prompt on claude/perplexity with only a Google key set)
+    // vanishes with no run and no error, which reads as "the worker is broken".
+    console.warn(
+      `[probe] skipped ${job.engine} for prompt ${job.promptId}: engine not configured (no API key)`,
+    );
     return;
   }
 
