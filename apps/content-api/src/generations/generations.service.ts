@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { desc, eq, schema, type Database } from '@bmas/db';
+import { desc, eq, inArray, schema, type Database } from '@bmas/db';
 import { QUEUES, type CreativeRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
@@ -88,14 +88,52 @@ export class GenerationsService {
   }
 
   /** Generation history per brand (FR-5.2). The controller clamps `limit`;
-   *  this guard keeps a bad value from reaching Postgres if called elsewhere. */
+   *  this guard keeps a bad value from reaching Postgres if called elsewhere.
+   *  Joined with the product name and the earliest asset per job (signed) so
+   *  the client can render a thumbnail grid without an N+1 `findOne` per row. */
   async listByBrand(brandId: string, limit = 20) {
     const bounded = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.floor(limit))) : 20;
-    return this.db
-      .select()
+    const jobs = await this.db
+      .select({
+        id: schema.generationJobs.id,
+        status: schema.generationJobs.status,
+        stage: schema.generationJobs.stage,
+        campaignType: schema.generationJobs.campaignType,
+        styleTemplate: schema.generationJobs.styleTemplate,
+        outputFormat: schema.generationJobs.outputFormat,
+        error: schema.generationJobs.error,
+        createdAt: schema.generationJobs.createdAt,
+        productName: schema.products.name,
+      })
       .from(schema.generationJobs)
+      .leftJoin(schema.products, eq(schema.generationJobs.productId, schema.products.id))
       .where(eq(schema.generationJobs.brandId, brandId))
       .orderBy(desc(schema.generationJobs.createdAt))
       .limit(bounded);
+
+    if (jobs.length === 0) return [];
+
+    // Ordered ascending so the first row seen per jobId in the Map below is
+    // the earliest asset, matching the "Version 1" thumbnail shown in gallery.
+    const assets = await this.db
+      .select({
+        jobId: schema.creativeAssets.jobId,
+        storageKey: schema.creativeAssets.storageKey,
+      })
+      .from(schema.creativeAssets)
+      .where(inArray(schema.creativeAssets.jobId, jobs.map((job) => job.id)))
+      .orderBy(schema.creativeAssets.createdAt);
+
+    const thumbnailByJob = new Map<string, string>();
+    for (const asset of assets) {
+      if (!thumbnailByJob.has(asset.jobId)) thumbnailByJob.set(asset.jobId, asset.storageKey);
+    }
+
+    return Promise.all(
+      jobs.map(async (job) => {
+        const storageKey = thumbnailByJob.get(job.id);
+        return { ...job, thumbnailUrl: storageKey ? await this.assetUrls.sign(storageKey) : null };
+      }),
+    );
   }
 }
