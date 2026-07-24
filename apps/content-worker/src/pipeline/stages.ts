@@ -112,18 +112,25 @@ export async function composeBrief(ctx: StageContext): Promise<Brief> {
       brand.category ? `, ${brand.category}` : ''
     }.`,
     '',
-    `Campaign: ${CAMPAIGN_INTENT[request.campaignType]}.`,
+    `Campaign type: ${CAMPAIGN_INTENT[request.campaignType]}.`,
     `Product: ${product.name}${description ? ` — ${description}` : ''}.`,
-    brand.audience ? `Audience: ${brand.audience}.` : '',
+    brand.audience ? `Target audience: ${brand.audience}.` : '',
     '',
+    '**Visual Style:**',
     `Art direction: ${STYLE_DIRECTION[request.styleTemplate]}`,
-    `Overall feel: ${TONE_DIRECTION[brand.toneOfVoice]}.`,
-    brand.colors.length ? `Use the brand palette: ${brand.colors.join(', ')}.` : '',
+    `Brand voice: ${TONE_DIRECTION[brand.toneOfVoice]}.`,
+    brand.colors.length ? `Use the brand colour palette: ${brand.colors.join(', ')}.` : '',
     '',
-    // FR-3.1: the whole point is the customer's actual product, not a
-    // plausible-looking substitute.
-    'Feature the exact product shown in the reference image. Reproduce its shape, colour, material, and',
-    'pattern faithfully. Do not substitute, restyle, or invent a different product.',
+    '**Product Presentation (Critical):**',
+    'Feature the exact product shown in the reference image as the HERO element.',
+    'Reproduce its shape, colour, texture, material, and pattern EXACTLY and FAITHFULLY.',
+    'Do NOT substitute, restyle, modernise, or invent a different product.',
+    'Centre or prominently position the product where the viewer\'s eye lands first.',
+    '',
+    '**Reference Image Integration:**',
+    'The reference image shows the actual product. Use it as the truth.',
+    'If reference shows product detail (weave, embroidery, finish), highlight that.',
+    'If reference shows multiple items, compose them together naturally.',
   ];
 
   if (requiredText.length) {
@@ -414,6 +421,9 @@ const COPY_JSON_SCHEMA = z.toJSONSchema(copyDraftSchema) as Record<string, unkno
  * Stage 4 — copy. Generates the platform-aware copy pack in the Brand Kit's
  * tone (FR-4.1, FR-4.2). Runs on the `volume` model role since it fans out per
  * platform and is the cheapest stage to get wrong-and-retry.
+ *
+ * Enhanced to generate contextual hashtags based on product category, brand
+ * values, audience, and campaign type rather than hardcoded templates.
  */
 export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
   const { brand, request } = ctx;
@@ -429,6 +439,13 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
 
   const handle = brand.socialHandles[platform];
 
+  // Platform-specific hashtag guidance
+  const platformGuidance: Record<Platform, string> = {
+    instagram: 'Use trending hashtags (#); Instagram users discovery-search by tags. Mix popular (100k+) and niche (<10k).',
+    facebook: 'Use 5–10 relevant hashtags; Facebook hashtags are less critical than Instagram but still help reach.',
+    whatsapp: 'Use 3–5 hashtags for searchability within WhatsApp Business; keep them concise and product-related.',
+  };
+
   const { value: draft, cost } = await withRetry(
     () =>
       withTimeout(
@@ -436,23 +453,38 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
           {
             role: 'volume',
             system:
-              `You write marketing copy for ${brand.name}, ` +
-              `${brand.category ?? 'a small business'}. ` +
+              `You write marketing copy for ${brand.name}, a ${brand.category ?? 'small business'}. ` +
+              `Brand story: ${brand.description || 'Handcrafted, locally-made products.'} ` +
               `Voice: ${TONE_DIRECTION[brand.toneOfVoice]}. ` +
-              'Write for a real small business owner, not a marketing agency. ' +
-              'No emoji spam, no invented claims, no pricing you were not given.',
+              'Write for real customers, not marketers. ' +
+              'Be authentic, avoid hype. ' +
+              'No fake claims, no emoji spam, no pricing you were not given.',
             messages: [
               {
                 role: 'user',
                 content: [
-                  `Write a ${platform} copy pack for ${CAMPAIGN_INTENT[request.campaignType]}.`,
-                  `Product: ${product.name}${product.description ? ` — ${product.description}` : ''}.`,
-                  brand.audience ? `Audience: ${brand.audience}.` : '',
-                  request.headlineText ? `The creative shows the headline "${request.headlineText}".` : '',
-                  request.offerText ? `The offer is "${request.offerText}".` : '',
-                  handle ? `The brand's ${platform} handle is ${handle}.` : '',
-                  `Write in language code "${request.language}".`,
-                  'Return 8 to 15 hashtags, each starting with #.',
+                  `Create a ${platform} copy pack for a ${CAMPAIGN_INTENT[request.campaignType]} campaign.`,
+                  '',
+                  '**Product:**',
+                  `${product.name}${product.description ? ` — ${product.description}` : ''}.`,
+                  '',
+                  '**Context:**',
+                  brand.audience ? `Audience: ${brand.audience}.` : 'Audience: Conscious consumers who value quality.',
+                  request.headlineText ? `Headline on image: "${request.headlineText}".` : '',
+                  request.offerText ? `Special offer: "${request.offerText}".` : '',
+                  '',
+                  `**Platform (${platform}):**`,
+                  platformGuidance[platform],
+                  handle ? `Brand handle to mention: ${handle}` : '',
+                  '',
+                  '**Hashtag strategy:**',
+                  '- Include 3-4 product-specific hashtags (#silksaree, #handwoven, #festival-wear, etc.)',
+                  '- Include 2-3 audience hashtags (#ethnicwear, #traditional, #shoplocal)',
+                  '- Include 2-3 trend/campaign hashtags if relevant (#festiveshopping, #diwali, etc.)',
+                  `- Total: 8-12 hashtags for ${platform}.`,
+                  '',
+                  `Write in language: ${request.language}.`,
+                  'Return valid JSON with headline, caption, hashtags (array of strings), and cta.',
                 ]
                   .filter(Boolean)
                   .join('\n'),
