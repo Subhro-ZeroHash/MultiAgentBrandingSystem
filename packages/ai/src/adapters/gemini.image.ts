@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import sharp from 'sharp';
-import { ProviderError, ProviderNotConfiguredError } from '../errors.js';
+import { ProviderError, ProviderNotConfiguredError, describeError } from '../errors.js';
 import type {
   GeneratedImage,
   ImageEditRequest,
@@ -22,6 +22,15 @@ export interface GeminiImageConfig {
 }
 
 const DEFAULT_MODEL = 'gemini-3-pro-image-preview';
+
+/**
+ * Ceiling on a single provider request. A pro-tier image takes 40–60s, so this
+ * is deliberately generous; its job is only to stop a half-open socket holding
+ * a worker slot until the stage timeout fires. Without it the SDK waits on
+ * Node's default, which outlives the caller's own timeout and makes a dropped
+ * connection look like a hang rather than a retryable failure.
+ */
+const REQUEST_TIMEOUT_MS = 120_000;
 
 /**
  * Gemini accepts an aspect ratio and a size tier, not arbitrary pixel
@@ -83,7 +92,10 @@ export class GeminiImageAdapter implements ImageGenService {
     this.client = config.apiKey
       ? new GoogleGenAI({
           apiKey: config.apiKey,
-          ...(config.baseUrl ? { httpOptions: { baseUrl: config.baseUrl } } : {}),
+          httpOptions: {
+            timeout: REQUEST_TIMEOUT_MS,
+            ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+          },
         })
       : null;
   }
@@ -114,7 +126,9 @@ export class GeminiImageAdapter implements ImageGenService {
    */
   private static wrap(error: unknown, operation: string): ProviderError {
     if (error instanceof ProviderError) return error;
-    const message = error instanceof Error ? error.message : String(error);
+    // The whole chain, not `.message`: a transport failure arrives as a bare
+    // `TypeError: fetch failed` and says nothing without its cause.
+    const message = describeError(error);
 
     if (isQuotaExhausted(error)) {
       return new ProviderError(

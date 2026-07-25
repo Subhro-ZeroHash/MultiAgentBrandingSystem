@@ -1,8 +1,9 @@
-import { withRetry, withTimeout, type AiRegistry } from '@bmas/ai';
+import { describeError, withRetry, withTimeout, type AiRegistry } from '@bmas/ai';
 import { eq, schema, type Brand, type Database } from '@bmas/db';
 import {
   OUTPUT_FORMAT_DIMENSIONS,
   copyPackSchema,
+  normaliseHashtags,
   type CampaignType,
   type CopyPack,
   type CostEvent,
@@ -58,6 +59,31 @@ const STYLE_DIRECTION: Record<StyleTemplate, string> = {
   flat_lay_product_hero:
     'Overhead flat-lay product hero. Product centred on a clean surface, even diffused lighting, ' +
     'a few tasteful complementary props at the edges, crisp shadows.',
+  studio_white:
+    'Clean e-commerce studio shot. Seamless pure white backdrop, soft even three-point lighting, ' +
+    'a subtle contact shadow under the product, no props and no scenery. Catalogue-accurate colour.',
+  lifestyle_in_use:
+    'Candid lifestyle scene with the product genuinely in use in its natural setting. ' +
+    'Shallow depth of field, natural light, authentic unposed moment. The product stays in sharp focus ' +
+    'and remains unmistakably the subject.',
+  bold_typographic:
+    'Typography-led poster design. A strong graphic layout carries the message, the product sits within ' +
+    'a confident grid, flat brand-coloured shapes, generous margins, editorial poster feel.',
+  tech_dark_gradient:
+    'Modern tech product launch. Deep charcoal-to-black gradient backdrop, crisp rim lighting tracing the ' +
+    "product's edges, subtle lens flare and a soft reflective floor. Sleek, precise and premium.",
+  neon_gaming:
+    'High-energy gaming aesthetic. Dark scene lit by saturated neon cyan and magenta accents, glowing rim ' +
+    'light, faint volumetric haze and a hint of circuitry or grid in the background. Bold and electric.',
+  outdoor_natural_light:
+    'Bright outdoor daylight. Golden-hour sun, natural greenery or open sky behind, soft organic shadows, ' +
+    'airy and fresh with a relaxed real-world feel.',
+  vintage_retro:
+    'Retro print advertisement. Muted warm-washed palette, subtle paper grain and halftone texture, ' +
+    'mid-century layout, gently faded edges as though scanned from an old magazine.',
+  playful_pastel:
+    'Playful pastel studio scene. Soft candy-coloured backdrop, rounded geometric props and podiums, ' +
+    'bright even lighting, cheerful and youthful with a light bouncy composition.',
 };
 
 const TONE_DIRECTION: Record<ToneOfVoice, string> = {
@@ -126,6 +152,13 @@ export async function composeBrief(ctx: StageContext): Promise<Brief> {
     'Reproduce its shape, colour, texture, material, and pattern EXACTLY and FAITHFULLY.',
     'Do NOT substitute, restyle, modernise, or invent a different product.',
     'Centre or prominently position the product where the viewer\'s eye lands first.',
+    // The brand line above names the shop's usual trade, and the model will
+    // happily stage the product on top of it — a pair of headphones resting on
+    // a folded saree, because the brand is a saree boutique. Staging has to
+    // follow the product, not the shopfront.
+    `Every prop, surface and background element must plausibly belong with a ${product.name} specifically.`,
+    "Do NOT introduce merchandise from the brand's other categories as props or set dressing.",
+    'Show exactly one product. Do not add extra units, variants or unrelated items beside it.',
     '',
     '**Reference Image Integration:**',
     'The reference image shows the actual product. Use it as the truth.',
@@ -274,9 +307,7 @@ export async function generateImages(
     {
       onRetry: ({ attempt, delayMs, error }) =>
         console.warn(
-          `[content:image] job ${ctx.jobId}: attempt ${attempt} failed, retrying in ${delayMs}ms — ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `[content:image] job ${ctx.jobId}: attempt ${attempt} failed, retrying in ${delayMs}ms — ${describeError(error)}`,
         ),
     },
   );
@@ -437,14 +468,24 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
 
   if (!product) throw new Error(`Product ${request.productId} not found`);
 
-  const handle = brand.socialHandles[platform];
+  const handle =
+    brand.socialHandles[platform] ??
+    brand.socialHandles.instagram ??
+    (brand.name ? `@${brand.name.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9_]/g, '')}` : undefined);
 
-  // Platform-specific hashtag guidance
+  // Platform-specific hashtag guidance. Deliberately free of worked examples:
+  // an earlier version illustrated the rule with saree tags, and the model
+  // copied them onto every product it was given, headphones included.
   const platformGuidance: Record<Platform, string> = {
-    instagram: 'Use trending hashtags (#); Instagram users discovery-search by tags. Mix popular (100k+) and niche (<10k).',
-    facebook: 'Use 5–10 relevant hashtags; Facebook hashtags are less critical than Instagram but still help reach.',
-    whatsapp: 'Use 3–5 hashtags for searchability within WhatsApp Business; keep them concise and product-related.',
+    instagram:
+      'Use trending hashtags (#); Instagram users discovery-search by tags. Mix popular (100k+) and niche (<10k).',
+    facebook:
+      'Use 5–10 relevant hashtags; Facebook hashtags are less critical than Instagram but still help reach.',
+    whatsapp:
+      'Use 3–5 hashtags for searchability within WhatsApp Business; keep them concise and product-related.',
   };
+
+  const productLine = `${product.name}${product.description ? ` — ${product.description}` : ''}`;
 
   const { value: draft, cost } = await withRetry(
     () =>
@@ -453,9 +494,19 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
           {
             role: 'volume',
             system:
-              `You write marketing copy for ${brand.name}, a ${brand.category ?? 'small business'}. ` +
-              `Brand story: ${brand.description || 'Handcrafted, locally-made products.'} ` +
+              // The product leads and the brand supplies the voice. Stated in
+              // that order and that plainly because the reverse — brand first,
+              // product buried in the user turn — produced copy about the
+              // shop's usual catalogue and ignored the item being advertised.
+              `You are writing about one specific product: ${productLine}. ` +
+              'Every sentence, and every hashtag, must be about THAT product. ' +
+              `It is sold by ${brand.name}, a ${brand.category ?? 'small business'}, ` +
+              'whose name, voice and handle you should use. ' +
+              (brand.audience ? `They serve: ${brand.audience}. ` : '') +
               `Voice: ${TONE_DIRECTION[brand.toneOfVoice]}. ` +
+              // Real catalogues are mixed; a saree shop may also sell gadgets.
+              "If the product does not fit the shop's usual category, follow the " +
+              'product and never describe it as something it is not. ' +
               'Write for real customers, not marketers. ' +
               'Be authentic, avoid hype. ' +
               'No fake claims, no emoji spam, no pricing you were not given.',
@@ -465,23 +516,33 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
                 content: [
                   `Create a ${platform} copy pack for a ${CAMPAIGN_INTENT[request.campaignType]} campaign.`,
                   '',
-                  '**Product:**',
-                  `${product.name}${product.description ? ` — ${product.description}` : ''}.`,
+                  '**The product being advertised:**',
+                  `${productLine}.`,
+                  'This is the subject. The headline, the caption and every hashtag describe THIS item.',
                   '',
                   '**Context:**',
-                  brand.audience ? `Audience: ${brand.audience}.` : 'Audience: Conscious consumers who value quality.',
+                  brand.audience
+                    ? `Audience: ${brand.audience}.`
+                    : 'Audience: Conscious consumers who value quality.',
                   request.headlineText ? `Headline on image: "${request.headlineText}".` : '',
                   request.offerText ? `Special offer: "${request.offerText}".` : '',
+                  request.extraInstructions?.trim()
+                    ? `Extra direction from the customer: ${request.extraInstructions.trim()}`
+                    : '',
                   '',
                   `**Platform (${platform}):**`,
                   platformGuidance[platform],
                   handle ? `Brand handle to mention: ${handle}` : '',
                   '',
+                  // Described by role rather than by example. Concrete sample
+                  // tags get copied verbatim regardless of what is being sold.
                   '**Hashtag strategy:**',
-                  '- Include 3-4 product-specific hashtags (#silksaree, #handwoven, #festival-wear, etc.)',
-                  '- Include 2-3 audience hashtags (#ethnicwear, #traditional, #shoplocal)',
-                  '- Include 2-3 trend/campaign hashtags if relevant (#festiveshopping, #diwali, etc.)',
+                  `- 3-4 naming the product itself and what it is (its type, category, key feature).`,
+                  '- 2-3 for the people who would buy it, or the occasion they would use it for.',
+                  '- 2-3 for the campaign or a current trend, only where genuinely relevant.',
                   `- Total: 8-12 hashtags for ${platform}.`,
+                  '- Derive every tag from the product described above. Do not reuse tags from any',
+                  '  example, and do not tag a category this product does not belong to.',
                   '',
                   `Write in language: ${request.language}.`,
                   'Return valid JSON with headline, caption, hashtags (array of strings), and cta.',
@@ -491,7 +552,10 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
               },
             ],
             schema: COPY_JSON_SCHEMA,
-            parse: (raw) => copyDraftSchema.parse(raw),
+            parse: (raw) => {
+              const draft = copyDraftSchema.parse(raw);
+              return { ...draft, hashtags: normaliseHashtags(draft.hashtags) };
+            },
           },
           { referenceId: ctx.jobId, brandId: ctx.brand.id },
         ),

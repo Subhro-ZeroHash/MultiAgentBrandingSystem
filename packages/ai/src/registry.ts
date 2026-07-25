@@ -4,6 +4,7 @@ import { ClaudeAnswerEngine } from './adapters/claude.engine.js';
 import { FalImageAdapter } from './adapters/fal.image.js';
 import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
+import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
 import { StubImageAdapter } from './adapters/stub.image.js';
@@ -13,6 +14,9 @@ import type { LlmService, ModelRole } from './llm.js';
 
 /** `stub` draws placeholders locally — see adapters/stub.image.ts. */
 export type ImageProviderName = 'gemini' | 'fal' | 'stub';
+
+/** Which provider serves `LlmService` — text, JSON, and vision QA. */
+export type LlmProviderName = 'anthropic' | 'gemini';
 
 export interface AiConfig {
   anthropicApiKey?: string;
@@ -34,15 +38,35 @@ export interface AiConfig {
   /** Which adapter serves each image operation. */
   imageProviderPrimary?: ImageProviderName;
   imageProviderEdit?: ImageProviderName;
+  /** Which adapter serves text/JSON/vision. Defaults to `anthropic`. */
+  llmProvider?: LlmProviderName;
 }
 
-const DEFAULT_MODELS: Record<ModelRole, string> = {
+const ANTHROPIC_MODELS: Record<ModelRole, string> = {
   // Reasoning-heavy orchestration: brief composition, GEO answer analysis.
   orchestrator: 'claude-opus-4-8',
   // High fan-out, latency-sensitive: per-platform copy variants.
   volume: 'claude-haiku-4-5',
   // Judgement calls: vision QA readback on rendered creatives.
   qa: 'claude-sonnet-5',
+};
+
+/**
+ * Confirmed live via ListModels + a real generateContent call on 2026-07-25.
+ * Worth re-checking: Google retires these fast, and the whole 2.5 family plus
+ * `gemini-3-pro-preview` already answer 404 "no longer available to new users"
+ * despite still being listed — ListModels alone is not proof a model is usable.
+ * `gemini-3.1-pro-preview` is the only Pro tier still accepting new users.
+ */
+const GEMINI_MODELS: Record<ModelRole, string> = {
+  orchestrator: 'gemini-3.1-pro-preview',
+  volume: 'gemini-3.6-flash',
+  qa: 'gemini-3.6-flash',
+};
+
+const DEFAULT_MODELS: Record<LlmProviderName, Record<ModelRole, string>> = {
+  anthropic: ANTHROPIC_MODELS,
+  gemini: GEMINI_MODELS,
 };
 
 /**
@@ -55,11 +79,24 @@ export class AiRegistry {
   private readonly engines: Map<AnswerEngine, AnswerEngineClient>;
 
   constructor(private readonly config: AiConfig) {
-    this.llmService = new AnthropicLlmAdapter({
-      apiKey: config.anthropicApiKey,
-      models: { ...DEFAULT_MODELS, ...config.models },
-      ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
-    });
+    // LLM_MODEL_* overrides are provider-agnostic strings, so they must match
+    // whichever provider is selected — a Claude id under LLM_PROVIDER=gemini
+    // reaches Google and 404s. Defaults are picked per provider for that reason.
+    const llmProvider = config.llmProvider ?? 'anthropic';
+    const models = { ...DEFAULT_MODELS[llmProvider], ...config.models };
+
+    this.llmService =
+      llmProvider === 'gemini'
+        ? new GeminiLlmAdapter({
+            apiKey: config.googleApiKey,
+            models,
+            ...(config.googleBaseUrl ? { baseUrl: config.googleBaseUrl } : {}),
+          })
+        : new AnthropicLlmAdapter({
+            apiKey: config.anthropicApiKey,
+            models,
+            ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
+          });
 
     this.images = {
       gemini: new GeminiImageAdapter({
@@ -127,5 +164,6 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
       : {}),
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
     imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,
+    llmProvider: env.LLM_PROVIDER as LlmProviderName | undefined,
   });
 }

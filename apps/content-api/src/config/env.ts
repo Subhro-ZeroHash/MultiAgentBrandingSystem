@@ -15,6 +15,8 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   FAL_KEY: z.string().optional(),
+  /** Serves text/JSON/vision. `gemini` needs no Anthropic credential. */
+  LLM_PROVIDER: z.enum(['anthropic', 'gemini']).default('anthropic'),
 
   S3_BUCKET: z.string().default('bmas-assets'),
   S3_ENDPOINT: z.string().url().optional(),

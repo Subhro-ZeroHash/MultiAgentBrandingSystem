@@ -23,11 +23,29 @@ export const TOKEN_RATES: Record<string, TokenRate> = {
   'claude-opus-4-8': { inputMicroUsd: perMillion(5), outputMicroUsd: perMillion(25) },
   'claude-sonnet-5': { inputMicroUsd: perMillion(3), outputMicroUsd: perMillion(15) },
   'claude-haiku-4-5': { inputMicroUsd: perMillion(1), outputMicroUsd: perMillion(5) },
+
+  // TODO(content): UNVERIFIED rates. The model ids are confirmed live (see
+  // GEMINI_MODELS in registry.ts) but their prices were not — a model with no
+  // entry here prices at zero, which under-reports spend silently, so these
+  // estimates stand in until the pricing page is checked.
+  'gemini-3.1-pro-preview': { inputMicroUsd: perMillion(1.25), outputMicroUsd: perMillion(10) },
+  'gemini-3.6-flash': { inputMicroUsd: perMillion(0.3), outputMicroUsd: perMillion(2.5) },
 };
 
-/** Flat per-image rates in micro-USD. Verify before relying on these. */
+/**
+ * Flat per-image rates in micro-USD. Verify before relying on these.
+ *
+ * Every id the adapter can be pointed at needs an entry: `priceImages` returns
+ * zero for an unknown model, so a missing row is not an error but a silently
+ * free-looking image. The stable `gemini-3-pro-image` was absent while being
+ * the configured default, which reported a whole job's image spend as 0.
+ */
 export const IMAGE_RATES: Record<string, number> = {
+  // TODO(content): UNVERIFIED, as with TOKEN_RATES above. The -preview twin and
+  // the stable id are the same model tier, so they carry the same estimate.
+  'gemini-3-pro-image': 40_000,
   'gemini-3-pro-image-preview': 40_000,
+  'gemini-2.5-flash-image': 40_000,
   'fal-ai/flux-pro/kontext': 40_000,
 };
 

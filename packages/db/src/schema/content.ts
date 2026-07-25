@@ -36,11 +36,21 @@ export const outputFormat = content.enum('output_format', [
   'poster_a4',
 ]);
 
+/** Mirrors `styleTemplateSchema` in @bmas/shared — the two must stay in step,
+ *  or a request the API accepts fails on insert. */
 export const styleTemplate = content.enum('style_template', [
   'festive',
   'minimal_luxury',
   'bold_discount',
   'flat_lay_product_hero',
+  'studio_white',
+  'lifestyle_in_use',
+  'bold_typographic',
+  'tech_dark_gradient',
+  'neon_gaming',
+  'outdoor_natural_light',
+  'vintage_retro',
+  'playful_pastel',
 ]);
 
 export const products = content.table(

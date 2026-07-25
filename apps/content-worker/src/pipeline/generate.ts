@@ -1,3 +1,4 @@
+import { describeError } from '@bmas/ai';
 import { eq, schema } from '@bmas/db';
 import type { ContentGenerationJob, CreativeRequest } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
@@ -9,12 +10,27 @@ import {
   type StageContext,
 } from './stages.js';
 
+/** Where this run sits in BullMQ's retry sequence, both 1-based. */
+export interface AttemptInfo {
+  attempt: number;
+  maxAttempts: number;
+}
+
 /**
  * Orchestrates the creative pipeline for one job. The `stage` column is updated
  * as it advances so the UI can show which step is running rather than a bare
  * spinner (NFR: "UI communicates progress per pipeline stage").
+ *
+ * `attemptInfo` exists because the job row is what the client polls, and BullMQ
+ * retries underneath it. Writing `failed` on a non-final attempt shows the user
+ * a failure dialog for a job that is still running and will usually succeed on
+ * the next try — so the row stays `running` until the retries are spent.
  */
-export async function runGeneration(ctx: WorkerContext, job: ContentGenerationJob): Promise<void> {
+export async function runGeneration(
+  ctx: WorkerContext,
+  job: ContentGenerationJob,
+  attemptInfo: AttemptInfo = { attempt: 1, maxAttempts: 1 },
+): Promise<void> {
   const [row] = await ctx.db
     .select()
     .from(schema.generationJobs)
@@ -102,17 +118,36 @@ export async function runGeneration(ctx: WorkerContext, job: ContentGenerationJo
 
     await ctx.db
       .update(schema.generationJobs)
-      .set({ status: 'succeeded', stage: null, finishedAt: new Date() })
-      .where(eq(schema.generationJobs.id, job.jobId));
-  } catch (error) {
-    await ctx.db
-      .update(schema.generationJobs)
       .set({
-        status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
+        status: 'succeeded',
+        stage: null,
+        // Cleared explicitly: an earlier attempt may have written one, and a
+        // succeeded job carrying an error message reads as a bug in the UI.
+        error: null,
         finishedAt: new Date(),
       })
       .where(eq(schema.generationJobs.id, job.jobId));
+  } catch (error) {
+    const isFinalAttempt = attemptInfo.attempt >= attemptInfo.maxAttempts;
+    const message = describeError(error);
+
+    console.error(
+      `[content:generation] job ${job.jobId}: attempt ${attemptInfo.attempt}/${attemptInfo.maxAttempts} failed — ${message}`,
+      error,
+    );
+
+    await ctx.db
+      .update(schema.generationJobs)
+      .set(
+        isFinalAttempt
+          ? { status: 'failed', error: message, finishedAt: new Date() }
+          : // Still retrying: keep the row `running` so the client keeps
+            // polling, but record why in case this turns out to be the last
+            // word. `finishedAt` stays null — the job is not finished.
+            { status: 'running', error: `${message} (retrying)` },
+      )
+      .where(eq(schema.generationJobs.id, job.jobId));
+
     throw error;
   }
 }

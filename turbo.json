@@ -8,6 +8,8 @@
     "REDIS_URL",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
+    "LLM_PROVIDER",
+    "LLM_MODEL_*",
     "GOOGLE_API_KEY",
     "GOOGLE_API_BASE_URL",
     "FAL_KEY",

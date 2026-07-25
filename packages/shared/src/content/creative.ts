@@ -23,12 +23,34 @@ export const OUTPUT_FORMAT_DIMENSIONS: Record<
 export const campaignTypeSchema = z.enum(['offer', 'launch', 'festival', 'generic']);
 export type CampaignType = z.infer<typeof campaignTypeSchema>;
 
-/** FR-2.3: the user picks a look; the system composes the prompt. */
+/**
+ * FR-2.3: the user picks a look; the system composes the prompt.
+ *
+ * The original four all assumed apparel retail, which left anything else — a
+ * gadget, a meal, a service — with no honest fit and pushed users onto
+ * `festive` by default. The list is deliberately broader than one vertical:
+ * the first group suits any product, the second leans to a category.
+ *
+ * Adding a value here is a contract change. `STYLE_DIRECTION` in the worker's
+ * stages.ts is a total Record over this type, so the build fails until the art
+ * direction exists — that is intentional, an unmapped style would otherwise
+ * reach the model as an empty instruction.
+ */
 export const styleTemplateSchema = z.enum([
+  // Work for any product category.
   'festive',
   'minimal_luxury',
   'bold_discount',
   'flat_lay_product_hero',
+  'studio_white',
+  'lifestyle_in_use',
+  'bold_typographic',
+  // Lean towards a category, but not restricted to one.
+  'tech_dark_gradient',
+  'neon_gaming',
+  'outdoor_natural_light',
+  'vintage_retro',
+  'playful_pastel',
 ]);
 export type StyleTemplate = z.infer<typeof styleTemplateSchema>;
 

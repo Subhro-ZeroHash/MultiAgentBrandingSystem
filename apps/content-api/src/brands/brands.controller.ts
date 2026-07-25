@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { createBrandKitSchema, createProductSchema } from '@bmas/shared';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { createBrandKitSchema, createProductSchema, updateBrandKitSchema, type UpdateBrandKitInput } from '@bmas/shared';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { BrandsService } from './brands.service.js';
@@ -23,6 +23,14 @@ export class BrandsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.brands.findOne(id);
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(updateBrandKitSchema)) body: unknown,
+  ) {
+    return this.brands.update(id, body as UpdateBrandKitInput);
   }
 
   @Post()

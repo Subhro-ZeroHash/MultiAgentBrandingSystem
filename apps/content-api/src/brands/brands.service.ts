@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, schema, type Database } from '@bmas/db';
-import type { CreateBrandKitInput, CreateProductInput } from '@bmas/shared';
+import type { CreateBrandKitInput, CreateProductInput, UpdateBrandKitInput } from '@bmas/shared';
 import { DATABASE, OBJECT_STORE } from '../core/core.module.js';
 import { productImageKey, type ObjectStore } from '../core/object-store.js';
 
@@ -38,6 +38,27 @@ export class BrandsService {
 
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
     return brand;
+  }
+
+  async update(brandId: string, input: UpdateBrandKitInput) {
+    const [updated] = await this.db
+      .update(schema.brands)
+      .set({
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.logoUrl !== undefined ? { logoUrl: input.logoUrl } : {}),
+        ...(input.colors ? { colors: input.colors } : {}),
+        ...(input.toneOfVoice ? { toneOfVoice: input.toneOfVoice } : {}),
+        ...(input.category !== undefined ? { category: input.category } : {}),
+        ...(input.audience !== undefined ? { audience: input.audience } : {}),
+        ...(input.websiteUrl !== undefined ? { websiteUrl: input.websiteUrl } : {}),
+        ...(input.socialHandles ? { socialHandles: input.socialHandles } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.brands.id, brandId))
+      .returning();
+
+    if (!updated) throw new NotFoundException(`Brand ${brandId} not found`);
+    return updated;
   }
 
   async create(ownerId: string, input: CreateBrandKitInput) {

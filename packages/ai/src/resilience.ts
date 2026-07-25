@@ -1,4 +1,4 @@
-import { ProviderError } from './errors.js';
+import { ProviderError, describeError } from './errors.js';
 
 /**
  * Shared retry/timeout policy for provider calls.
@@ -37,17 +37,27 @@ const DEFAULTS = {
  *  handled by `isRetryable`, because not every 429 is transient. */
 const RETRYABLE_STATUS = new Set([408, 409, 500, 502, 503, 504]);
 
+/** Walks `cause` so a status buried under a wrapper is still found. */
 function statusOf(error: unknown): number | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const e = error as { status?: unknown; code?: unknown };
-  if (typeof e.status === 'number') return e.status;
-  if (typeof e.code === 'number') return e.code;
+  const seen = new Set<object>();
+  let current: unknown = error;
+
+  for (let depth = 0; depth <= 5 && typeof current === 'object' && current !== null; depth++) {
+    if (seen.has(current)) break;
+    seen.add(current);
+
+    const e = current as { status?: unknown; code?: unknown; cause?: unknown };
+    if (typeof e.status === 'number') return e.status;
+    // A string `code` is a Node errno (ECONNRESET), not an HTTP status.
+    if (typeof e.code === 'number') return e.code;
+    current = e.cause;
+  }
   return undefined;
 }
 
+/** The whole chain, so classification sees what `fetch failed` is hiding. */
 function messageOf(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return typeof error === 'string' ? error : JSON.stringify(error ?? '');
+  return describeError(error);
 }
 
 /**
@@ -72,8 +82,11 @@ export function isRetryable(error: unknown): boolean {
   if (status === 429) return !isQuotaExhausted(error);
   if (status !== undefined) return RETRYABLE_STATUS.has(status);
 
-  // Node socket-level failures: worth one more try.
-  return /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed/i.test(
+  // Node/undici socket-level failures: worth one more try. `terminated` and the
+  // UND_ERR_* codes are how undici reports a connection dropped mid-response,
+  // which is the common failure on image calls that hold a socket open for a
+  // minute. They only appear on the `cause`, hence the chain-aware messageOf.
+  return /ECONNRESET|ETIMEDOUT|ECONNABORTED|EPIPE|EAI_AGAIN|ENOTFOUND|UND_ERR_|socket hang up|terminated|other side closed|fetch failed/i.test(
     messageOf(error),
   );
 }

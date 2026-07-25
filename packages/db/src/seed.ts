@@ -39,13 +39,13 @@ try {
     .values({
       id: DEV_BRAND_ID,
       ownerId: DEV_USER_ID,
-      name: 'Priya Sarees',
+      name: 'My Brand',
       colors: ['#7C2D12', '#F59E0B'],
-      toneOfVoice: 'traditional',
-      category: 'Apparel / Saree boutique',
-      audience: 'Women 25-45 in Jaipur shopping for festival and wedding wear',
+      toneOfVoice: 'friendly',
+      category: 'General Retail',
+      audience: 'Quality conscious customers',
       websiteUrl: 'https://example.com',
-      socialHandles: { instagram: '@priyasarees' },
+      socialHandles: { instagram: '@mybrand' },
     })
     .onConflictDoNothing();
 
