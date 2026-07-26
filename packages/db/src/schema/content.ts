@@ -8,6 +8,7 @@ import {
   pgSchema,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { brands, users } from './core.js';
 
@@ -210,6 +211,58 @@ export const creativeAssetsRelations = relations(creativeAssets, ({ one }) => ({
   job: one(generationJobs, { fields: [creativeAssets.jobId], references: [generationJobs.id] }),
 }));
 
+export const socialPlatform = content.enum('social_platform', [
+  'instagram',
+  'facebook',
+]);
+
+export const socialAccountStatus = content.enum('social_account_status', [
+  'active',
+  'token_expired',
+  'revoked',
+]);
+
+export const socialAccounts = content.table(
+  'social_accounts',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    platform: socialPlatform('platform').notNull(),
+    /** Facebook Page that owns the account. Null under Instagram Login, where
+     *  the Instagram account authenticates directly and no Page is involved. */
+    pageId: text('page_id'),
+    igBusinessId: text('ig_business_id'),
+    /** Encrypted at rest with AES-256-GCM. 256-byte strings after encryption. */
+    pageAccessToken: text('page_access_token').notNull(),
+    tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }).notNull(),
+    displayName: text('display_name').notNull(),
+    connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
+    status: socialAccountStatus('status').notNull().default('active'),
+  },
+  (t) => [
+    index('social_accounts_owner_platform_idx').on(t.ownerId, t.platform),
+    index('social_accounts_status_expires_idx').on(t.status, t.tokenExpiresAt),
+    // Reconnecting an account already linked must refresh the stored token
+    // rather than add a second identical row, which would show the same handle
+    // twice in the picker and leave a stale token behind on disconnect.
+    uniqueIndex('social_accounts_owner_platform_account_idx').on(
+      t.ownerId,
+      t.platform,
+      t.igBusinessId,
+    ),
+  ],
+);
+
+export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
+  owner: one(users, { fields: [socialAccounts.ownerId], references: [users.id] }),
+}));
+
+export type SocialAccount = typeof socialAccounts.$inferSelect;
+export type NewSocialAccount = typeof socialAccounts.$inferInsert;
 export type Product = typeof products.$inferSelect;
 export type NewProduct = typeof products.$inferInsert;
 export type GenerationJob = typeof generationJobs.$inferSelect;

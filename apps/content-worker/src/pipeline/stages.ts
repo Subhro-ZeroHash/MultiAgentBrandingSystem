@@ -34,6 +34,49 @@ export interface StageContext {
   jobId: string;
 }
 
+/**
+ * Trims a caption-length line down to something an image model can actually
+ * set as type. Typography degrades badly past a few words, and the copy stage
+ * writes for a feed — "Journey Through the Sacred Hills: Uttarakhand with
+ * @desiwanderer" is a fine caption and an unreadable poster headline. Keeps the
+ * first clause, cuts on a word boundary, drops trailing punctuation.
+ */
+const TRAILING_FILLER = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'for', 'from',
+  'with', 'by', 'your', 'our', 'their', 'its', 'this', 'that', 'is', 'are', '&',
+]);
+
+function posterPhrase(value: string | undefined, maxChars: number): string | undefined {
+  const first = value?.split(/[:—–|.!?\n]/)[0]?.trim().replace(/[,;\s]+$/, '');
+  if (!first) return undefined;
+
+  let phrase = first;
+  if (phrase.length > maxChars) {
+    // Sample one character past the limit: cutting at exactly maxChars and then
+    // seeking back to the last space discards a whole word whenever the phrase
+    // already ended on a boundary there ("Reserve your Uttarakhand" -> "Reserve
+    // your").
+    const window = phrase.slice(0, maxChars + 1);
+    const boundary = window.lastIndexOf(' ');
+    phrase = boundary > 0 ? window.slice(0, boundary) : phrase.slice(0, maxChars);
+
+    // Half a subordinate clause reads worse than dropping it: prefer ending on
+    // the comma ("Handwoven Banarasi Silk, Made" -> "Handwoven Banarasi Silk").
+    const comma = phrase.lastIndexOf(',');
+    if (comma > 0) phrase = phrase.slice(0, comma);
+  }
+
+  // Truncation strands prepositions and articles ("...Serene Meadows of"),
+  // which reads as a typo once it is set in 60pt on a finished advertisement.
+  const words = phrase.split(/\s+/);
+  for (let last = words[words.length - 1]; words.length > 1 && last; last = words[words.length - 1]) {
+    if (!TRAILING_FILLER.has(last.toLowerCase())) break;
+    words.pop();
+  }
+
+  return words.join(' ').replace(/[,;\s]+$/, '') || undefined;
+}
+
 /** What stage 1 hands to stage 2. Carries the resolved pixel dimensions and the
  *  text that must survive onto the image, so the image stage never re-derives
  *  them from the request and risk drifting from what the prompt asked for. */
@@ -111,7 +154,7 @@ const CAMPAIGN_INTENT: Record<CampaignType, string> = {
  * composition, so routing this through the LLM is a deliberate future option —
  * worth doing only once there is output to compare it against.
  */
-export async function composeBrief(ctx: StageContext): Promise<Brief> {
+export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<Brief> {
   const { brand, request } = ctx;
   const { width, height, printIntent } = OUTPUT_FORMAT_DIMENSIONS[request.outputFormat];
 
@@ -123,9 +166,16 @@ export async function composeBrief(ctx: StageContext): Promise<Brief> {
 
   if (!product) throw new Error(`Product ${request.productId} not found`);
 
-  // Ordered most- to least-important: the offer is the reason the ad exists,
-  // the CTA is the smallest element.
-  const requiredText = [request.headlineText, request.offerText, request.ctaText].filter(
+  // What the customer typed always wins; the copy stage fills the gaps so an
+  // ad is never shipped as a bare photograph with no message on it.
+  const headline = request.headlineText?.trim() || posterPhrase(copy?.headline, 42);
+  const offer = request.offerText?.trim() || undefined;
+  const wordmark = brand.name?.trim() || undefined;
+  const cta = request.ctaText?.trim() || posterPhrase(copy?.cta, 28);
+
+  // Ordered most- to least-important: the headline is read first, the CTA is
+  // the smallest element. QA reads every one of these back off the image.
+  const requiredText = [headline, offer, wordmark, cta].filter(
     (value): value is string => Boolean(value?.trim()),
   );
 
@@ -133,48 +183,98 @@ export async function composeBrief(ctx: StageContext): Promise<Brief> {
   // the composed sentence never ends up with ".." or a dangling clause.
   const description = product.description?.trim().replace(/[.\s]+$/, '');
 
-  const lines = [
-    `Design a ${printIntent ? 'print-ready poster' : 'social media creative'} at ${width}x${height} pixels for "${brand.name}"${
-      brand.category ? `, ${brand.category}` : ''
-    }.`,
+  // The image stage conditions on these; the brief has to know whether any
+  // exist, because instructions written for a reference photo ("reproduce the
+  // product exactly as shown") are actively harmful when there is nothing to
+  // reproduce — the model fills the gap from the brand's category instead.
+  const [reference] = await ctx.db
+    .select({ id: schema.productImages.id })
+    .from(schema.productImages)
+    .where(eq(schema.productImages.productId, request.productId))
+    .limit(1);
+  const hasReference = Boolean(reference);
+
+  // `null` marks a line that does not apply and is dropped below; '' is a real
+  // blank line and survives, so the sections stay legible to the model.
+  const lines: Array<string | null> = [
+    `Design a professional ${printIntent ? 'print-ready advertising poster' : 'social media advertisement'} at ${width}x${height} pixels.`,
     '',
+    '**Subject — this governs everything below:**',
+    `The advertisement is for: ${product.name}${description ? ` — ${description}` : ''}.`,
     `Campaign type: ${CAMPAIGN_INTENT[request.campaignType]}.`,
-    `Product: ${product.name}${description ? ` — ${description}` : ''}.`,
-    brand.audience ? `Target audience: ${brand.audience}.` : '',
+    `${product.name} is the single subject of the image. Every element in the frame must exist to sell it.`,
+    // A product can be a service or an experience ("Uttarakhand trip"), which
+    // has no object to photograph. Left unsaid, the model reaches for the
+    // brand's category and photographs that instead.
+    `If ${product.name} is a service, trip, or experience rather than a physical object, depict the experience itself — the place, the moment, the outcome the customer is buying. Do not invent a physical object to stand in for it.`,
     '',
-    '**Visual Style:**',
-    `Art direction: ${STYLE_DIRECTION[request.styleTemplate]}`,
+    '**Brand context — styling only:**',
+    `Brand name: ${brand.name}.`,
+    // Deliberately fenced off. The category describes what the shop usually
+    // sells, which is frequently not what this particular ad is selling; left
+    // unqualified the model stages the catalogue instead of the product (a
+    // travel package rendered as a woman in a saree, because the brand row
+    // still reads "saree boutique").
+    brand.category
+      ? `The brand's usual trade is "${brand.category}". Use this only to judge tone. Do NOT place its merchandise, stock, or typical subject matter in this image unless ${product.name} genuinely is one of those things.`
+      : null,
     `Brand voice: ${TONE_DIRECTION[brand.toneOfVoice]}.`,
-    brand.colors.length ? `Use the brand colour palette: ${brand.colors.join(', ')}.` : '',
+    brand.colors.length
+      ? `Work the brand colours (${brand.colors.join(', ')}) into the palette as accents. Do not let them dictate what appears in the scene.`
+      : null,
     '',
-    '**Product Presentation (Critical):**',
-    'Feature the exact product shown in the reference image as the HERO element.',
-    'Reproduce its shape, colour, texture, material, and pattern EXACTLY and FAITHFULLY.',
-    'Do NOT substitute, restyle, modernise, or invent a different product.',
-    'Centre or prominently position the product where the viewer\'s eye lands first.',
-    // The brand line above names the shop's usual trade, and the model will
-    // happily stage the product on top of it — a pair of headphones resting on
-    // a folded saree, because the brand is a saree boutique. Staging has to
-    // follow the product, not the shopfront.
-    `Every prop, surface and background element must plausibly belong with a ${product.name} specifically.`,
-    "Do NOT introduce merchandise from the brand's other categories as props or set dressing.",
-    'Show exactly one product. Do not add extra units, variants or unrelated items beside it.',
+    '**Art direction:**',
+    STYLE_DIRECTION[request.styleTemplate],
     '',
-    '**Reference Image Integration:**',
-    'The reference image shows the actual product. Use it as the truth.',
-    'If reference shows product detail (weave, embroidery, finish), highlight that.',
-    'If reference shows multiple items, compose them together naturally.',
+    '**Craft — this is a paid advertisement, hold it to that bar:**',
+    'Commercial advertising photography: deliberate lighting, correct exposure, sharp focus on the subject, believable materials and surfaces.',
+    'One clear focal point, a composition that reads instantly at thumbnail size, and calm negative space where text can sit.',
+    'Colour-graded and finished like a published campaign, not a raw snapshot or a stock-photo collage.',
+    '',
+    '**Do not:**',
+    // The brand name is rendered further down as type; what is banned here is
+    // the model drawing an emblem or a shopfront sign of its own invention.
+    'Do not invent logo marks, emblems, packaging labels, or shop signage.',
+    'Do not add unrelated products, extra units, or filler props that do not serve the subject.',
+    'Do not include people unless the art direction above calls for a person; when a person does appear, hands, faces and proportions must be anatomically correct.',
+    'No watermarks, no borders, no UI overlays, no collage or split-screen layouts.',
+    '',
+    ...(hasReference
+      ? [
+          '**Reference photograph:**',
+          'A photograph supplied by the customer is attached. It is the source of truth — read what it actually shows before using it.',
+          // A reference is not always a product shot. For a trip or a service it
+          // is usually the destination, and demanding the "product" be extracted
+          // from it is what makes the model invent one from the brand's trade.
+          `If it shows ${product.name} itself, reproduce that item exactly — its shape, colour, texture, material and pattern. Do not substitute, restyle or modernise it, and keep fine detail (weave, embroidery, finish, hardware) legible.`,
+          `If instead it shows a place, setting or scene rather than an object, treat it as the location and mood for this advertisement. Depict that setting. Do NOT invent a physical product to place into it.`,
+          'If it shows several items, compose them together naturally as one arrangement.',
+        ]
+      : [
+          // No photo to anchor on, so the description is the only truth. Saying
+          // so keeps the model from treating the brand line as the brief.
+          '**No reference photograph was supplied:**',
+          `Depict ${product.name} as described above and nothing else. Base it strictly on that description — do not infer the subject from the brand's trade.`,
+          'Keep the depiction generic and plausible rather than inventing specific branding or model numbers.',
+        ]),
   ];
 
   if (requiredText.length) {
     lines.push(
       '',
       // FR-3.5 exists because models mangle on-image text; the QA stage reads it
-      // back. Being explicit here reduces how often that retry is needed.
-      'Render the following text on the image, spelled exactly as written, large and clearly legible:',
-      ...requiredText.map((text) => `  "${text}"`),
-      'Keep the text inside the safe area with calm space around it. Do not add any other words,',
-      'letterforms, watermarks, or signatures.',
+      // back. Naming each line's role and rank, rather than listing them flat,
+      // is what gets a designed hierarchy instead of four equal-weight labels.
+      '**Text on the image — this is an advertisement, the words are part of the design:**',
+      'Render exactly the following, spelled character-for-character as written:',
+      headline ? `  HEADLINE — largest element, the first thing read: "${headline}"` : null,
+      offer ? `  OFFER — second most prominent, visually emphasised: "${offer}"` : null,
+      wordmark ? `  BRAND NAME — set as clean typography, a wordmark: "${wordmark}"` : null,
+      cta ? `  CALL TO ACTION — smallest, clearly separated from the rest: "${cta}"` : null,
+      'Lay them out with an obvious size hierarchy in that order.',
+      'Integrate the type into the composition — sitting in the negative space, aligned to a shared grid, with generous margins — rather than pasted flat across the subject.',
+      'Use one legible typeface family with strong contrast against whatever sits behind it. Every character must be crisp, correctly formed and correctly spelled.',
+      'Do not add any other words, letterforms, taglines, watermarks, signatures, URLs, or prices you were not given.',
     );
   } else {
     lines.push('', 'Do not render any text, letterforms, or watermarks on the image.');
@@ -197,7 +297,8 @@ export async function composeBrief(ctx: StageContext): Promise<Brief> {
     lines.push('', `Additional direction from the customer: ${request.extraInstructions.trim()}`);
   }
 
-  return { prompt: lines.filter((line) => line !== '').join('\n'), requiredText, width, height };
+  const prompt = lines.filter((line): line is string => line !== null).join('\n');
+  return { prompt, requiredText, width, height };
 }
 
 export interface GeneratedVariant {
@@ -270,7 +371,9 @@ export async function generateImages(
       return {
         data: await ctx.storage.get(key),
         mediaType: mediaTypeFor(key),
-        label: row.isPrimary ? 'primary product photo' : 'product photo',
+        // Neutral wording on purpose: calling a destination photo a "product
+        // photo" primes the model to hunt for a product that is not in it.
+        label: row.isPrimary ? 'primary reference photograph' : 'reference photograph',
       };
     }),
   );

@@ -1,3 +1,4 @@
+import type { Readable } from 'node:stream';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -29,13 +30,32 @@ export interface AssetUrlConfig {
   expiresInSeconds: number;
 }
 
+export interface AssetObject {
+  body: Readable;
+  contentType: string;
+  contentLength?: number;
+}
+
 export interface AssetUrls {
   sign(storageKey: string): Promise<string>;
   /** Signs many keys concurrently; signing is local crypto, not a network call. */
   signAll<T extends { storageKey: string }>(rows: T[]): Promise<Array<T & { url: string }>>;
+  /**
+   * Streams an object's bytes through this process.
+   *
+   * The presigned URLs above are the normal path and stay that way — this
+   * exists only for consumers that cannot use them, namely Instagram, which
+   * downloads the image from its own servers and so cannot reach a URL signed
+   * for a private LAN address.
+   */
+  read(storageKey: string): Promise<AssetObject>;
 }
 
 export function createAssetUrls(config: AssetUrlConfig): AssetUrls {
+  // Use publicEndpoint for signing URLs (what clients will access),
+  // fall back to internal endpoint if no public endpoint configured
+  const urlEndpoint = config.publicEndpoint || config.endpoint;
+
   const client = new S3Client({
     region: config.region,
     forcePathStyle: config.forcePathStyle,
@@ -43,10 +63,22 @@ export function createAssetUrls(config: AssetUrlConfig): AssetUrls {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
     },
-    ...(config.publicEndpoint ?? config.endpoint
-      ? { endpoint: config.publicEndpoint ?? config.endpoint }
-      : {}),
+    ...(urlEndpoint ? { endpoint: urlEndpoint } : {}),
   });
+
+  // Signing targets the public host, but fetching bytes is this process talking
+  // to storage directly, so it takes the internal route.
+  const readClient = config.endpoint === urlEndpoint
+    ? client
+    : new S3Client({
+        region: config.region,
+        forcePathStyle: config.forcePathStyle,
+        credentials: {
+          accessKeyId: config.accessKeyId,
+          secretAccessKey: config.secretAccessKey,
+        },
+        ...(config.endpoint ? { endpoint: config.endpoint } : {}),
+      });
 
   const sign = (storageKey: string): Promise<string> =>
     getSignedUrl(client, new GetObjectCommand({ Bucket: config.bucket, Key: storageKey }), {
@@ -57,6 +89,18 @@ export function createAssetUrls(config: AssetUrlConfig): AssetUrls {
     sign,
     async signAll(rows) {
       return Promise.all(rows.map(async (row) => ({ ...row, url: await sign(row.storageKey) })));
+    },
+    async read(storageKey) {
+      const object = await readClient.send(
+        new GetObjectCommand({ Bucket: config.bucket, Key: storageKey }),
+      );
+      if (!object.Body) throw new Error(`Object ${storageKey} has no body`);
+
+      return {
+        body: object.Body as Readable,
+        contentType: object.ContentType ?? 'application/octet-stream',
+        ...(object.ContentLength === undefined ? {} : { contentLength: object.ContentLength }),
+      };
     },
   };
 }

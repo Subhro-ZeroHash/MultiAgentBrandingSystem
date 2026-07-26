@@ -62,17 +62,20 @@ export async function runGeneration(
   };
 
   try {
+    // Copy runs first because the headline and CTA it writes are rendered onto
+    // the creative itself — the brief cannot be composed until they exist.
+    // It depends on nothing the later stages produce, so the move is safe.
+    await setStage('copy');
+    const copy = await generateCopy(stageCtx);
+
     await setStage('brief');
-    const brief = await composeBrief(stageCtx);
+    const brief = await composeBrief(stageCtx, copy[0]);
 
     await setStage('image');
     const images = await generateImages(stageCtx, brief);
 
     await setStage('qa');
     const checked = await qaImages(stageCtx, images, brief);
-
-    await setStage('copy');
-    const copy = await generateCopy(stageCtx);
 
     // One transaction: a job that reports `succeeded` must never be missing
     // half its output. Partial rows would surface in the UI as a generation

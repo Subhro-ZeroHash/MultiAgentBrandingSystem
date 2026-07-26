@@ -1,0 +1,1 @@
+ALTER TABLE "content"."social_accounts" ALTER COLUMN "page_id" DROP NOT NULL;
