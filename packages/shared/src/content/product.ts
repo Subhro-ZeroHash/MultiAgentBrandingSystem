@@ -19,6 +19,9 @@ export const productSchema = z.object({
   description: z.string().max(2000).nullable(),
   priceMinor: z.number().int().nonnegative().nullable(),
   currency: z.string().length(3).default('INR'),
+  /** Short, concrete claims ("Pure silk", "Handwoven") the brief and copy
+   *  stages can lean on directly instead of inferring them from `description`. */
+  sellingPoints: z.array(z.string().min(1).max(120)).max(10).default([]),
   images: z.array(productImageSchema).max(5),
   createdAt: z.coerce.date(),
 });
@@ -26,5 +29,5 @@ export type Product = z.infer<typeof productSchema>;
 
 export const createProductSchema = productSchema
   .omit({ id: true, images: true, createdAt: true })
-  .partial({ description: true, priceMinor: true, currency: true });
+  .partial({ description: true, priceMinor: true, currency: true, sellingPoints: true });
 export type CreateProductInput = z.infer<typeof createProductSchema>;

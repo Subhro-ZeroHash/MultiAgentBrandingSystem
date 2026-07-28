@@ -17,13 +17,6 @@ import {
  */
 export const core = pgSchema('core');
 
-export const toneOfVoice = core.enum('tone_of_voice', [
-  'friendly',
-  'premium',
-  'playful',
-  'traditional',
-]);
-
 export const users = core.table(
   'users',
   {
@@ -53,9 +46,24 @@ export const brands = core.table(
     logoUrl: text('logo_url'),
     /** Up to 3 hex colors, ordered primary -> accent. */
     colors: jsonb('colors').$type<string[]>().notNull().default([]),
-    toneOfVoice: toneOfVoice('tone_of_voice').notNull().default('friendly'),
+    /** Values constrained by `toneOfVoiceSchema` in @bmas/shared, not a DB enum
+     *  — a brand can hold more than one, e.g. ['elegant', 'premium']. */
+    tone: jsonb('tone').$type<string[]>().notNull().default(['friendly']),
     category: text('category'),
     audience: text('audience'),
+    /** City/region the business trades from, e.g. "Jaipur". Free text: brands
+     *  span too many locales for a fixed list to be worth maintaining. */
+    location: text('location'),
+    /** Languages the brand writes in, e.g. ['Hindi', 'English']. First is the
+     *  default when a generation request does not specify one. */
+    languages: jsonb('languages').$type<string[]>().notNull().default([]),
+    /** Social platforms this brand is active on. Informational context for
+     *  generation; a request's own `outputFormat` still decides the copy pack's
+     *  platform for that run. */
+    platforms: jsonb('platforms').$type<string[]>().notNull().default([]),
+    /** Subjects generation must never reference for this brand — enforced as a
+     *  hard constraint in the brief and copy prompts, not a suggestion. */
+    bannedTopics: jsonb('banned_topics').$type<string[]>().notNull().default([]),
     websiteUrl: text('website_url'),
     socialHandles: jsonb('social_handles').$type<Record<string, string>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

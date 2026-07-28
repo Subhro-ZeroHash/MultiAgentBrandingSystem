@@ -108,10 +108,16 @@ export class GeminiLlmAdapter implements LlmService {
     thoughtsTokenCount?: number;
     cachedContentTokenCount?: number;
   }) {
+    const cachedInputTokens = usage?.cachedContentTokenCount ?? 0;
     return {
-      inputTokens: usage?.promptTokenCount ?? 0,
+      // Unlike Anthropic (where `input_tokens` and `cache_read_input_tokens`
+      // are separate, additive counts), Gemini's `promptTokenCount` already
+      // includes the cached portion. `priceTokens` charges inputTokens and
+      // cachedInputTokens additively, so passing the raw total here would
+      // double-bill every cached token; subtract it out first.
+      inputTokens: Math.max(0, (usage?.promptTokenCount ?? 0) - cachedInputTokens),
       outputTokens: (usage?.candidatesTokenCount ?? 0) + (usage?.thoughtsTokenCount ?? 0),
-      cachedInputTokens: usage?.cachedContentTokenCount ?? 0,
+      cachedInputTokens,
     };
   }
 

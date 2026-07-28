@@ -38,8 +38,12 @@ export interface AssetObject {
 
 export interface AssetUrls {
   sign(storageKey: string): Promise<string>;
-  /** Signs many keys concurrently; signing is local crypto, not a network call. */
-  signAll<T extends { storageKey: string }>(rows: T[]): Promise<Array<T & { url: string }>>;
+  /** Signs many keys concurrently; signing is local crypto, not a network call.
+   *  A row carrying `thumbnailStorageKey` also gets a signed `thumbnailUrl`,
+   *  falling back to the full-size URL so a client never has to branch. */
+  signAll<T extends { storageKey: string; thumbnailStorageKey?: string | null }>(
+    rows: T[],
+  ): Promise<Array<T & { url: string; thumbnailUrl: string }>>;
   /**
    * Streams an object's bytes through this process.
    *
@@ -88,7 +92,17 @@ export function createAssetUrls(config: AssetUrlConfig): AssetUrls {
   return {
     sign,
     async signAll(rows) {
-      return Promise.all(rows.map(async (row) => ({ ...row, url: await sign(row.storageKey) })));
+      return Promise.all(
+        rows.map(async (row) => {
+          // Older assets predate thumbnailing and rows can carry null when it
+          // failed, so the full-size URL is the fallback rather than an error.
+          const [url, thumbnailUrl] = await Promise.all([
+            sign(row.storageKey),
+            sign(row.thumbnailStorageKey ?? row.storageKey),
+          ]);
+          return { ...row, url, thumbnailUrl };
+        }),
+      );
     },
     async read(storageKey) {
       const object = await readClient.send(

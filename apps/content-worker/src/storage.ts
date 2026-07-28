@@ -90,12 +90,24 @@ export function createStorage(config: StorageConfig): Storage {
 }
 
 /** Keys are grouped by brand then job so a brand's assets can be listed, and a
- *  failed job's output identified, with a prefix scan alone. */
+ *  failed job's output identified, with a prefix scan alone.
+ *
+ *  `round` separates a QA regeneration from the variant it replaces. Without it
+ *  the retry writes to the same key, destroying the original — which the job
+ *  still needs, because a regeneration that also fails falls back to it. */
 export function creativeKey(
   brandId: string,
   jobId: string,
   index: number,
   ext = 'png',
+  round = 0,
 ): string {
-  return `brands/${brandId}/generations/${jobId}/variant-${index}.${ext}`;
+  const suffix = round > 0 ? `-r${round}` : '';
+  return `brands/${brandId}/generations/${jobId}/variant-${index}${suffix}.${ext}`;
+}
+
+/** Derived from the full-size key so the pair is always adjacent in the bucket
+ *  and a thumbnail can never be orphaned from the variant it belongs to. */
+export function thumbnailKey(storageKey: string): string {
+  return `${storageKey.replace(/\.[a-z0-9]+$/i, '')}-thumb.jpg`;
 }

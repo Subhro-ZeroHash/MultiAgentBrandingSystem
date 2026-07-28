@@ -10,6 +10,7 @@ import { entityIdSchema } from './common.js';
 export const QUEUES = {
   contentGeneration: 'content-generation',
   contentEdit: 'content-edit',
+  scheduledPostPublish: 'scheduled-post-publish',
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
 } as const;
@@ -28,6 +29,14 @@ export const contentEditJobSchema = z.object({
   instruction: z.string(),
 });
 export type ContentEditJob = z.infer<typeof contentEditJobSchema>;
+
+/** Fired at a scheduled post's publish time. The processor re-reads the row's
+ *  current status rather than trusting anything captured at enqueue time — the
+ *  user may not have approved it, or may have cancelled the whole campaign. */
+export const scheduledPostPublishJobSchema = z.object({
+  scheduledPostId: entityIdSchema,
+});
+export type ScheduledPostPublishJob = z.infer<typeof scheduledPostPublishJobSchema>;
 
 /** One prompt against one engine. Fan-out happens at enqueue time so a single
  * slow engine can't hold up the rest of the sweep. */

@@ -1,12 +1,15 @@
-import { describeError } from '@bmas/ai';
-import { eq, schema } from '@bmas/db';
+import { describeError, isPermanentFailure } from '@bmas/ai';
+import { eq, schema, sql } from '@bmas/db';
+import { UnrecoverableError } from 'bullmq';
 import type { ContentGenerationJob, CreativeRequest } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
+import { onGenerationFailed, onGenerationSucceeded } from './scheduled-post-hooks.js';
 import {
   composeBrief,
   generateCopy,
   generateImages,
   qaImages,
+  regenerateFailures,
   type StageContext,
 } from './stages.js';
 
@@ -57,7 +60,11 @@ export async function runGeneration(
   const setStage = async (stage: string) => {
     await ctx.db
       .update(schema.generationJobs)
-      .set({ stage, status: 'running', startedAt: row.startedAt ?? new Date() })
+      .set({
+        stage,
+        status: 'running',
+        startedAt: sql`coalesce(${schema.generationJobs.startedAt}, now())`,
+      })
       .where(eq(schema.generationJobs.id, job.jobId));
   };
 
@@ -75,7 +82,10 @@ export async function runGeneration(
     const images = await generateImages(stageCtx, brief);
 
     await setStage('qa');
-    const checked = await qaImages(stageCtx, images, brief);
+    const readback = await qaImages(stageCtx, images, brief);
+    // FR-3.5: a failed readback earns one bounded retry rather than shipping a
+    // variant with misspelled text on it. The ceiling is configuration.
+    const checked = await regenerateFailures(stageCtx, brief, readback, ctx.qaRegenerationRounds);
 
     // One transaction: a job that reports `succeeded` must never be missing
     // half its output. Partial rows would surface in the UI as a generation
@@ -86,6 +96,7 @@ export async function runGeneration(
           checked.map((variant) => ({
             jobId: job.jobId,
             storageKey: variant.storageKey,
+            thumbnailStorageKey: variant.thumbnailStorageKey,
             width: variant.width,
             height: variant.height,
             provider: variant.provider,
@@ -130,19 +141,32 @@ export async function runGeneration(
         finishedAt: new Date(),
       })
       .where(eq(schema.generationJobs.id, job.jobId));
+
+    // No-op for an ordinary one-shot generation; only fires for jobs a
+    // scheduled campaign created, moving that post to 'pending_approval' and
+    // notifying the user it's ready to review.
+    await onGenerationSucceeded(ctx.db, job.jobId);
   } catch (error) {
+    // A failure that cannot succeed on a retry ends the job here, whatever
+    // attempts remain. Without this a quota-exhausted key re-ran the whole
+    // pipeline three times over ~30s of backoff, paying for every image the
+    // earlier stages regenerated before hitting the same wall.
+    const permanent = isPermanentFailure(error);
     const isFinalAttempt = attemptInfo.attempt >= attemptInfo.maxAttempts;
+    const terminal = permanent || isFinalAttempt;
     const message = describeError(error);
 
     console.error(
-      `[content:generation] job ${job.jobId}: attempt ${attemptInfo.attempt}/${attemptInfo.maxAttempts} failed — ${message}`,
+      `[content:generation] job ${job.jobId}: attempt ${attemptInfo.attempt}/${attemptInfo.maxAttempts} failed${
+        permanent ? ' — not retryable, giving up' : ''
+      } — ${message}`,
       error,
     );
 
     await ctx.db
       .update(schema.generationJobs)
       .set(
-        isFinalAttempt
+        terminal
           ? { status: 'failed', error: message, finishedAt: new Date() }
           : // Still retrying: keep the row `running` so the client keeps
             // polling, but record why in case this turns out to be the last
@@ -150,6 +174,22 @@ export async function runGeneration(
             { status: 'running', error: `${message} (retrying)` },
       )
       .where(eq(schema.generationJobs.id, job.jobId));
+
+    // Only on the word that's actually final — a job still mid-retry may yet
+    // succeed, and marking its scheduled post 'failed' early would surface a
+    // false alarm the next attempt then silently contradicts.
+    if (terminal) {
+      await onGenerationFailed(ctx.db, job.jobId, message);
+    }
+
+    if (permanent) {
+      // The one signal BullMQ honours to skip the remaining attempts. Its
+      // constructor takes only a message, so the cause is attached afterwards
+      // — the chain is what `describeError` needs to stay useful in the logs.
+      const stop = new UnrecoverableError(message);
+      stop.cause = error;
+      throw stop;
+    }
 
     throw error;
   }

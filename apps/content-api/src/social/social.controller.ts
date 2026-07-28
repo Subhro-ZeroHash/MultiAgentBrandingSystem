@@ -1,11 +1,6 @@
 import { Controller, Get, Post, Delete, Body, Param, Headers, BadRequestException } from '@nestjs/common';
 import { SocialService } from './social.service.js';
-import { loadEnv } from '../config/env.js';
-
-function getUserIdFromHeader(userId: string | undefined): string {
-  if (userId) return userId;
-  return loadEnv().DEV_OWNER_ID;
-}
+import { getUserIdFromHeader } from '../common/user-id.js';
 
 @Controller('social')
 export class SocialController {

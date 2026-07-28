@@ -1,5 +1,5 @@
 {
-  "extends": "@bmas/config/tsconfig/nest.json",
+  "extends": "../../packages/config/tsconfig/nest.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",

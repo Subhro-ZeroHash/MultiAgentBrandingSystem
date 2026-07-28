@@ -28,9 +28,23 @@ function signingKey(encryptionKey: string): Buffer {
   return createHmac('sha256', encryptionKey).update('asset-proxy-v1').digest();
 }
 
-function signature(assetId: string, expiresAt: number, encryptionKey: string): string {
+/**
+ * Renditions a link may ask for. `raw` serves the stored bytes; `ig` reshapes
+ * them to something Instagram will accept (see `instagram-image.ts`).
+ *
+ * Part of the signed material rather than a free query parameter, so a link
+ * authorises one rendition of one asset and nothing else.
+ */
+export type AssetVariant = 'raw' | 'ig';
+
+function signature(
+  assetId: string,
+  expiresAt: number,
+  variant: AssetVariant,
+  encryptionKey: string,
+): string {
   return createHmac('sha256', signingKey(encryptionKey))
-    .update(`${assetId}.${expiresAt}`)
+    .update(`${assetId}.${expiresAt}.${variant}`)
     .digest('hex');
 }
 
@@ -39,17 +53,27 @@ export interface AssetLink {
   expiresAt: number;
 }
 
-/** Builds the absolute, publicly-fetchable URL for one asset. */
+/**
+ * Builds the absolute, publicly-fetchable URL for one asset.
+ *
+ * The path is the web app's proxy route (`apps/web/src/app/api/asset/[assetId]`),
+ * not content-api's own `/api/assets/:id/raw` — deliberately, because the public
+ * origin in development is the tunnel fronting the web app, and content-api is
+ * bound to a private address Meta cannot reach. The proxy forwards the query
+ * string untouched, so the signature and variant survive the hop.
+ */
 export function buildAssetLink(
   baseUrl: string,
   assetId: string,
   encryptionKey: string,
-  ttlSeconds: number = ASSET_LINK_TTL_SECONDS,
+  options: { ttlSeconds?: number; variant?: AssetVariant } = {},
 ): AssetLink {
+  const { ttlSeconds = ASSET_LINK_TTL_SECONDS, variant = 'raw' } = options;
   const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
   const params = new URLSearchParams({
     exp: String(expiresAt),
-    sig: signature(assetId, expiresAt, encryptionKey),
+    sig: signature(assetId, expiresAt, variant, encryptionKey),
+    ...(variant === 'raw' ? {} : { v: variant }),
   });
 
   return {
@@ -65,13 +89,14 @@ export function verifyAssetLink(
   exp: string | undefined,
   sig: string | undefined,
   encryptionKey: string,
+  variant: AssetVariant = 'raw',
 ): VerifyResult {
   if (!exp || !sig) return { ok: false, reason: 'invalid' };
 
   const expiresAt = Number(exp);
   if (!Number.isFinite(expiresAt)) return { ok: false, reason: 'invalid' };
 
-  const expected = signature(assetId, expiresAt, encryptionKey);
+  const expected = signature(assetId, expiresAt, variant, encryptionKey);
   const provided = Buffer.from(sig, 'hex');
   const expectedBuffer = Buffer.from(expected, 'hex');
 

@@ -388,7 +388,12 @@ export class SocialService {
 
     if (!rows[0]) throw new NotFoundException('Asset not found');
 
-    return buildAssetLink(env.PUBLIC_ASSET_BASE_URL, assetId, env.ENCRYPTION_KEY).url;
+    // The `ig` rendition, not the stored bytes: a print format like poster_a4 is
+    // 2480x3508 (0.707), below Instagram's 4:5 floor, and Meta rejects it
+    // outright. The proxy letterboxes it into a legal shape on the way out.
+    return buildAssetLink(env.PUBLIC_ASSET_BASE_URL, assetId, env.ENCRYPTION_KEY, {
+      variant: 'ig',
+    }).url;
   }
 
   /**

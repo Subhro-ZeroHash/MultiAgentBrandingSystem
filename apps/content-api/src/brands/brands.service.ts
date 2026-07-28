@@ -47,9 +47,13 @@ export class BrandsService {
         ...(input.name ? { name: input.name } : {}),
         ...(input.logoUrl !== undefined ? { logoUrl: input.logoUrl } : {}),
         ...(input.colors ? { colors: input.colors } : {}),
-        ...(input.toneOfVoice ? { toneOfVoice: input.toneOfVoice } : {}),
+        ...(input.tone ? { tone: input.tone } : {}),
         ...(input.category !== undefined ? { category: input.category } : {}),
         ...(input.audience !== undefined ? { audience: input.audience } : {}),
+        ...(input.location !== undefined ? { location: input.location } : {}),
+        ...(input.languages ? { languages: input.languages } : {}),
+        ...(input.platforms ? { platforms: input.platforms } : {}),
+        ...(input.bannedTopics ? { bannedTopics: input.bannedTopics } : {}),
         ...(input.websiteUrl !== undefined ? { websiteUrl: input.websiteUrl } : {}),
         ...(input.socialHandles ? { socialHandles: input.socialHandles } : {}),
         updatedAt: new Date(),
@@ -69,9 +73,13 @@ export class BrandsService {
         name: input.name,
         logoUrl: input.logoUrl ?? null,
         colors: input.colors,
-        toneOfVoice: input.toneOfVoice,
+        tone: input.tone,
         category: input.category ?? null,
         audience: input.audience ?? null,
+        location: input.location ?? null,
+        languages: input.languages,
+        platforms: input.platforms,
+        bannedTopics: input.bannedTopics,
         websiteUrl: input.websiteUrl ?? null,
         socialHandles: input.socialHandles ?? {},
       })
@@ -86,6 +94,10 @@ export class BrandsService {
   }
 
   async createProduct(input: CreateProductInput) {
+    // Checked rather than left to the foreign key: a bad brandId would surface
+    // as a raw constraint violation and a 500, when it is the caller's mistake.
+    await this.findOne(input.brandId);
+
     const [product] = await this.db
       .insert(schema.products)
       .values({
@@ -93,6 +105,7 @@ export class BrandsService {
         name: input.name,
         description: input.description ?? null,
         priceMinor: input.priceMinor ?? null,
+        sellingPoints: input.sellingPoints,
         ...(input.currency ? { currency: input.currency } : {}),
       })
       .returning();

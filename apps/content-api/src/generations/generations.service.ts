@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { desc, eq, inArray, schema, type Database } from '@bmas/db';
 import { QUEUES, type CreativeRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
@@ -17,8 +17,13 @@ export class GenerationsService {
    * Accepts a request, persists it, and hands off to the worker. Returns
    * immediately — generation takes up to two minutes, so the client polls
    * `findOne` (or subscribes to progress) rather than blocking on the response.
+   *
+   * `delayMs` lets a caller queue the work for later without changing when the
+   * job appears in the database — a scheduled campaign inserts the row (and
+   * lets the client see it as 'queued') immediately, but doesn't want the
+   * worker to actually start generating hours before the post is due.
    */
-  async enqueue(request: CreativeRequest, idempotencyKey: string) {
+  async enqueue(request: CreativeRequest, idempotencyKey: string, opts: { delayMs?: number } = {}) {
     const existing = await this.db
       .select()
       .from(schema.generationJobs)
@@ -27,6 +32,23 @@ export class GenerationsService {
 
     // A retried request must not double-charge credits or double-call a provider.
     if (existing[0]) return existing[0];
+
+    // Validated here rather than left to the foreign keys. A bad id would
+    // otherwise surface as a constraint violation and a 500, and a product
+    // belonging to another brand would enqueue happily and fail deep in the
+    // worker, minutes later, after the client has already been told 'queued'.
+    const [product] = await this.db
+      .select({ brandId: schema.products.brandId })
+      .from(schema.products)
+      .where(eq(schema.products.id, request.productId))
+      .limit(1);
+
+    if (!product) throw new NotFoundException(`Product ${request.productId} not found`);
+    if (product.brandId !== request.brandId) {
+      throw new BadRequestException(
+        `Product ${request.productId} does not belong to brand ${request.brandId}`,
+      );
+    }
 
     const [job] = await this.db
       .insert(schema.generationJobs)
@@ -53,6 +75,7 @@ export class GenerationsService {
           backoff: { type: 'exponential', delay: 10_000 },
           removeOnComplete: 1_000,
           removeOnFail: 5_000,
+          ...(opts.delayMs ? { delay: opts.delayMs } : {}),
         },
       );
     } catch (error) {
@@ -119,6 +142,7 @@ export class GenerationsService {
       .select({
         jobId: schema.creativeAssets.jobId,
         storageKey: schema.creativeAssets.storageKey,
+        thumbnailStorageKey: schema.creativeAssets.thumbnailStorageKey,
       })
       .from(schema.creativeAssets)
       .where(inArray(schema.creativeAssets.jobId, jobs.map((job) => job.id)))
@@ -126,7 +150,11 @@ export class GenerationsService {
 
     const thumbnailByJob = new Map<string, string>();
     for (const asset of assets) {
-      if (!thumbnailByJob.has(asset.jobId)) thumbnailByJob.set(asset.jobId, asset.storageKey);
+      // The real thumbnail when one exists; assets generated before thumbnailing
+      // fall back to the full-size key so the grid still renders.
+      if (!thumbnailByJob.has(asset.jobId)) {
+        thumbnailByJob.set(asset.jobId, asset.thumbnailStorageKey ?? asset.storageKey);
+      }
     }
 
     return Promise.all(

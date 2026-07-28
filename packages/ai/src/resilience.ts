@@ -48,8 +48,12 @@ function statusOf(error: unknown): number | undefined {
 
     const e = current as { status?: unknown; code?: unknown; cause?: unknown };
     if (typeof e.status === 'number') return e.status;
-    // A string `code` is a Node errno (ECONNRESET), not an HTTP status.
-    if (typeof e.code === 'number') return e.code;
+    // A string `code` is a Node errno (ECONNRESET), not an HTTP status. A
+    // numeric one usually is a status — but not always: DOMException carries a
+    // legacy `code` from a small enum (an abort is 20), and reading that as a
+    // status made every client-side timeout look like an unrecognised, and so
+    // permanent, failure. Requiring the HTTP range keeps those out.
+    if (typeof e.code === 'number' && e.code >= 100 && e.code <= 599) return e.code;
     current = e.cause;
   }
   return undefined;
@@ -70,13 +74,37 @@ function messageOf(error: unknown): string {
  * a flaky network for three minutes before surfacing.
  */
 export function isQuotaExhausted(error: unknown): boolean {
-  return /limit:\s*0\b/.test(messageOf(error));
+  // The zero must stand alone. `\b` alone also matched `limit: 0.5` and
+  // `limit: 0.016666` — fractional per-second limits Google really does report
+  // — reading a rate limit that clears in a second as a dead quota. Since a
+  // permanent verdict now abandons the job outright, that mistake costs a
+  // generation rather than a few wasted seconds.
+  return /limit:\s*0(?![\d.])/.test(messageOf(error));
+}
+
+/**
+ * A request the client gave up on rather than one the provider refused.
+ *
+ * The SDK enforces its own timeout with an AbortController, so a slow provider
+ * surfaces as `DOMException: This operation was aborted`, whose name and
+ * message look nothing like the socket errors below. Left unrecognised it fell
+ * through to "not retryable" and abandoned the job on the first attempt.
+ *
+ * Retrying a deliberate cancellation would be wrong, but that case never
+ * reaches here: `withRetry` checks its own `signal` before every retry.
+ */
+function isAbort(error: unknown): boolean {
+  const name = (error as { name?: unknown })?.name;
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  return /\bthis operation was aborted\b|\baborted\b.*\(20\)/i.test(messageOf(error));
 }
 
 export function isRetryable(error: unknown): boolean {
   // An adapter that has already classified the failure wins — it knows more
   // about its provider than this generic inspection does.
   if (error instanceof ProviderError) return error.retryable;
+
+  if (isAbort(error)) return true;
 
   const status = statusOf(error);
   if (status === 429) return !isQuotaExhausted(error);
@@ -89,6 +117,40 @@ export function isRetryable(error: unknown): boolean {
   return /ECONNRESET|ETIMEDOUT|ECONNABORTED|EPIPE|EAI_AGAIN|ENOTFOUND|UND_ERR_|socket hang up|terminated|other side closed|fetch failed/i.test(
     messageOf(error),
   );
+}
+
+/** Statuses where the request itself is the problem, so sending it again sends
+ *  the same wrong request. 429 is judged separately — only a zero quota is
+ *  permanent, a burst limit is not. */
+const PERMANENT_STATUS = new Set([400, 401, 403, 404, 422]);
+
+/**
+ * Whether re-running the work could ever succeed — the question BullMQ needs
+ * answered before spending another of the job's attempts.
+ *
+ * Deliberately not `!isRetryable(error)`. That function answers "is this worth
+ * another attempt right now" and returns false for anything it does not
+ * recognise, which would promote every unfamiliar transient — a database blip
+ * mid-job, a socket error whose code is not in the list — into a hard failure.
+ * This one answers the narrower "do we *know* this is permanent", so unknown
+ * failures keep their retries and only recognised dead ends give them up.
+ *
+ * The asymmetry is the point: a wrong "permanent" costs a job that would have
+ * succeeded, while a wrong "transient" costs one wasted retry.
+ */
+export function isPermanentFailure(error: unknown): boolean {
+  // The adapter wrapped this provider call and already refused to retry it
+  // internally. Its verdict is better informed than the generic inspection
+  // below, which only sees whatever survived the wrapping.
+  if (error instanceof ProviderError) return !error.retryable;
+
+  // Reached when a raw provider error escapes without an adapter around it.
+  if (isQuotaExhausted(error)) return true;
+
+  const status = statusOf(error);
+  if (status === undefined) return false;
+  if (status === 429) return isQuotaExhausted(error);
+  return PERMANENT_STATUS.has(status);
 }
 
 /**

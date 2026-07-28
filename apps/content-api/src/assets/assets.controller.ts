@@ -4,8 +4,10 @@ import { eq, schema, type Database } from '@bmas/db';
 import { Inject } from '@nestjs/common';
 import { DATABASE, ASSET_URLS } from '../core/core.module.js';
 import type { AssetUrls } from '../core/asset-urls.js';
+import sharp from 'sharp';
 import { loadEnv } from '../config/env.js';
-import { verifyAssetLink } from './asset-proxy.js';
+import { verifyAssetLink, type AssetVariant } from './asset-proxy.js';
+import { instagramCanvas, needsInstagramFit } from './instagram-image.js';
 
 /**
  * Serves asset bytes to callers that cannot use a presigned URL — in practice
@@ -27,6 +29,7 @@ export class AssetsController {
     @Param('assetId') assetId: string,
     @Query('exp') exp: string | undefined,
     @Query('sig') sig: string | undefined,
+    @Query('v') v: string | undefined,
     @Res() res: Response,
   ): Promise<void> {
     const { ENCRYPTION_KEY } = loadEnv();
@@ -34,7 +37,10 @@ export class AssetsController {
       throw new ForbiddenException('Asset links are unavailable: ENCRYPTION_KEY is not configured.');
     }
 
-    const verdict = verifyAssetLink(assetId, exp, sig, ENCRYPTION_KEY);
+    const variant: AssetVariant = v === 'ig' ? 'ig' : 'raw';
+    // Verified against the requested variant, so a link cannot be edited into
+    // asking for a rendition it was not issued for.
+    const verdict = verifyAssetLink(assetId, exp, sig, ENCRYPTION_KEY, variant);
     if (!verdict.ok) {
       if (verdict.reason === 'expired') {
         throw new GoneException('This asset link has expired.');
@@ -53,14 +59,49 @@ export class AssetsController {
 
     const object = await this.assetUrls.read(storageKey);
 
-    res.setHeader('Content-Type', object.contentType);
-    if (object.contentLength !== undefined) {
-      res.setHeader('Content-Length', String(object.contentLength));
-    }
     // The link already carries its own expiry; caching past it would serve
     // bytes the signature no longer authorises.
     res.setHeader('Cache-Control', 'private, max-age=60');
 
+    if (variant === 'ig') {
+      // Buffered rather than streamed: the fit depends on the source
+      // dimensions, which are only known once the metadata has been read.
+      const chunks: Buffer[] = [];
+      for await (const chunk of object.body) chunks.push(chunk as Buffer);
+      const source = Buffer.concat(chunks);
+
+      const { width = 0, height = 0 } = await sharp(source).metadata();
+      if (!needsInstagramFit(width, height)) {
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.end(await sharp(source).jpeg({ quality: 90 }).toBuffer());
+        return;
+      }
+
+      const fit = instagramCanvas(width, height);
+      const rendered = await sharp(source)
+        .resize(fit.imageWidth, fit.imageHeight, { fit: 'fill' })
+        .extend({
+          top: Math.floor((fit.canvasHeight - fit.imageHeight) / 2),
+          bottom: Math.ceil((fit.canvasHeight - fit.imageHeight) / 2),
+          left: Math.floor((fit.canvasWidth - fit.imageWidth) / 2),
+          right: Math.ceil((fit.canvasWidth - fit.imageWidth) / 2),
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        })
+        // Instagram takes JPEG only, and flattening drops any alpha the source
+        // carried, which would otherwise render as black bars.
+        .flatten({ background: { r: 255, g: 255, b: 255 } })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.end(rendered);
+      return;
+    }
+
+    res.setHeader('Content-Type', object.contentType);
+    if (object.contentLength !== undefined) {
+      res.setHeader('Content-Length', String(object.contentLength));
+    }
     object.body.pipe(res);
   }
 }

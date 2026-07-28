@@ -10,6 +10,7 @@ import { loadEnv } from '../config/env.js';
 export const DATABASE = Symbol('DATABASE');
 export const AI_REGISTRY = Symbol('AI_REGISTRY');
 export const GENERATION_QUEUE = Symbol('GENERATION_QUEUE');
+export const SCHEDULED_POST_PUBLISH_QUEUE = Symbol('SCHEDULED_POST_PUBLISH_QUEUE');
 export const ASSET_URLS = Symbol('ASSET_URLS');
 export const OBJECT_STORE = Symbol('OBJECT_STORE');
 
@@ -64,16 +65,33 @@ function redisConnection() {
       provide: GENERATION_QUEUE,
       useFactory: () => new Queue(QUEUES.contentGeneration, { connection: redisConnection() }),
     },
+    {
+      provide: SCHEDULED_POST_PUBLISH_QUEUE,
+      useFactory: () =>
+        new Queue(QUEUES.scheduledPostPublish, { connection: redisConnection() }),
+    },
   ],
-  exports: [DATABASE, AI_REGISTRY, GENERATION_QUEUE, ASSET_URLS, OBJECT_STORE],
+  exports: [
+    DATABASE,
+    AI_REGISTRY,
+    GENERATION_QUEUE,
+    SCHEDULED_POST_PUBLISH_QUEUE,
+    ASSET_URLS,
+    OBJECT_STORE,
+  ],
 })
 export class CoreModule implements OnApplicationShutdown {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
+    @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly scheduledPostPublishQueue: Queue,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
-    await Promise.allSettled([closeDatabase(this.db), this.generationQueue.close()]);
+    await Promise.allSettled([
+      closeDatabase(this.db),
+      this.generationQueue.close(),
+      this.scheduledPostPublishQueue.close(),
+    ]);
   }
 }

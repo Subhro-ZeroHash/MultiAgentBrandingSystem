@@ -1,9 +1,10 @@
 import { describeError } from '@bmas/ai';
 import { closeDatabase } from '@bmas/db';
-import { QUEUES, contentGenerationJobSchema } from '@bmas/shared';
-import { Worker } from 'bullmq';
+import { QUEUES, contentGenerationJobSchema, scheduledPostPublishJobSchema } from '@bmas/shared';
+import { UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
 import { runGeneration } from './pipeline/generate.js';
+import { runScheduledPostPublish } from './pipeline/scheduled-post-publish.js';
 
 const ctx = createContext();
 
@@ -29,10 +30,30 @@ const generationWorker = new Worker(
 generationWorker.on('failed', (job, error) => {
   const attempt = job?.attemptsMade ?? 0;
   const max = job?.opts.attempts ?? 1;
-  const terminal = attempt >= max ? ' (final)' : ` — retrying, ${max - attempt} left`;
+  // An UnrecoverableError consumes no further attempts however many remain, so
+  // reporting the arithmetic remainder would promise retries that never come.
+  const abandoned = error instanceof UnrecoverableError || error?.name === 'UnrecoverableError';
+  const outcome = abandoned
+    ? ' (final — not retryable)'
+    : attempt >= max
+      ? ' (final)'
+      : ` — retrying, ${max - attempt} left`;
   console.error(
-    `[content:generation] job ${job?.id} attempt ${attempt}/${max} failed${terminal}: ${describeError(error)}`,
+    `[content:generation] job ${job?.id} attempt ${attempt}/${max} failed${outcome}: ${describeError(error)}`,
   );
+});
+
+// Fires once per scheduled post's publish time — a single check-and-post that
+// needs no AI/storage context, so concurrency is generous relative to the
+// generation worker above.
+const scheduledPostPublishWorker = new Worker(
+  QUEUES.scheduledPostPublish,
+  async (job) => runScheduledPostPublish(ctx, scheduledPostPublishJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 5 },
+);
+
+scheduledPostPublishWorker.on('failed', (job, error) => {
+  console.error(`[scheduled-post:publish] job ${job?.id} failed: ${describeError(error)}`);
 });
 
 console.warn(`content-worker started (concurrency ${ctx.concurrency})`);
@@ -58,7 +79,7 @@ async function shutdown(signal: string): Promise<void> {
 
   try {
     // Waits for in-flight generations so a deploy never abandons a paid job.
-    await generationWorker.close();
+    await Promise.all([generationWorker.close(), scheduledPostPublishWorker.close()]);
     await closeDatabase(ctx.db);
   } catch (error) {
     console.error(`content-worker shutdown error: ${describeError(error)}`);

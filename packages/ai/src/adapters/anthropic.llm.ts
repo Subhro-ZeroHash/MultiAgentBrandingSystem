@@ -123,8 +123,23 @@ export class AnthropicLlmAdapter implements LlmService {
       });
     }
 
+    // `max_tokens` can cut the response short mid-JSON, same failure mode the
+    // Gemini adapter guards against — a rerun usually fits, so this must be
+    // classified retryable rather than surfacing as a bare SyntaxError, which
+    // `isRetryable` does not recognise and would not retry.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new ProviderError(
+        `anthropic.json:${req.role}: response was not valid JSON — ${raw.slice(0, 200)}`,
+        'anthropic',
+        { retryable: true, cause: error },
+      );
+    }
+
     return {
-      value: req.parse(JSON.parse(raw)),
+      value: req.parse(parsed),
       cost: buildCostEvent({
         provider: 'anthropic',
         model,

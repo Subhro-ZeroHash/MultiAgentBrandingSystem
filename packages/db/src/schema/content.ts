@@ -68,6 +68,9 @@ export const products = content.table(
     /** Minor units (paise/cents) to avoid float money. */
     priceMinor: integer('price_minor'),
     currency: text('currency').notNull().default('INR'),
+    /** Short, concrete claims the brief and copy stages can lean on directly
+     *  ("Pure silk", "Handwoven") instead of inferring them from `description`. */
+    sellingPoints: jsonb('selling_points').$type<string[]>().notNull().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('products_brand_idx').on(t.brandId)],
@@ -261,6 +264,136 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
   owner: one(users, { fields: [socialAccounts.ownerId], references: [users.id] }),
 }));
 
+export const scheduledCampaignStatus = content.enum('scheduled_campaign_status', [
+  'active',
+  'completed',
+  'cancelled',
+]);
+
+export const scheduledPostStatus = content.enum('scheduled_post_status', [
+  'pending_generation',
+  'pending_approval',
+  'approved',
+  'rejected',
+  'posted',
+  'failed',
+  'expired',
+]);
+
+/** One "give me source material once, post N times over M days" request. Each
+ *  planned post is a row in `scheduled_posts`, generated ahead of its slot and
+ *  gated on user approval before it can publish. */
+export const scheduledCampaigns = content.table(
+  'scheduled_campaigns',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    productId: text('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    campaignType: campaignType('campaign_type').notNull(),
+    styleTemplate: styleTemplate('style_template').notNull(),
+    outputFormat: outputFormat('output_format').notNull(),
+    totalDays: integer('total_days').notNull(),
+    postsPerDay: integer('posts_per_day').notNull(),
+    startAt: timestamp('start_at', { withTimezone: true }).notNull(),
+    status: scheduledCampaignStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('scheduled_campaigns_brand_created_idx').on(t.brandId, t.createdAt)],
+);
+
+export const scheduledPosts = content.table(
+  'scheduled_posts',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    campaignId: text('campaign_id')
+      .notNull()
+      .references(() => scheduledCampaigns.id, { onDelete: 'cascade' }),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    productId: text('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
+    status: scheduledPostStatus('status').notNull().default('pending_generation'),
+    generationJobId: text('generation_job_id').references(() => generationJobs.id, {
+      onDelete: 'set null',
+    }),
+    /** The variant picked for this slot — defaulted when generation completes,
+     *  overridable by the user at approval time. */
+    selectedAssetId: text('selected_asset_id').references(() => creativeAssets.id, {
+      onDelete: 'set null',
+    }),
+    accountId: text('account_id').references(() => socialAccounts.id, { onDelete: 'set null' }),
+    caption: text('caption'),
+    /** Meta's post id, once published. */
+    igMediaId: text('ig_media_id'),
+    error: text('error'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('scheduled_posts_brand_scheduled_idx').on(t.brandId, t.scheduledFor),
+    index('scheduled_posts_campaign_idx').on(t.campaignId),
+    index('scheduled_posts_status_idx').on(t.status),
+  ],
+);
+
+export const scheduledCampaignsRelations = relations(scheduledCampaigns, ({ one, many }) => ({
+  brand: one(brands, { fields: [scheduledCampaigns.brandId], references: [brands.id] }),
+  product: one(products, { fields: [scheduledCampaigns.productId], references: [products.id] }),
+  posts: many(scheduledPosts),
+}));
+
+export const scheduledPostsRelations = relations(scheduledPosts, ({ one }) => ({
+  campaign: one(scheduledCampaigns, {
+    fields: [scheduledPosts.campaignId],
+    references: [scheduledCampaigns.id],
+  }),
+  generationJob: one(generationJobs, {
+    fields: [scheduledPosts.generationJobId],
+    references: [generationJobs.id],
+  }),
+  selectedAsset: one(creativeAssets, {
+    fields: [scheduledPosts.selectedAssetId],
+    references: [creativeAssets.id],
+  }),
+  account: one(socialAccounts, {
+    fields: [scheduledPosts.accountId],
+    references: [socialAccounts.id],
+  }),
+}));
+
+/** One Expo push token per device registration; upserted so re-registering the
+ *  same device (reinstall, token refresh) doesn't accumulate duplicates. */
+export const pushTokens = content.table(
+  'push_tokens',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expoPushToken: text('expo_push_token').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('push_tokens_owner_idx').on(t.ownerId),
+    uniqueIndex('push_tokens_token_idx').on(t.expoPushToken),
+  ],
+);
+
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type NewSocialAccount = typeof socialAccounts.$inferInsert;
 export type Product = typeof products.$inferSelect;
@@ -269,3 +402,9 @@ export type GenerationJob = typeof generationJobs.$inferSelect;
 export type NewGenerationJob = typeof generationJobs.$inferInsert;
 export type CreativeAsset = typeof creativeAssets.$inferSelect;
 export type CopyPackRow = typeof copyPacks.$inferSelect;
+export type ScheduledCampaign = typeof scheduledCampaigns.$inferSelect;
+export type NewScheduledCampaign = typeof scheduledCampaigns.$inferInsert;
+export type ScheduledPost = typeof scheduledPosts.$inferSelect;
+export type NewScheduledPost = typeof scheduledPosts.$inferInsert;
+export type PushToken = typeof pushTokens.$inferSelect;
+export type NewPushToken = typeof pushTokens.$inferInsert;

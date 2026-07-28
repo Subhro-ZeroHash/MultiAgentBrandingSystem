@@ -42,8 +42,13 @@ rather than guessing from training data.
 ## Verifying a change
 
 ```bash
-pnpm typecheck && pnpm lint && pnpm build
+pnpm typecheck && pnpm lint && pnpm build && pnpm test
 ```
 
-There is no meaningful test suite yet; if you add logic worth protecting, add
-tests alongside it rather than assuming coverage exists.
+Tests are Vitest, named `*.test.ts` beside the code they cover, and extend the
+shared base at `@bmas/config/vitest/node`. Coverage is deliberate rather than
+broad: the pure functions where a silent regression is expensive (failure
+classification, aspect-ratio mapping) and `composeBrief`, which is driven
+through a fake `db` so it stays a unit test. Anything needing a real Postgres,
+Redis, or provider does not belong in this suite. Add tests alongside new logic
+worth protecting rather than assuming coverage exists.

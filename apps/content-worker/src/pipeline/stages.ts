@@ -14,7 +14,8 @@ import {
   type ToneOfVoice,
 } from '@bmas/shared';
 import { z } from 'zod';
-import { creativeKey, type Storage } from '../storage.js';
+import sharp from 'sharp';
+import { creativeKey, thumbnailKey, type Storage } from '../storage.js';
 
 /**
  * The four pipeline stages. Each is a pure-ish function of (registry, input) so
@@ -134,7 +135,18 @@ const TONE_DIRECTION: Record<ToneOfVoice, string> = {
   premium: 'refined, understated, premium',
   playful: 'lively and playful',
   traditional: 'classic and traditional',
+  elegant: 'graceful and refined',
 };
+
+/** `brand.tone` can hold more than one register at once (Task 7); this blends
+ *  them into one direction. Falls back to `friendly` rather than emitting
+ *  "undefined" if a row somehow holds a value outside the known set. */
+function toneDirection(tone: readonly string[]): string {
+  const known = tone
+    .map((value) => TONE_DIRECTION[value as ToneOfVoice])
+    .filter((direction): direction is string => Boolean(direction));
+  return known.length ? known.join(', ') : TONE_DIRECTION.friendly;
+}
 
 const CAMPAIGN_INTENT: Record<CampaignType, string> = {
   offer: 'a limited-time promotional offer',
@@ -201,6 +213,9 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
     '',
     '**Subject — this governs everything below:**',
     `The advertisement is for: ${product.name}${description ? ` — ${description}` : ''}.`,
+    product.sellingPoints.length
+      ? `Its key selling points: ${product.sellingPoints.join(', ')}. Make these visually evident where the composition allows (e.g. a material or craft claim should be legible in the surface detail) rather than stating them as text.`
+      : null,
     `Campaign type: ${CAMPAIGN_INTENT[request.campaignType]}.`,
     `${product.name} is the single subject of the image. Every element in the frame must exist to sell it.`,
     // A product can be a service or an experience ("Uttarakhand trip"), which
@@ -218,7 +233,8 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
     brand.category
       ? `The brand's usual trade is "${brand.category}". Use this only to judge tone. Do NOT place its merchandise, stock, or typical subject matter in this image unless ${product.name} genuinely is one of those things.`
       : null,
-    `Brand voice: ${TONE_DIRECTION[brand.toneOfVoice]}.`,
+    brand.audience ? `Who this is for: ${brand.audience}. Let this inform styling, not the subject.` : null,
+    `Brand voice: ${toneDirection(brand.tone)}.`,
     brand.colors.length
       ? `Work the brand colours (${brand.colors.join(', ')}) into the palette as accents. Do not let them dictate what appears in the scene.`
       : null,
@@ -238,6 +254,11 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
     'Do not add unrelated products, extra units, or filler props that do not serve the subject.',
     'Do not include people unless the art direction above calls for a person; when a person does appear, hands, faces and proportions must be anatomically correct.',
     'No watermarks, no borders, no UI overlays, no collage or split-screen layouts.',
+    // Hard constraint, not styling — a brand sets this to keep specific subjects
+    // out of its advertising entirely, unconditionally.
+    brand.bannedTopics.length
+      ? `Do not depict or reference, in any form: ${brand.bannedTopics.join(', ')}. This overrides every other instruction above if they would conflict.`
+      : null,
     '',
     ...(hasReference
       ? [
@@ -301,18 +322,39 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
   return { prompt, requiredText, width, height };
 }
 
+/** What the image adapter conditions on: the product's reference photographs. */
+interface ImageReference {
+  data: Buffer;
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  label: string;
+}
+
 export interface GeneratedVariant {
   storageKey: string;
+  /** Null when thumbnailing failed; callers fall back to the full-size asset. */
+  thumbnailStorageKey: string | null;
   width: number;
   height: number;
   provider: string;
   model: string;
 }
 
-/** Generation is the slow stage — the PRD budgets up to two minutes — but a
- *  provider that accepts the connection and stalls must not hold a worker slot
- *  forever. Concurrency is 2, so two stalled calls would halt the queue. */
-const IMAGE_TIMEOUT_MS = 180_000;
+/** Generation is the slow stage, but a provider that accepts the connection and
+ *  stalls must not hold a worker slot forever. Concurrency is 2, so two stalled
+ *  calls would halt the queue.
+ *
+ *  This is the outer backstop: the adapter enforces a tighter per-request
+ *  budget by tier and fails cleanly, so reaching this value means the call hung
+ *  in a way the SDK's own timeout did not catch. It therefore has to clear the
+ *  slowest legitimate case by a margin — three concurrent 4K variants for
+ *  poster_a4, measured at 232–257s. The old 180s sat below that, so raising the
+ *  adapter's ceiling alone would only have moved where A4 died. */
+const IMAGE_TIMEOUT_MS = 360_000;
+
+/** Long edge of the gallery thumbnail. The grid renders at roughly 160pt on a
+ *  3x phone screen, so 480px covers it without shipping a megabyte per tile. */
+const THUMBNAIL_LONG_EDGE = 480;
+const THUMBNAIL_QUALITY = 78;
 
 const MEDIA_TYPE_BY_EXT: Record<string, 'image/png' | 'image/jpeg' | 'image/webp'> = {
   png: 'image/png',
@@ -357,16 +399,36 @@ export async function generateImages(
   ctx: StageContext,
   brief: Brief,
 ): Promise<GeneratedVariant[]> {
+  const references = await loadReferences(ctx);
+
+  if (references.length === 0) {
+    // FR-3.1 wants the customer's real product in the frame. Products can be
+    // created without photos, so this is a quality warning, not an error.
+    console.warn(
+      `[content:image] job ${ctx.jobId}: no product images; generating without visual conditioning`,
+    );
+  }
+
+  return renderVariants(ctx, brief, references, ctx.request.variantCount, (index, ext) =>
+    creativeKey(ctx.brand.id, ctx.jobId, index + 1, ext),
+  );
+}
+
+/**
+ * Loads the product's reference photos once so a regeneration conditions on
+ * exactly what the first pass did.
+ */
+async function loadReferences(ctx: StageContext): Promise<ImageReference[]> {
   const rows = await ctx.db
     .select()
     .from(schema.productImages)
     .where(eq(schema.productImages.productId, ctx.request.productId));
 
-  // Prefer the background-removed variant when the asset-prep step has run
-  // (FR-3.6): a cleaned cut-out conditions the model far better than a photo
-  // with a busy background competing for attention.
-  const references = await Promise.all(
+  return Promise.all(
     rows.map(async (row) => {
+      // Prefer the background-removed variant when the asset-prep step has run
+      // (FR-3.6): a cleaned cut-out conditions the model far better than a
+      // photo with a busy background competing for attention.
       const key = row.cleanedStorageKey ?? row.storageKey;
       return {
         data: await ctx.storage.get(key),
@@ -377,16 +439,20 @@ export async function generateImages(
       };
     }),
   );
+}
 
-  if (references.length === 0) {
-    // FR-3.1 wants the customer's real product in the frame. Nothing writes
-    // content.product_images yet — there is no upload route — so this is
-    // expected today and must not block the pipeline.
-    console.warn(
-      `[content:image] job ${ctx.jobId}: no product images; generating without visual conditioning`,
-    );
-  }
-
+/**
+ * One provider call plus the storage writes it implies. Shared by the first
+ * pass and by QA regeneration so both produce identically-shaped variants —
+ * including thumbnails, which a regenerated variant would otherwise lack.
+ */
+async function renderVariants(
+  ctx: StageContext,
+  brief: Brief,
+  references: ImageReference[],
+  count: number,
+  keyFor: (index: number, ext: 'jpg' | 'png') => string,
+): Promise<GeneratedVariant[]> {
   const generator = ctx.ai.imageGenerator();
 
   const { value: images, cost } = await withRetry(
@@ -398,7 +464,7 @@ export async function generateImages(
             references,
             width: brief.width,
             height: brief.height,
-            count: ctx.request.variantCount,
+            count,
             requiredText: brief.requiredText,
             brandColors: ctx.brand.colors,
           },
@@ -419,15 +485,12 @@ export async function generateImages(
 
   return Promise.all(
     images.map(async (image, index) => {
-      const key = creativeKey(
-        ctx.brand.id,
-        ctx.jobId,
-        index + 1,
-        image.mediaType === 'image/jpeg' ? 'jpg' : 'png',
-      );
+      const key = keyFor(index, image.mediaType === 'image/jpeg' ? 'jpg' : 'png');
       await ctx.storage.put(key, image.data, image.mediaType);
+
       return {
         storageKey: key,
+        thumbnailStorageKey: await writeThumbnail(ctx, key, image.data),
         width: image.width,
         height: image.height,
         provider: generator.provider,
@@ -435,6 +498,43 @@ export async function generateImages(
       };
     }),
   );
+}
+
+/**
+ * Writes a small JPEG beside the full-size variant for the gallery grid.
+ *
+ * Always JPEG regardless of what the model returned: these are photographs, and
+ * a PNG thumbnail of one is several times the size for no visible gain.
+ *
+ * Never fatal. A thumbnail is a loading optimisation, and failing the whole
+ * generation over one would throw away images the customer has been charged
+ * for. Callers fall back to the full-size asset when this returns null.
+ */
+async function writeThumbnail(
+  ctx: StageContext,
+  storageKey: string,
+  data: Buffer,
+): Promise<string | null> {
+  try {
+    const key = thumbnailKey(storageKey);
+    const body = await sharp(data)
+      // `inside` preserves the aspect ratio, so a story and a square both come
+      // back correctly shaped; `withoutEnlargement` avoids upscaling a small one.
+      .resize(THUMBNAIL_LONG_EDGE, THUMBNAIL_LONG_EDGE, {
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: THUMBNAIL_QUALITY })
+      .toBuffer();
+
+    await ctx.storage.put(key, body, 'image/jpeg');
+    return key;
+  } catch (error) {
+    console.warn(
+      `[content:image] job ${ctx.jobId}: thumbnail failed for ${storageKey} — ${describeError(error)}`,
+    );
+    return null;
+  }
 }
 
 export interface CheckedVariant extends GeneratedVariant {
@@ -461,10 +561,8 @@ function normalise(value: string): string {
  * has already been charged for. A variant that could not be checked is marked
  * `checked: false` and passed through rather than rejected.
  *
- * TODO(content): FR-3.5 also asks for one automatic regeneration when the
- * readback fails. Left out deliberately — it doubles worst-case spend per job,
- * so it wants a cost ceiling agreed before it goes in.
- * TODO(content): FR-3.4 logo-overlay fallback with sharp.
+ * When the readback disagrees, `regenerateFailures` gets one bounded chance to
+ * do better (FR-3.5). TODO(content): FR-3.4 logo-overlay fallback with sharp.
  */
 export async function qaImages(
   ctx: StageContext,
@@ -606,13 +704,18 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
               `It is sold by ${brand.name}, a ${brand.category ?? 'small business'}, ` +
               'whose name, voice and handle you should use. ' +
               (brand.audience ? `They serve: ${brand.audience}. ` : '') +
-              `Voice: ${TONE_DIRECTION[brand.toneOfVoice]}. ` +
+              `Voice: ${toneDirection(brand.tone)}. ` +
               // Real catalogues are mixed; a saree shop may also sell gadgets.
               "If the product does not fit the shop's usual category, follow the " +
               'product and never describe it as something it is not. ' +
               'Write for real customers, not marketers. ' +
               'Be authentic, avoid hype. ' +
-              'No fake claims, no emoji spam, no pricing you were not given.',
+              'No fake claims, no emoji spam, no pricing you were not given.' +
+              // Non-negotiable, so it sits in the system message rather than
+              // the user turn where a long brief could bury it.
+              (brand.bannedTopics.length
+                ? ` Never mention or allude to: ${brand.bannedTopics.join(', ')} — under any framing, even in passing.`
+                : ''),
             messages: [
               {
                 role: 'user',
@@ -622,6 +725,9 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
                   '**The product being advertised:**',
                   `${productLine}.`,
                   'This is the subject. The headline, the caption and every hashtag describe THIS item.',
+                  product.sellingPoints.length
+                    ? `Key selling points to draw on: ${product.sellingPoints.join(', ')}.`
+                    : '',
                   '',
                   '**Context:**',
                   brand.audience
@@ -676,4 +782,88 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
   await recordCost(ctx, cost);
 
   return [{ ...draft, platform, language: request.language }];
+}
+
+
+/**
+ * Stage 3b — one bounded second chance for variants whose text came back wrong.
+ *
+ * FR-3.5 asks for an automatic regeneration on QA failure. The reason it waited
+ * for a decision is spend: retrying every variant would double the worst-case
+ * cost of every job that trips QA. The ceiling that makes it safe:
+ *
+ *  - Only variants QA actually *checked* and *failed* are retried. A variant
+ *    that could not be checked is not evidence of a bad image, and retrying it
+ *    would spend money on a QA outage.
+ *  - `rounds` is configuration (`QA_REGENERATION_ROUNDS`, default 1), not a
+ *    literal, and 0 turns the whole stage off.
+ *  - Worst case is therefore bounded at variantCount x (1 + rounds) images.
+ *
+ * "Best result" means a replacement is only taken when it actually passes. A
+ * regeneration that fails too leaves the original in place — swapping one
+ * failure for another would spend money to change nothing, and the first image
+ * is at least the one the customer's brief produced.
+ */
+export async function regenerateFailures(
+  ctx: StageContext,
+  brief: Brief,
+  checked: CheckedVariant[],
+  rounds: number,
+): Promise<CheckedVariant[]> {
+  if (rounds < 1) return checked;
+
+  // `checked` is the load-bearing half of this condition: `passed` is true for
+  // an unverified variant, so filtering on `!passed` alone would be correct
+  // today but would silently start retrying QA outages if that default flipped.
+  const failedSlots = checked
+    .map((variant, index) => ({ variant, index }))
+    .filter(({ variant }) => variant.checked && !variant.passed);
+
+  if (failedSlots.length === 0) return checked;
+
+  const result = [...checked];
+  const references = await loadReferences(ctx);
+
+  for (let round = 1; round <= rounds; round++) {
+    const pending = failedSlots.filter(({ index }) => !result[index]!.passed);
+    if (pending.length === 0) break;
+
+    console.warn(
+      `[content:qa] job ${ctx.jobId}: ${pending.length} variant(s) failed readback, regenerating (round ${round}/${rounds})`,
+    );
+
+    let replacements: CheckedVariant[];
+    try {
+      const rendered = await renderVariants(
+        ctx,
+        brief,
+        references,
+        pending.length,
+        // Slot number keeps the retry beside the variant it replaces; the round
+        // suffix stops it overwriting that variant, which is still the fallback.
+        (offset, ext) =>
+          creativeKey(ctx.brand.id, ctx.jobId, pending[offset]!.index + 1, ext, round),
+      );
+      replacements = await qaImages(ctx, rendered, brief);
+    } catch (error) {
+      // A failed retry must not fail the job: the original variants are intact
+      // and already paid for, so they ship rather than the customer getting
+      // nothing.
+      console.warn(
+        `[content:qa] job ${ctx.jobId}: regeneration round ${round} failed, keeping originals — ${describeError(error)}`,
+      );
+      break;
+    }
+
+    pending.forEach(({ index }, offset) => {
+      const candidate = replacements[offset];
+      if (!candidate?.passed) return;
+      result[index] = {
+        ...candidate,
+        notes: `regenerated after failed readback (round ${round})`,
+      };
+    });
+  }
+
+  return result;
 }

@@ -17,6 +17,10 @@ const envSchema = z.object({
   REDIS_URL: z.string().url(),
   /** Image generation is the bottleneck; keep this near the provider's limit. */
   CONTENT_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  /** Extra rounds of image generation allowed when the QA readback fails
+   *  (FR-3.5). This is the cost ceiling: worst-case spend per job is
+   *  variantCount x (1 + this). 0 disables regeneration entirely. */
+  QA_REGENERATION_ROUNDS: z.coerce.number().int().min(0).max(3).default(1),
 
   // Object storage for generated creatives. Defaults match the MinIO container
   // in docker-compose.yml so a local checkout works without extra setup.
@@ -30,6 +34,15 @@ const envSchema = z.object({
     .default('true')
     .transform((value) => value !== 'false'),
   S3_PUBLIC_URL: z.string().url().optional(),
+
+  /** Where this process reaches content-api's HTTP API. Used only by the
+   *  scheduled-post publish job, which posts through the existing
+   *  `/social/post` endpoint rather than duplicating the Instagram Graph API
+   *  logic that already lives there. */
+  CONTENT_API_URL: z.string().url().default('http://localhost:4000/api'),
+  /** Mirrors DEV_OWNER_ID on content-api — the header a scheduled publish
+   *  call sends until real auth exists. */
+  DEV_OWNER_ID: z.string().default('dev-user'),
 });
 
 export interface WorkerContext {
@@ -38,6 +51,9 @@ export interface WorkerContext {
   storage: Storage;
   redis: { host: string; port: number; password?: string };
   concurrency: number;
+  qaRegenerationRounds: number;
+  contentApiUrl: string;
+  devOwnerId: string;
 }
 
 export function createContext(): WorkerContext {
@@ -70,5 +86,8 @@ export function createContext(): WorkerContext {
       ...(url.password ? { password: url.password } : {}),
     },
     concurrency: env.CONTENT_WORKER_CONCURRENCY,
+    qaRegenerationRounds: env.QA_REGENERATION_ROUNDS,
+    contentApiUrl: env.CONTENT_API_URL,
+    devOwnerId: env.DEV_OWNER_ID,
   };
 }

@@ -24,13 +24,27 @@ export interface GeminiImageConfig {
 const DEFAULT_MODEL = 'gemini-3-pro-image-preview';
 
 /**
- * Ceiling on a single provider request. A pro-tier image takes 40–60s, so this
- * is deliberately generous; its job is only to stop a half-open socket holding
- * a worker slot until the stage timeout fires. Without it the SDK waits on
- * Node's default, which outlives the caller's own timeout and makes a dropped
+ * Ceiling on a single provider request, per size tier. Its job is to stop a
+ * half-open socket holding a worker slot; without it the SDK waits on Node's
+ * default, which outlives the caller's own timeout and makes a dropped
  * connection look like a hang rather than a retryable failure.
+ *
+ * These are budgets, not estimates, because the cost of being wrong is
+ * asymmetric: too high wastes a worker slot on a request already lost, too low
+ * kills a request that was going to succeed. Measured against
+ * `gemini-3-pro-image-preview`, one image at a time: 1K/2K ~50s, 4K ~90s.
+ *
+ * The 4K budget is far above its solo time because variants fan out
+ * concurrently and the provider is throughput-bound at that tier — three
+ * concurrent 4K renders measured 232–257s each, versus 90s for one alone. A
+ * single flat 120s ceiling was what made poster_a4 (the only format reaching
+ * 4K) fail every time while every smaller format passed.
  */
-const REQUEST_TIMEOUT_MS = 120_000;
+const REQUEST_TIMEOUT_MS: Record<ImageSize, number> = {
+  '1K': 120_000,
+  '2K': 120_000,
+  '4K': 300_000,
+};
 
 /**
  * Gemini accepts an aspect ratio and a size tier, not arbitrary pixel
@@ -59,7 +73,9 @@ export function nearestAspectRatio(width: number, height: number): string {
 
 /** Ask for at least the resolution needed so the fit down-samples rather than
  *  up-samples — a 1K render enlarged to A4 at 300dpi looks soft. */
-export function imageSizeFor(width: number, height: number): '1K' | '2K' | '4K' {
+export type ImageSize = '1K' | '2K' | '4K';
+
+export function imageSizeFor(width: number, height: number): ImageSize {
   const longEdge = Math.max(width, height);
   if (longEdge <= 1280) return '1K';
   if (longEdge <= 2560) return '2K';
@@ -89,13 +105,13 @@ export class GeminiImageAdapter implements ImageGenService {
   private readonly client: GoogleGenAI | null;
 
   constructor(private readonly config: GeminiImageConfig) {
+    // No timeout here: it is set per request instead, because the budget a
+    // request deserves depends on the size tier it asks for and the client is
+    // shared across all of them.
     this.client = config.apiKey
       ? new GoogleGenAI({
           apiKey: config.apiKey,
-          httpOptions: {
-            timeout: REQUEST_TIMEOUT_MS,
-            ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
-          },
+          ...(config.baseUrl ? { httpOptions: { baseUrl: config.baseUrl } } : {}),
         })
       : null;
   }
@@ -149,7 +165,7 @@ export class GeminiImageAdapter implements ImageGenService {
    *  and edit so both get the same parsing and the same failure modes. */
   private async requestImage(
     parts: Array<Record<string, unknown>>,
-    imageConfig: Record<string, string>,
+    imageConfig: { aspectRatio: string; imageSize: ImageSize },
     operation: string,
     ctx?: ProviderContext,
   ): Promise<{
@@ -168,6 +184,7 @@ export class GeminiImageAdapter implements ImageGenService {
           // TEXT is kept so refusals and caveats come back readable.
           responseModalities: ['IMAGE', 'TEXT'],
           imageConfig,
+          httpOptions: { timeout: REQUEST_TIMEOUT_MS[imageConfig.imageSize] },
           ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
         },
       });
