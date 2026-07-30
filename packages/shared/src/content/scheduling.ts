@@ -9,9 +9,22 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
 export const DEFAULT_WINDOW_START_HOUR = 9;
 export const DEFAULT_WINDOW_END_HOUR = 21;
 
-/** How far past "now" a slot that would otherwise land in the past gets
- *  bumped to, so a campaign created mid-window still gets a valid first slot. */
-const MIN_LEAD_MS = 5 * MS_PER_MINUTE;
+/**
+ * How soon after "now" the first slot may fall.
+ *
+ * Not an arbitrary buffer: everything between creation and publishing has to
+ * fit inside it. Generation itself runs up to a few minutes (longer for a 4K
+ * print format, and the worker only runs two at a time), and then a human has
+ * to actually see the notification and approve. Anything tighter schedules
+ * posts that cannot physically be reviewed in time, and an unreviewed post
+ * expires rather than publishing.
+ */
+const MIN_LEAD_MS = 45 * MS_PER_MINUTE;
+
+/** Cap on how far skipping may push a campaign past its nominal length. Only
+ *  reachable via a back-dated `startAt`; a campaign starting now skips at most
+ *  the remainder of today. Bounds the scan so a very old `startAt` terminates. */
+const MAX_SKIPPED_DAYS = 30;
 
 export interface ComputeScheduleSlotsInput {
   startAt: Date;
@@ -28,10 +41,15 @@ export interface ComputeScheduleSlotsInput {
  * from `startAt`'s date. A deliberate v1 simplification: the window is UTC,
  * not the brand's local timezone.
  *
- * Any slot that would land in the past — the campaign was created after its
- * window opened, or with a past `startAt` — is bumped forward to `now +
- * 5min`; later slots are then nudged to stay strictly after the one before,
- * so a bump never reorders the sequence a user was shown.
+ * Slots that are already past — or too close to now to generate and review in
+ * time — are **skipped**, and the schedule runs on into later days until the
+ * requested number of posts is placed. The count and the cadence are what the
+ * user asked for; which calendar days they land on is what gives.
+ *
+ * The alternative, compressing stale slots forward to "now", is what this
+ * replaced: a campaign created at 20:00 turned four of that day's five slots
+ * into posts one minute apart, which is both a spam burst and unreviewable —
+ * generation alone outlasts the gap, so they expired instead of publishing.
  */
 export function computeScheduleSlots(input: ComputeScheduleSlotsInput): Date[] {
   const {
@@ -51,26 +69,31 @@ export function computeScheduleSlots(input: ComputeScheduleSlotsInput): Date[] {
 
   const windowSpanMs = (windowEndHour - windowStartHour) * MS_PER_HOUR;
   const dayStart = Date.UTC(startAt.getUTCFullYear(), startAt.getUTCMonth(), startAt.getUTCDate());
+  const wanted = totalDays * postsPerDay;
+  const earliestAllowed = now.getTime() + MIN_LEAD_MS;
+
+  // Bounded so a startAt far enough in the past cannot spin here forever: the
+  // schedule may roll past its nominal length, but only by the days it skipped.
+  const maxDaysToScan = totalDays + MAX_SKIPPED_DAYS;
 
   const slots: Date[] = [];
-  for (let day = 0; day < totalDays; day++) {
+  for (let day = 0; day < maxDaysToScan && slots.length < wanted; day++) {
     const dayWindowStart = dayStart + day * MS_PER_DAY + windowStartHour * MS_PER_HOUR;
-    for (let i = 0; i < postsPerDay; i++) {
+
+    for (let i = 0; i < postsPerDay && slots.length < wanted; i++) {
       // A single post per day sits at the window's midpoint rather than its
       // open, which would otherwise cluster every campaign's first post at
       // exactly the window start hour.
       const offset = postsPerDay === 1 ? windowSpanMs / 2 : (windowSpanMs * i) / (postsPerDay - 1);
-      slots.push(new Date(dayWindowStart + offset));
+      const slot = dayWindowStart + offset;
+
+      // Skipped, not clamped — see the note on this function.
+      if (slot < earliestAllowed) continue;
+      slots.push(new Date(slot));
     }
   }
 
-  const earliestAllowed = now.getTime() + MIN_LEAD_MS;
-  let previous = -Infinity;
-  return slots.map((slot) => {
-    const bumped = Math.max(slot.getTime(), earliestAllowed, previous + MS_PER_MINUTE);
-    previous = bumped;
-    return new Date(bumped);
-  });
+  return slots;
 }
 
 /** FR: "give source material once, then say how long and how often" — the
@@ -93,3 +116,53 @@ export const approveScheduledPostSchema = z.object({
   caption: z.string().min(1).max(2200).optional(),
 });
 export type ApproveScheduledPostInput = z.infer<typeof approveScheduledPostSchema>;
+
+/**
+ * Editing a campaign after it starts. Every field is optional — the client
+ * sends only what changed.
+ *
+ * Cadence changes only re-plan the part of the campaign that has not been
+ * generated yet; posts already made, approved, or published keep their slots,
+ * because a user who has reviewed a post does not expect editing the schedule
+ * to throw that work away.
+ */
+export const updateScheduledCampaignSchema = z
+  .object({
+    campaignType: campaignTypeSchema.optional(),
+    styleTemplate: styleTemplateSchema.optional(),
+    outputFormat: outputFormatSchema.optional(),
+    totalDays: z.number().int().min(1).max(14).optional(),
+    postsPerDay: z.number().int().min(1).max(10).optional(),
+  })
+  .refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'Provide at least one field to update',
+  });
+export type UpdateScheduledCampaignInput = z.infer<typeof updateScheduledCampaignSchema>;
+
+/** Editing one planned post without approving it: retime it, or fix the copy
+ *  and destination while leaving it awaiting review. */
+export const updateScheduledPostSchema = z
+  .object({
+    scheduledFor: z.coerce.date().optional(),
+    accountId: entityIdSchema.optional(),
+    caption: z.string().min(1).max(2200).optional(),
+  })
+  .refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'Provide at least one field to update',
+  });
+export type UpdateScheduledPostInput = z.infer<typeof updateScheduledPostSchema>;
+
+/** Query filter for the review queue. Kept as a schema rather than a cast so a
+ *  bad value is a 400 from validation, not a 500 from Postgres rejecting an
+ *  unknown enum label. */
+export const scheduledPostStatusSchema = z.enum([
+  'pending_generation',
+  'pending_approval',
+  'approved',
+  'publishing',
+  'rejected',
+  'posted',
+  'failed',
+  'expired',
+]);
+export type ScheduledPostStatusFilter = z.infer<typeof scheduledPostStatusSchema>;

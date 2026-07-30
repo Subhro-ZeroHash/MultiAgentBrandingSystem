@@ -11,6 +11,7 @@ export const QUEUES = {
   contentGeneration: 'content-generation',
   contentEdit: 'content-edit',
   scheduledPostPublish: 'scheduled-post-publish',
+  trendResearch: 'trend-research',
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
 } as const;
@@ -24,9 +25,11 @@ export const contentGenerationJobSchema = z.object({
 });
 export type ContentGenerationJob = z.infer<typeof contentGenerationJobSchema>;
 
+/** Thin and id-only like every other job schema here — the worker re-reads
+ *  the `asset_edits` row's current state rather than trusting a payload that
+ *  could go stale sitting in the queue. */
 export const contentEditJobSchema = z.object({
-  assetId: entityIdSchema,
-  instruction: z.string(),
+  editId: entityIdSchema,
 });
 export type ContentEditJob = z.infer<typeof contentEditJobSchema>;
 
@@ -37,6 +40,12 @@ export const scheduledPostPublishJobSchema = z.object({
   scheduledPostId: entityIdSchema,
 });
 export type ScheduledPostPublishJob = z.infer<typeof scheduledPostPublishJobSchema>;
+
+export const trendResearchJobSchema = z.object({
+  runId: entityIdSchema,
+  brandId: entityIdSchema,
+});
+export type TrendResearchJob = z.infer<typeof trendResearchJobSchema>;
 
 /** One prompt against one engine. Fan-out happens at enqueue time so a single
  * slow engine can't hold up the rest of the sweep. */

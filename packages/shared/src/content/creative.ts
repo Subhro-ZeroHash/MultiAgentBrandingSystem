@@ -71,6 +71,15 @@ export const creativeRequestSchema = z.object({
   /** FR-2.4: escape hatch, not the primary path. */
   extraInstructions: z.string().max(500).optional(),
   variantCount: z.number().int().min(1).max(4).default(3),
+  /**
+   * 'diverse': each variant draws on a different knowledge source (current
+   * trends, the brand's website, or the client's brief alone) — the manual
+   * Create screen's mode. 'uniform': today's original behaviour, one shared
+   * prompt fanned out to `variantCount` images — what scheduled/auto-campaign
+   * generations use. An explicit field rather than inferring from
+   * `variantCount === 3`, so the trigger for 'diverse' isn't a magic number.
+   */
+  variantMode: z.enum(['diverse', 'uniform']).default('uniform'),
   language: z.string().default('en'),
 });
 export type CreativeRequest = z.infer<typeof creativeRequestSchema>;
@@ -96,9 +105,11 @@ export const creativeVariantSchema = z.object({
 });
 export type CreativeVariant = z.infer<typeof creativeVariantSchema>;
 
-/** FR-3.3: targeted edit of a chosen variant, not a full regeneration. */
+/** FR-3.3: targeted edit of one asset, not a full regeneration. `assetId`
+ *  travels alongside the same id in the request URL (`POST
+ *  /generations/:jobId/assets/:assetId/regenerate`); named to match it. */
 export const creativeEditRequestSchema = z.object({
-  variantId: entityIdSchema,
+  assetId: entityIdSchema,
   instruction: z.string().min(1).max(300),
 });
 export type CreativeEditRequest = z.infer<typeof creativeEditRequestSchema>;

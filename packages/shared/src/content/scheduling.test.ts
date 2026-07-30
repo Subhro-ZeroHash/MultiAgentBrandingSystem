@@ -48,7 +48,7 @@ describe('computeScheduleSlots', () => {
     }
   });
 
-  it('bumps a slot that would land in the past up to now + 5 minutes', () => {
+  it('skips a slot already past rather than clamping it to now', () => {
     const now = new Date('2026-08-01T14:00:00Z'); // inside the 09:00-21:00 window
     const slots = computeScheduleSlots({
       startAt: new Date('2026-08-01T00:00:00Z'),
@@ -57,17 +57,40 @@ describe('computeScheduleSlots', () => {
       now,
     });
 
-    // The 09:00 slot is already in the past relative to `now` -> bumped forward.
-    expect(slots[0]!.getTime()).toBe(now.getTime() + 5 * 60_000);
-    // The 15:00 and 21:00 slots are still in the future and keep their natural times.
-    expect(slots[1]!.toISOString()).toBe('2026-08-01T15:00:00.000Z');
-    expect(slots[2]!.toISOString()).toBe('2026-08-01T21:00:00.000Z');
+    // Still three posts, and all three keep a natural window time — the 09:00
+    // slot is dropped and the count is made up on the following day.
+    expect(slots).toHaveLength(3);
+    expect(slots[0]!.toISOString()).toBe('2026-08-01T15:00:00.000Z');
+    expect(slots[1]!.toISOString()).toBe('2026-08-01T21:00:00.000Z');
+    expect(slots[2]!.toISOString()).toBe('2026-08-02T09:00:00.000Z');
   });
 
-  it('keeps a bumped slot strictly before the next one', () => {
-    // Every slot lands in the past relative to `now`, so all three would
-    // naively bump to the exact same timestamp without the monotonic guard.
-    const now = new Date('2026-08-05T00:00:00Z');
+  /**
+   * The regression this function was rewritten for. A campaign created in the
+   * evening used to compress that day's stale slots into consecutive minutes;
+   * generation alone takes longer than the gap, so those posts could not be
+   * reviewed in time and expired instead of publishing.
+   */
+  it('never schedules posts closer together than the daily cadence', () => {
+    const now = new Date('2026-08-01T20:00:00Z'); // most of today's window gone
+    const slots = computeScheduleSlots({
+      startAt: new Date('2026-08-01T00:00:00Z'),
+      totalDays: 2,
+      postsPerDay: 5,
+      now,
+    });
+
+    expect(slots).toHaveLength(10);
+    for (let i = 1; i < slots.length; i++) {
+      const gapMinutes = (slots[i]!.getTime() - slots[i - 1]!.getTime()) / 60_000;
+      expect(gapMinutes, `slots ${i - 1}->${i} are only ${gapMinutes}m apart`).toBeGreaterThanOrEqual(
+        180,
+      );
+    }
+  });
+
+  it('leaves enough lead time on the first slot to generate and review', () => {
+    const now = new Date('2026-08-01T14:50:00Z'); // 10 minutes before the 15:00 slot
     const slots = computeScheduleSlots({
       startAt: new Date('2026-08-01T00:00:00Z'),
       totalDays: 1,
@@ -75,8 +98,25 @@ describe('computeScheduleSlots', () => {
       now,
     });
 
-    expect(slots[0]!.getTime()).toBeLessThan(slots[1]!.getTime());
-    expect(slots[1]!.getTime()).toBeLessThan(slots[2]!.getTime());
+    // 15:00 is too soon to generate and approve, so it is skipped too.
+    expect(slots[0]!.toISOString()).toBe('2026-08-01T21:00:00.000Z');
+    for (const slot of slots) {
+      expect(slot.getTime() - now.getTime()).toBeGreaterThanOrEqual(45 * 60_000);
+    }
+  });
+
+  it('still returns the requested count when startAt is in the past', () => {
+    const slots = computeScheduleSlots({
+      startAt: new Date('2026-08-01T00:00:00Z'),
+      totalDays: 2,
+      postsPerDay: 3,
+      now: new Date('2026-08-05T00:00:00Z'), // four days after startAt
+    });
+
+    expect(slots).toHaveLength(6);
+    for (const slot of slots) {
+      expect(slot.getTime()).toBeGreaterThan(new Date('2026-08-05T00:00:00Z').getTime());
+    }
   });
 
   it('rejects invalid inputs', () => {

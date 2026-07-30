@@ -10,6 +10,9 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+// Type-only: the schema files stay free of runtime imports, but the jsonb
+// payloads are worth typing against the shared contract that validates them.
+import type { SiteAnalysis, SiteExtraction } from '@bmas/shared';
 
 /**
  * `core` holds what both systems share: accounts and the Brand Kit. Changes
@@ -105,15 +108,86 @@ export const costEvents = core.table(
   ],
 );
 
+export const siteProfileStatus = core.enum('site_profile_status', [
+  'ok',
+  /** Fetched, but the body was effectively empty — almost always a
+   *  client-rendered SPA that ships a shell and paints in JavaScript. */
+  'empty_document',
+  'unreachable',
+  'failed',
+]);
+
+/**
+ * What the brand's own website says about how it presents itself (FR-1.4).
+ *
+ * A separate table rather than columns on `brands` for three reasons: it is a
+ * cache of someone else's resource and carries its own freshness, it holds a
+ * page's worth of text that nothing reading the Brand Kit wants to load, and
+ * `brands` is shared with GEO where none of this applies.
+ *
+ * One row per brand — a re-import replaces the previous reading rather than
+ * accumulating history, since only the current state of the site is useful.
+ */
+export const brandSiteProfiles = core.table(
+  'brand_site_profiles',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    sourceUrl: text('source_url').notNull(),
+    status: siteProfileStatus('status').notNull(),
+    /** The deterministic pass: colours, fonts, headings, visible copy. Kept
+     *  verbatim so the analysis can be re-run against a better prompt without
+     *  fetching someone else's server a second time. */
+    extraction: jsonb('extraction').$type<SiteExtraction>(),
+    /** The model's reading of the extraction. Null while a fetch failed. */
+    analysis: jsonb('analysis').$type<SiteAnalysis>(),
+    /** The brand's logo, copied into our bucket at import time. The image
+     *  stage needs bytes, and a hotlink to someone's CDN breaks on redesign. */
+    logoStorageKey: text('logo_storage_key'),
+    /** Brand photography kept as visual style reference for the image model. */
+    styleReferenceKeys: jsonb('style_reference_keys').$type<string[]>().notNull().default([]),
+    /** Set when the user opts the logo into generation. Separate from
+     *  `appliedAt` because a misidentified logo puts someone else's trademark
+     *  on the brand's advertising — a different class of mistake from a
+     *  merely wrong art direction. */
+    logoAppliedAt: timestamp('logo_applied_at', { withTimezone: true }),
+    /** Set when the user opts the brand's photography into conditioning. */
+    styleReferencesAppliedAt: timestamp('style_references_applied_at', { withTimezone: true }),
+    error: text('error'),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Null until the user accepts the proposal. The generation pipeline reads
+     *  only applied rows, so an import the user rejected stays inert instead of
+     *  quietly restyling every creative. */
+    appliedAt: timestamp('applied_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('brand_site_profiles_brand_idx').on(t.brandId)],
+);
+
 export const usersRelations = relations(users, ({ many }) => ({
   brands: many(brands),
 }));
 
 export const brandsRelations = relations(brands, ({ one }) => ({
   owner: one(users, { fields: [brands.ownerId], references: [users.id] }),
+  siteProfile: one(brandSiteProfiles, {
+    fields: [brands.id],
+    references: [brandSiteProfiles.brandId],
+  }),
+}));
+
+export const brandSiteProfilesRelations = relations(brandSiteProfiles, ({ one }) => ({
+  brand: one(brands, { fields: [brandSiteProfiles.brandId], references: [brands.id] }),
 }));
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Brand = typeof brands.$inferSelect;
 export type NewBrand = typeof brands.$inferInsert;
+export type BrandSiteProfileRow = typeof brandSiteProfiles.$inferSelect;
+export type NewBrandSiteProfileRow = typeof brandSiteProfiles.$inferInsert;

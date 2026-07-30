@@ -33,6 +33,49 @@ async function sendExpoPush(
   }
 }
 
+/** Instagram's hard limit on a caption. Meta rejects the whole post over this,
+ *  so it is a publish-time failure rather than a truncation on their side. */
+const INSTAGRAM_CAPTION_LIMIT = 2200;
+
+/**
+ * Builds the caption from a copy pack, using the same shape the manual posting
+ * screen does: headline, body, hashtags, CTA.
+ *
+ * Each field is individually capped at 2200 upstream, but nothing bounded their
+ * *sum* — four fields near their own limits compose a caption Meta refuses.
+ *
+ * When it does not fit, hashtags go first and the CTA is kept: a post that
+ * still asks for the click is worth more than one that is merely discoverable.
+ * The hard slice at the end is a backstop for copy that overruns on the
+ * headline and body alone.
+ */
+export function composeCaption(copy: {
+  headline: string;
+  caption: string;
+  hashtags: string[];
+  cta: string;
+}): string {
+  const present = (value: string): boolean => value.trim().length > 0;
+  const hashtags = copy.hashtags.join(' ');
+
+  const candidates = [
+    [copy.headline, copy.caption, hashtags, copy.cta],
+    // Drop hashtags before the CTA.
+    [copy.headline, copy.caption, copy.cta],
+    [copy.headline, copy.caption],
+  ];
+
+  for (const sections of candidates) {
+    const joined = sections.filter(present).join('\n\n');
+    if (joined.length <= INSTAGRAM_CAPTION_LIMIT) return joined;
+  }
+
+  return [copy.headline, copy.caption]
+    .filter(present)
+    .join('\n\n')
+    .slice(0, INSTAGRAM_CAPTION_LIMIT);
+}
+
 async function pushTokensForOwner(db: Database, ownerId: string): Promise<string[]> {
   const rows = await db
     .select({ token: schema.pushTokens.expoPushToken })
@@ -55,6 +98,10 @@ async function defaultInstagramAccountId(db: Database, ownerId: string): Promise
         eq(schema.socialAccounts.status, 'active'),
       ),
     )
+    // Without an explicit order Postgres may hand back a different account run
+    // to run, so which one a post defaults to would drift for no visible reason.
+    // Oldest connection wins, which is the one a user thinks of as their main.
+    .orderBy(schema.socialAccounts.connectedAt)
     .limit(1);
   return account?.id ?? null;
 }
@@ -77,9 +124,19 @@ export async function onGenerationSucceeded(db: Database, jobId: string): Promis
     .limit(1);
   if (!post) return;
 
+  // Ordered so "the first asset" and "the first copy pack" mean the same row on
+  // every run; an unordered select leaves both to Postgres's discretion.
   const [assets, copyPacks, brand, product] = await Promise.all([
-    db.select().from(schema.creativeAssets).where(eq(schema.creativeAssets.jobId, jobId)),
-    db.select().from(schema.copyPacks).where(eq(schema.copyPacks.jobId, jobId)),
+    db
+      .select()
+      .from(schema.creativeAssets)
+      .where(eq(schema.creativeAssets.jobId, jobId))
+      .orderBy(schema.creativeAssets.createdAt),
+    db
+      .select()
+      .from(schema.copyPacks)
+      .where(eq(schema.copyPacks.jobId, jobId))
+      .orderBy(schema.copyPacks.createdAt),
     db.select().from(schema.brands).where(eq(schema.brands.id, post.brandId)).limit(1),
     db.select().from(schema.products).where(eq(schema.products.id, post.productId)).limit(1),
   ]);
@@ -100,9 +157,15 @@ export async function onGenerationSucceeded(db: Database, jobId: string): Promis
   }
 
   const accountId = await defaultInstagramAccountId(db, ownerId);
-  const caption = `${copy.headline}\n\n${copy.caption}\n\n${copy.hashtags.join(' ')}\n\n${copy.cta}`;
+  const caption = composeCaption(copy);
 
-  await db
+  // Conditional on still being 'pending_generation'. Cancelling a campaign
+  // rejects its posts but cannot un-queue work already running, so without this
+  // a generation finishing afterwards would flip a rejected post back to
+  // 'pending_approval' and notify the user about a campaign they cancelled --
+  // and approving that post would then do nothing, because its publish job is
+  // already gone.
+  const [updated] = await db
     .update(schema.scheduledPosts)
     .set({
       status: 'pending_approval',
@@ -111,7 +174,14 @@ export async function onGenerationSucceeded(db: Database, jobId: string): Promis
       caption,
       updatedAt: new Date(),
     })
-    .where(eq(schema.scheduledPosts.id, post.id));
+    .where(
+      and(
+        eq(schema.scheduledPosts.id, post.id),
+        eq(schema.scheduledPosts.status, 'pending_generation'),
+      ),
+    )
+    .returning();
+  if (!updated) return;
 
   await sendExpoPush(await pushTokensForOwner(db, ownerId), {
     title: 'A post is ready to review',
@@ -135,10 +205,19 @@ export async function onGenerationFailed(
     .limit(1);
   if (!post) return;
 
-  await db
+  // Same guard as the success path: a cancelled or already-rejected post must
+  // not be dragged back into 'failed' and re-notified.
+  const [updated] = await db
     .update(schema.scheduledPosts)
     .set({ status: 'failed', error: errorMessage, updatedAt: new Date() })
-    .where(eq(schema.scheduledPosts.id, post.id));
+    .where(
+      and(
+        eq(schema.scheduledPosts.id, post.id),
+        eq(schema.scheduledPosts.status, 'pending_generation'),
+      ),
+    )
+    .returning();
+  if (!updated) return;
 
   const [brand] = await db
     .select({ ownerId: schema.brands.ownerId })

@@ -8,7 +8,8 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { creativeRequestSchema, type CreativeRequest } from '@bmas/shared';
+import { creativeEditRequestSchema, creativeRequestSchema, type CreativeRequest } from '@bmas/shared';
+import { getUserIdFromHeader } from '../common/user-id.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { GenerationsService } from './generations.service.js';
 
@@ -37,25 +38,56 @@ export class GenerationsController {
   create(
     @Body(new ZodValidationPipe(creativeRequestSchema)) body: unknown,
     @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('x-user-id') userIdHeader?: string,
   ) {
     if (!idempotencyKey || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
       throw new BadRequestException(
         'Idempotency-Key header is required and must be 8–128 characters of [A-Za-z0-9._-]',
       );
     }
-    return this.generations.enqueue(body as CreativeRequest, idempotencyKey);
+    return this.generations.enqueue(
+      body as CreativeRequest,
+      idempotencyKey,
+      getUserIdFromHeader(userIdHeader),
+    );
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.generations.findOne(id);
+  findOne(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
+    return this.generations.findOne(id, getUserIdFromHeader(userIdHeader));
+  }
+
+  /** Stops a queued or running generation. POST rather than DELETE: the row is
+   *  kept and marked `cancelled` so it still shows in history. */
+  @Post(':id/cancel')
+  cancel(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
+    return this.generations.cancel(id, getUserIdFromHeader(userIdHeader));
   }
 
   @Get()
-  list(@Query('brandId') brandId: string, @Query('limit') limit?: string) {
+  list(
+    @Query('brandId') brandId: string,
+    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Query('limit') limit?: string,
+  ) {
     // Without a brand the query becomes `WHERE brand_id = undefined`, which
     // Drizzle rejects at runtime — surface it as a 400 instead of a 500.
     if (!brandId) throw new BadRequestException('brandId query parameter is required');
-    return this.generations.listByBrand(brandId, parseLimit(limit));
+    return this.generations.listByBrand(brandId, getUserIdFromHeader(userIdHeader), parseLimit(limit));
+  }
+
+  /** FR-3.3: "Regenerate" on one image. Queued, not synchronous — the client
+   *  polls `GET :id` the same way it already polls the job itself, watching
+   *  for this asset's edit to leave 'queued'/'running' in the response's
+   *  `assetEdits`. */
+  @Post(':id/assets/:assetId/regenerate')
+  regenerateAsset(
+    @Param('id') id: string,
+    @Param('assetId') assetId: string,
+    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Body(new ZodValidationPipe(creativeEditRequestSchema)) body: unknown,
+  ) {
+    const { instruction } = body as { assetId: string; instruction: string };
+    return this.generations.regenerateAsset(id, assetId, getUserIdFromHeader(userIdHeader), instruction);
   }
 }

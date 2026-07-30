@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -9,7 +9,12 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
+// Type-only, same reasoning as the site-profile jsonb columns in core.ts: the
+// schema file stays free of runtime imports, but the payloads are worth typing
+// against the contract that validates them.
+import type { TrendScore, TrendSource, TrendSuggestedRequest } from '@bmas/shared';
 import { brands, users } from './core.js';
 
 /** Owned by the content-generation workstream. */
@@ -126,6 +131,12 @@ export const generationJobs = content.table(
   ],
 );
 
+/** Which extra knowledge source shaped this variant's brief, when the
+ *  generation ran in 'diverse' mode (see `creativeRequestSchema.variantMode`
+ *  in @bmas/shared). Null for uniform-mode jobs (today's single-prompt path,
+ *  e.g. every scheduled-campaign generation) — there is no "kind" to record. */
+export const variantKind = content.enum('variant_kind', ['trend', 'website', 'clean']);
+
 export const creativeAssets = content.table(
   'creative_assets',
   {
@@ -145,11 +156,84 @@ export const creativeAssets = content.table(
     isSelected: boolean('is_selected').notNull().default(false),
     /** Vision-QA readback (FR-3.5). Null until the QA stage runs. */
     qaResult: jsonb('qa_result').$type<Record<string, unknown>>(),
-    /** Ordered natural-language edits applied to this asset (FR-3.3). */
+    /** Ordered natural-language edits applied to this asset (FR-3.3). Carried
+     *  forward (parent's edits + this one) onto every row an edit produces, so
+     *  the current tip's history doesn't require walking `asset_edits`. */
     edits: jsonb('edits').$type<Array<{ instruction: string; at: string }>>().notNull().default([]),
+    variantKind: variantKind('variant_kind'),
+    /** Null on an original/slot asset. Set to that original asset's own id on
+     *  every row an edit produces — never to the immediately-prior edit — so
+     *  "every version of this slot" and "cap this slot's edit count" are both
+     *  a flat `where root_asset_id = :root` instead of walking a chain.
+     *  Self-referencing, hence the `AnyPgColumn` return type. */
+    rootAssetId: text('root_asset_id').references((): AnyPgColumn => creativeAssets.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('creative_assets_job_idx').on(t.jobId)],
+  (t) => [
+    index('creative_assets_job_idx').on(t.jobId),
+    index('creative_assets_root_idx').on(t.rootAssetId),
+  ],
+);
+
+export const assetEditStatus = content.enum('asset_edit_status', [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
+/**
+ * One user-initiated "Regenerate" attempt on a creative asset (FR-3.3). Kept
+ * separate from `creative_assets` rather than adding in-flight/failure state
+ * to it directly — `creative_assets` stays "only ever contains a real,
+ * viewable image"; this is the append-only attempt log, including attempts
+ * that failed and produced nothing. That split is also what makes the
+ * regeneration cap a plain `count(*)` rather than reasoning about partial
+ * rows on the assets table.
+ */
+export const assetEdits = content.table(
+  'asset_edits',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** The slot this attempt counts against — always the original asset,
+     *  never a prior edit's result (see `creativeAssets.rootAssetId`). */
+    rootAssetId: text('root_asset_id')
+      .notNull()
+      .references(() => creativeAssets.id, { onDelete: 'cascade' }),
+    /** What actually got fed to `.edit()` for this attempt — the current tip
+     *  at the moment the user hit Regenerate, giving progressive chaining
+     *  (edit #2 edits edit #1's result, not the pristine original). */
+    sourceAssetId: text('source_asset_id')
+      .notNull()
+      .references(() => creativeAssets.id, { onDelete: 'cascade' }),
+    instruction: text('instruction').notNull(),
+    status: assetEditStatus('status').notNull().default('queued'),
+    /** Set only once the edit succeeds. */
+    resultAssetId: text('result_asset_id').references(() => creativeAssets.id, {
+      onDelete: 'set null',
+    }),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('asset_edits_root_idx').on(t.rootAssetId),
+    // Closes a check-then-insert race in `regenerateAsset`: two requests for
+    // the same slot arriving close enough together could both read the same
+    // "not already in flight" count before either commits, both pass, and
+    // both insert — bypassing the 2-attempt cap the whole feature exists to
+    // enforce. A partial unique index makes "at most one active attempt per
+    // slot" true at the database level regardless of timing; the loser gets a
+    // unique-violation the service maps back to the same 400 the read-based
+    // check already returns for the non-racing case.
+    uniqueIndex('asset_edits_one_active_per_root_idx')
+      .on(t.rootAssetId)
+      .where(sql`${t.status} IN ('queued', 'running')`),
+  ],
 );
 
 export const copyPacks = content.table(
@@ -210,8 +294,32 @@ export const generationJobsRelations = relations(generationJobs, ({ one, many })
   copy: many(copyPacks),
 }));
 
-export const creativeAssetsRelations = relations(creativeAssets, ({ one }) => ({
+export const creativeAssetsRelations = relations(creativeAssets, ({ one, many }) => ({
   job: one(generationJobs, { fields: [creativeAssets.jobId], references: [generationJobs.id] }),
+  root: one(creativeAssets, {
+    fields: [creativeAssets.rootAssetId],
+    references: [creativeAssets.id],
+    relationName: 'assetLineage',
+  }),
+  edits: many(assetEdits, { relationName: 'editsBySource' }),
+}));
+
+export const assetEditsRelations = relations(assetEdits, ({ one }) => ({
+  root: one(creativeAssets, {
+    fields: [assetEdits.rootAssetId],
+    references: [creativeAssets.id],
+    relationName: 'editsByRoot',
+  }),
+  source: one(creativeAssets, {
+    fields: [assetEdits.sourceAssetId],
+    references: [creativeAssets.id],
+    relationName: 'editsBySource',
+  }),
+  result: one(creativeAssets, {
+    fields: [assetEdits.resultAssetId],
+    references: [creativeAssets.id],
+    relationName: 'editsByResult',
+  }),
 }));
 
 export const socialPlatform = content.enum('social_platform', [
@@ -266,6 +374,9 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
 
 export const scheduledCampaignStatus = content.enum('scheduled_campaign_status', [
   'active',
+  /** Stops future posts without discarding the campaign: queued publish jobs
+   *  are removed and pending posts held, so resuming can re-queue them. */
+  'paused',
   'completed',
   'cancelled',
 ]);
@@ -274,6 +385,11 @@ export const scheduledPostStatus = content.enum('scheduled_post_status', [
   'pending_generation',
   'pending_approval',
   'approved',
+  /** Claimed by a publish worker and in flight with Meta. Exists so claiming is
+   *  a single conditional UPDATE: without a state between 'approved' and
+   *  'posted', a job redelivered mid-publish (BullMQ retries a stalled job
+   *  once) would still see 'approved' and publish the same creative twice. */
+  'publishing',
   'rejected',
   'posted',
   'failed',
@@ -324,6 +440,9 @@ export const scheduledPosts = content.table(
       .references(() => products.id, { onDelete: 'cascade' }),
     scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
     status: scheduledPostStatus('status').notNull().default('pending_generation'),
+    /** Unique because the generation-complete hooks resolve a job back to
+     *  exactly one scheduled post; two rows sharing a job would leave one
+     *  silently stuck in 'pending_generation' forever. */
     generationJobId: text('generation_job_id').references(() => generationJobs.id, {
       onDelete: 'set null',
     }),
@@ -345,6 +464,7 @@ export const scheduledPosts = content.table(
     index('scheduled_posts_brand_scheduled_idx').on(t.brandId, t.scheduledFor),
     index('scheduled_posts_campaign_idx').on(t.campaignId),
     index('scheduled_posts_status_idx').on(t.status),
+    uniqueIndex('scheduled_posts_generation_job_idx').on(t.generationJobId),
   ],
 );
 
@@ -393,6 +513,101 @@ export const pushTokens = content.table(
     uniqueIndex('push_tokens_token_idx').on(t.expoPushToken),
   ],
 );
+
+export const trendResearchStatus = content.enum('trend_research_status', [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
+export const trendCategory = content.enum('trend_category', [
+  'industry_topic',
+  'event_festival',
+  /** Approximated via a search-grounded query — no dedicated API exposes real
+   *  trending-hashtag/audio data short of a paid social-listening contract. */
+  'social_trend',
+]);
+
+export const trendContentType = content.enum('trend_content_type', [
+  'post',
+  'reel',
+  'story',
+  'campaign',
+]);
+
+/** One "Find Trending Content Ideas" click. Kept separate from
+ *  `generation_jobs` — researching is a distinct step upstream of generation,
+ *  and a run may never lead to a generation at all if nothing surfaced fits. */
+export const trendResearchRuns = content.table(
+  'trend_research_runs',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    status: trendResearchStatus('status').notNull().default('queued'),
+    /** What the run actually searched for, echoed back for the history view. */
+    locationOverride: text('location_override'),
+    focus: text('focus'),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('trend_research_runs_brand_created_idx').on(t.brandId, t.createdAt),
+    index('trend_research_runs_status_idx').on(t.status),
+  ],
+);
+
+export const trendIdeas = content.table(
+  'trend_ideas',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    runId: text('run_id')
+      .notNull()
+      .references(() => trendResearchRuns.id, { onDelete: 'cascade' }),
+    category: trendCategory('category').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull(),
+    /** The concrete instruction, phrased as one — "Create a Diwali
+     *  promotional post using the 20%-off angle" — not a description. */
+    recommendation: text('recommendation').notNull(),
+    contentType: trendContentType('content_type').notNull(),
+    /** The five model-judged axes plus the computed `overall` ranking number.
+     *  `overall` is never asked of the model directly — see
+     *  computeTrendScore in @bmas/shared. */
+    score: jsonb('score').$type<TrendScore>().notNull(),
+    /** Cross-checked against the run's actual search results before storage;
+     *  a citation that didn't survive that check is dropped, not stored. */
+    sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
+    /** Prefills a generation request when the user acts on this idea.
+     *  Missing brandId/productId on purpose — the app fills those in once the
+     *  user picks a product, and every field here stays user-editable. */
+    suggestedRequest: jsonb('suggested_request').$type<TrendSuggestedRequest>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('trend_ideas_run_idx').on(t.runId)],
+);
+
+export const trendResearchRunsRelations = relations(trendResearchRuns, ({ one, many }) => ({
+  brand: one(brands, { fields: [trendResearchRuns.brandId], references: [brands.id] }),
+  ideas: many(trendIdeas),
+}));
+
+export const trendIdeasRelations = relations(trendIdeas, ({ one }) => ({
+  run: one(trendResearchRuns, { fields: [trendIdeas.runId], references: [trendResearchRuns.id] }),
+}));
+
+export type TrendResearchRunRow = typeof trendResearchRuns.$inferSelect;
+export type NewTrendResearchRunRow = typeof trendResearchRuns.$inferInsert;
+export type TrendIdeaRow = typeof trendIdeas.$inferSelect;
+export type NewTrendIdeaRow = typeof trendIdeas.$inferInsert;
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type NewSocialAccount = typeof socialAccounts.$inferInsert;

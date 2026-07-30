@@ -11,6 +11,8 @@ export const DATABASE = Symbol('DATABASE');
 export const AI_REGISTRY = Symbol('AI_REGISTRY');
 export const GENERATION_QUEUE = Symbol('GENERATION_QUEUE');
 export const SCHEDULED_POST_PUBLISH_QUEUE = Symbol('SCHEDULED_POST_PUBLISH_QUEUE');
+export const TREND_RESEARCH_QUEUE = Symbol('TREND_RESEARCH_QUEUE');
+export const CONTENT_EDIT_QUEUE = Symbol('CONTENT_EDIT_QUEUE');
 export const ASSET_URLS = Symbol('ASSET_URLS');
 export const OBJECT_STORE = Symbol('OBJECT_STORE');
 
@@ -70,12 +72,22 @@ function redisConnection() {
       useFactory: () =>
         new Queue(QUEUES.scheduledPostPublish, { connection: redisConnection() }),
     },
+    {
+      provide: TREND_RESEARCH_QUEUE,
+      useFactory: () => new Queue(QUEUES.trendResearch, { connection: redisConnection() }),
+    },
+    {
+      provide: CONTENT_EDIT_QUEUE,
+      useFactory: () => new Queue(QUEUES.contentEdit, { connection: redisConnection() }),
+    },
   ],
   exports: [
     DATABASE,
     AI_REGISTRY,
     GENERATION_QUEUE,
     SCHEDULED_POST_PUBLISH_QUEUE,
+    TREND_RESEARCH_QUEUE,
+    CONTENT_EDIT_QUEUE,
     ASSET_URLS,
     OBJECT_STORE,
   ],
@@ -85,6 +97,8 @@ export class CoreModule implements OnApplicationShutdown {
     @Inject(DATABASE) private readonly db: Database,
     @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
     @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly scheduledPostPublishQueue: Queue,
+    @Inject(TREND_RESEARCH_QUEUE) private readonly trendResearchQueue: Queue,
+    @Inject(CONTENT_EDIT_QUEUE) private readonly contentEditQueue: Queue,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
@@ -92,6 +106,8 @@ export class CoreModule implements OnApplicationShutdown {
       closeDatabase(this.db),
       this.generationQueue.close(),
       this.scheduledPostPublishQueue.close(),
+      this.trendResearchQueue.close(),
+      this.contentEditQueue.close(),
     ]);
   }
 }

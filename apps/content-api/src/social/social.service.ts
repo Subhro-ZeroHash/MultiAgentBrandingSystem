@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { eq, and, schema, type Database } from '@bmas/db';
 import { type SocialAccount } from '@bmas/db';
 import { DATABASE } from '../core/core.module.js';
@@ -369,7 +369,7 @@ export class SocialService {
    * address — fine for the user's phone, unreachable for Instagram. So the
    * image is served through the public tunnel instead, behind a signature.
    */
-  private async publicImageUrlForAsset(assetId: string): Promise<string> {
+  private async publicImageUrlForAsset(assetId: string, userId: string): Promise<string> {
     const env = loadEnv();
     if (!env.PUBLIC_ASSET_BASE_URL) {
       throw new BadRequestException(
@@ -380,13 +380,21 @@ export class SocialService {
       throw new BadRequestException('Publishing needs ENCRYPTION_KEY set to sign the image link.');
     }
 
+    // Joined through to the owning brand rather than looked up by asset id
+    // alone — otherwise any caller with an Instagram account connected could
+    // publish someone else's generated asset by guessing/passing its id.
     const rows = await this.db
-      .select({ id: schema.creativeAssets.id })
+      .select({ id: schema.creativeAssets.id, ownerId: schema.brands.ownerId })
       .from(schema.creativeAssets)
+      .innerJoin(schema.generationJobs, eq(schema.creativeAssets.jobId, schema.generationJobs.id))
+      .innerJoin(schema.brands, eq(schema.generationJobs.brandId, schema.brands.id))
       .where(eq(schema.creativeAssets.id, assetId))
       .limit(1);
 
     if (!rows[0]) throw new NotFoundException('Asset not found');
+    if (rows[0].ownerId !== userId) {
+      throw new ForbiddenException('This asset belongs to another account.');
+    }
 
     // The `ig` rendition, not the stored bytes: a print format like poster_a4 is
     // 2480x3508 (0.707), below Instagram's 4:5 floor, and Meta rejects it
@@ -447,7 +455,7 @@ export class SocialService {
     // asset we can serve publicly. Only a URL that resolves to nothing is left
     // to the reachability check below.
     const assetId = source.assetId ?? (await this.resolveAssetIdFromUrl(source.imageUrl));
-    const imageUrl = assetId ? await this.publicImageUrlForAsset(assetId) : source.imageUrl;
+    const imageUrl = assetId ? await this.publicImageUrlForAsset(assetId, userId) : source.imageUrl;
 
     if (!imageUrl) {
       throw new BadRequestException('assetId or imageUrl is required');

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post } from '@nestjs/common';
 import { createBrandKitSchema, createProductSchema, updateBrandKitSchema, type UpdateBrandKitInput } from '@bmas/shared';
 import { z } from 'zod';
+import { getUserIdFromHeader } from '../common/user-id.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { BrandsService } from './brands.service.js';
 
@@ -21,49 +22,62 @@ export class BrandsController {
   constructor(private readonly brands: BrandsService) {}
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.brands.findOne(id);
+  findOne(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
+    return this.brands.findOne(id, getUserIdFromHeader(userIdHeader));
   }
 
   @Patch(':id')
   update(
     @Param('id') id: string,
+    @Headers('x-user-id') userIdHeader: string | undefined,
     @Body(new ZodValidationPipe(updateBrandKitSchema)) body: unknown,
   ) {
-    return this.brands.update(id, body as UpdateBrandKitInput);
+    return this.brands.update(id, getUserIdFromHeader(userIdHeader), body as UpdateBrandKitInput);
   }
 
   @Post()
-  create(@Body(new ZodValidationPipe(createBrandKitSchema)) body: unknown) {
-    // TODO(content): take the owner from the authenticated request once auth
-    // lands. Until then it falls back to the user created by `pnpm db:seed`,
-    // so the write path is exercisable without a fake FK target.
-    const ownerId = process.env.DEV_OWNER_ID ?? 'dev-user';
-    return this.brands.create(ownerId, body as Parameters<BrandsService['create']>[1]);
+  create(
+    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Body(new ZodValidationPipe(createBrandKitSchema)) body: unknown,
+  ) {
+    return this.brands.create(
+      getUserIdFromHeader(userIdHeader),
+      body as Parameters<BrandsService['create']>[1],
+    );
   }
 
   @Get(':id/products')
-  listProducts(@Param('id') id: string) {
-    return this.brands.listProducts(id);
+  listProducts(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
+    return this.brands.listProducts(id, getUserIdFromHeader(userIdHeader));
   }
 
   @Post(':id/products')
   createProduct(
     @Param('id') id: string,
+    @Headers('x-user-id') userIdHeader: string | undefined,
     @Body(new ZodValidationPipe(createProductSchema.omit({ brandId: true }))) body: unknown,
   ) {
-    return this.brands.createProduct({
-      ...(body as Omit<Parameters<BrandsService['createProduct']>[0], 'brandId'>),
-      brandId: id,
-    });
+    return this.brands.createProduct(
+      {
+        ...(body as Omit<Parameters<BrandsService['createProduct']>[0], 'brandId'>),
+        brandId: id,
+      },
+      getUserIdFromHeader(userIdHeader),
+    );
   }
 
   @Post(':id/products/:productId/images')
   addProductImage(
     @Param('id') id: string,
     @Param('productId') productId: string,
+    @Headers('x-user-id') userIdHeader: string | undefined,
     @Body(new ZodValidationPipe(productImageUploadSchema)) body: unknown,
   ) {
-    return this.brands.addProductImage(id, productId, body as ProductImageUploadInput);
+    return this.brands.addProductImage(
+      id,
+      productId,
+      getUserIdFromHeader(userIdHeader),
+      body as ProductImageUploadInput,
+    );
   }
 }

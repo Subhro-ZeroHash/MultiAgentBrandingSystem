@@ -10,6 +10,7 @@ import {
   type CreativeRequest,
   type OutputFormat,
   type Platform,
+  type SiteAnalysis,
   type StyleTemplate,
   type ToneOfVoice,
 } from '@bmas/shared';
@@ -33,6 +34,46 @@ export interface StageContext {
   storage: Storage;
   /** Correlates provider spend and storage keys back to this job. */
   jobId: string;
+  /** The brand's website, read once at setup and confirmed by the user
+   *  (FR-1.4). Null when no site was imported, the import failed, or the user
+   *  applied the Brand Kit fields without opting the art direction in — the
+   *  loader resolves all three to the same thing so no stage has to ask. */
+  siteIdentity?: SiteAnalysis | null;
+  /** Storage key for the brand's logo, set only once the user has opted it
+   *  into generation. The image stage passes the bytes as conditioning and the
+   *  brief switches from "invent no logo" to "reproduce this one". */
+  logoStorageKey?: string | null;
+  /** Brand photography to condition on for treatment only. Opt-in and
+   *  deliberately separate from the logo — a photograph carries subject
+   *  matter, and that is exactly what must not leak into the creative. */
+  styleReferenceKeys?: string[];
+  /** The brand's most recent Trend Research result, if any (automatic,
+   *  best-effort — see `loadTrendContext` in generate.ts). Only reaches the
+   *  brief for the 'trend' variant in a diverse-mode generation; null
+   *  otherwise, same "resolve once, no stage has to ask" shape as
+   *  `siteIdentity`. */
+  trendContext?: TrendContext | null;
+}
+
+/** Which extra knowledge source a variant's brief draws on, when a job runs
+ *  in 'diverse' mode (`request.variantMode === 'diverse'`). Undefined means
+ *  today's original uniform-mode path — one shared brief, no extra source. */
+export type VariantKind = 'trend' | 'website' | 'clean';
+
+/** Fixes each kind to its own storage-key slot so the three diverse variants,
+ *  generated with three parallel `count: 1` calls, never collide on a key —
+ *  the uniform path's array-index numbering doesn't apply here since each
+ *  call only ever sees an array of length 1. */
+export const VARIANT_SLOT_INDEX: Record<VariantKind, number> = {
+  trend: 1,
+  website: 2,
+  clean: 3,
+};
+
+export interface TrendContext {
+  title: string;
+  summary: string;
+  recommendation: string;
 }
 
 /**
@@ -166,9 +207,20 @@ const CAMPAIGN_INTENT: Record<CampaignType, string> = {
  * composition, so routing this through the LLM is a deliberate future option —
  * worth doing only once there is output to compare it against.
  */
-export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<Brief> {
+export async function composeBrief(
+  ctx: StageContext,
+  copy?: CopyPack,
+  variantKind?: VariantKind,
+): Promise<Brief> {
   const { brand, request } = ctx;
   const { width, height, printIntent } = OUTPUT_FORMAT_DIMENSIONS[request.outputFormat];
+
+  // Uniform mode (no `variantKind`) keeps today's exact behaviour: the site
+  // identity block runs whenever one is applied, no trend block ever runs.
+  // In diverse mode each variant draws on at most one extra source — 'trend'
+  // gets the trend block instead of the site block, 'clean' gets neither.
+  const siteIdentity = !variantKind || variantKind === 'website' ? ctx.siteIdentity : null;
+  const trend = variantKind === 'trend' ? ctx.trendContext : null;
 
   const [product] = await ctx.db
     .select()
@@ -241,6 +293,52 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
     '',
     '**Art direction:**',
     STYLE_DIRECTION[request.styleTemplate],
+    // FR-1.4. Placed after the style template, and explicitly subordinate to
+    // it: the template is what the customer chose for *this* campaign, while
+    // the website is the brand's standing look. A brand whose site is muted
+    // and editorial can still ask for a bold discount poster, and getting that
+    // precedence backwards would quietly ignore the control they just used.
+    //
+    // Fenced as hard as `brand.category` above, and for the same reason. This
+    // block is the largest piece of brand context in the prompt, so it is also
+    // the most capable of hijacking the subject — the analyser is instructed
+    // never to name the site's merchandise, and this is the second guard.
+    ...(siteIdentity
+      ? [
+          '',
+          "**The brand's own visual identity, read from their website:**",
+          siteIdentity.visualIdentity,
+          '',
+          // Broken out rather than left as one paragraph: each of these governs
+          // a different decision the model makes, and a single blob gets
+          // skimmed. Palette proportion in particular was invisible before —
+          // hex codes say which colours, never how much of each.
+          `Colour: ${siteIdentity.colorUsage}`,
+          `Typography: ${siteIdentity.typography}`,
+          `Photographic treatment: ${siteIdentity.imageryStyle}`,
+          `Character: ${siteIdentity.brandPersonality}`,
+          '',
+          'Apply all of the above to palette, typography, lighting and finish so the advertisement is recognisably theirs.',
+          'Where it conflicts with the art direction above, the art direction wins.',
+          `This describes styling only. It must not change what is depicted — the subject is still ${product.name} and nothing else, even if the brand's website is about something different.`,
+        ]
+      : []),
+    // The 'trend' variant's counterpart to the site-identity block above —
+    // same fencing convention, same reasoning: a current event or trend is
+    // context for occasion/mood/angle, never license to change the subject.
+    ...(trend
+      ? [
+          '',
+          '**A current trend or event worth tying this campaign to:**',
+          trend.title,
+          trend.summary,
+          `Suggested angle: ${trend.recommendation}`,
+          '',
+          'Use this only to inform mood, setting, styling, or occasion — a seasonal cue, an event tie-in, a cultural moment happening right now.',
+          'Where it conflicts with the art direction above, the art direction wins.',
+          `This describes context only. It must not change what is depicted — the subject is still ${product.name} and nothing else, even if the trend itself is about something different.`,
+        ]
+      : []),
     '',
     '**Craft — this is a paid advertisement, hold it to that bar:**',
     'Commercial advertising photography: deliberate lighting, correct exposure, sharp focus on the subject, believable materials and surfaces.',
@@ -250,7 +348,11 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
     '**Do not:**',
     // The brand name is rendered further down as type; what is banned here is
     // the model drawing an emblem or a shopfront sign of its own invention.
-    'Do not invent logo marks, emblems, packaging labels, or shop signage.',
+    // With a real logo attached the ban has to be narrowed, or it reads as
+    // contradicting the instruction to place that logo.
+    ctx.logoStorageKey
+      ? "Do not invent logo marks, emblems, packaging labels, or shop signage. The only mark permitted is the brand's actual logo, attached below."
+      : 'Do not invent logo marks, emblems, packaging labels, or shop signage.',
     'Do not add unrelated products, extra units, or filler props that do not serve the subject.',
     'Do not include people unless the art direction above calls for a person; when a person does appear, hands, faces and proportions must be anatomically correct.',
     'No watermarks, no borders, no UI overlays, no collage or split-screen layouts.',
@@ -260,10 +362,32 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
       ? `Do not depict or reference, in any form: ${brand.bannedTopics.join(', ')}. This overrides every other instruction above if they would conflict.`
       : null,
     '',
+    // Named before the photograph section so the model has been told what each
+    // attachment is before it is asked to use any of them. Several images
+    // arrive in one call with only their labels to tell them apart, and an
+    // unexplained logo gets treated as another product photo.
+    ...(ctx.logoStorageKey
+      ? [
+          "**The brand's logo is attached:**",
+          `It is labelled "the brand's logo". Reproduce it exactly as supplied — its shapes, proportions and lettering — and do not redraw, restyle, recolour or translate it.`,
+          'Place it once, small, in a corner or margin where it sits clear of the subject and of the text, at a size a viewer reads as a signature rather than as the headline.',
+          'It is the brand mark, not the subject. Do not enlarge it, repeat it, or build the composition around it.',
+          '',
+        ]
+      : []),
+    ...(ctx.styleReferenceKeys?.length
+      ? [
+          "**Style references are attached (the brand's own photography):**",
+          'They are labelled as style references. Read them for treatment ONLY: lighting, colour grade, depth of field, staging density, how much air the composition carries.',
+          `Do NOT reproduce anything shown in them. The objects, people, garments, settings and products in those images are not part of this advertisement — the subject is ${product.name} and nothing else.`,
+          'If a style reference shows a product, that product must not appear in your output in any form.',
+          '',
+        ]
+      : []),
     ...(hasReference
       ? [
           '**Reference photograph:**',
-          'A photograph supplied by the customer is attached. It is the source of truth — read what it actually shows before using it.',
+          `A photograph supplied by the customer is attached, labelled "reference photograph". It is the source of truth for the subject — read what it actually shows before using it.`,
           // A reference is not always a product shot. For a trip or a service it
           // is usually the destination, and demanding the "product" be extracted
           // from it is what makes the model invent one from the brand's trade.
@@ -294,6 +418,13 @@ export async function composeBrief(ctx: StageContext, copy?: CopyPack): Promise<
       cta ? `  CALL TO ACTION — smallest, clearly separated from the rest: "${cta}"` : null,
       'Lay them out with an obvious size hierarchy in that order.',
       'Integrate the type into the composition — sitting in the negative space, aligned to a shared grid, with generous margins — rather than pasted flat across the subject.',
+      // The identity block above describes the brand's letterforms in prose,
+      // which is the only form an image model can act on — it cannot load a
+      // font. Pointing at it here matters because the typography direction is
+      // otherwise several hundred words upstream of the text instructions.
+      siteIdentity
+        ? "Set the type in the letterforms described in the brand's visual identity above, so the wordmark and headline match how the brand sets type elsewhere. Legibility comes first: if that description would not read at this size, favour a clear typeface of the same character."
+        : null,
       'Use one legible typeface family with strong contrast against whatever sits behind it. Every character must be crisp, correctly formed and correctly spelled.',
       'Do not add any other words, letterforms, taglines, watermarks, signatures, URLs, or prices you were not given.',
     );
@@ -337,6 +468,8 @@ export interface GeneratedVariant {
   height: number;
   provider: string;
   model: string;
+  /** Set by the diverse-mode caller in generate.ts; absent in uniform mode. */
+  variantKind?: VariantKind;
 }
 
 /** Generation is the slow stage, but a provider that accepts the connection and
@@ -363,7 +496,7 @@ const MEDIA_TYPE_BY_EXT: Record<string, 'image/png' | 'image/jpeg' | 'image/webp
   webp: 'image/webp',
 };
 
-function mediaTypeFor(key: string): 'image/png' | 'image/jpeg' | 'image/webp' {
+export function mediaTypeFor(key: string): 'image/png' | 'image/jpeg' | 'image/webp' {
   return MEDIA_TYPE_BY_EXT[key.split('.').pop()?.toLowerCase() ?? ''] ?? 'image/jpeg';
 }
 
@@ -398,8 +531,9 @@ async function recordCost(ctx: StageContext, cost: CostEvent): Promise<void> {
 export async function generateImages(
   ctx: StageContext,
   brief: Brief,
+  variantKind?: VariantKind,
 ): Promise<GeneratedVariant[]> {
-  const references = await loadReferences(ctx);
+  const references = await loadReferences(ctx, variantKind);
 
   if (references.length === 0) {
     // FR-3.1 wants the customer's real product in the frame. Products can be
@@ -409,22 +543,38 @@ export async function generateImages(
     );
   }
 
-  return renderVariants(ctx, brief, references, ctx.request.variantCount, (index, ext) =>
-    creativeKey(ctx.brand.id, ctx.jobId, index + 1, ext),
-  );
+  // Diverse mode: one image per call, at this kind's fixed slot — the caller
+  // in generate.ts runs the three kinds in parallel, and each needs its own
+  // storage key so they cannot collide. Uniform mode is unchanged: one call
+  // fans out to `variantCount` images, numbered by array position.
+  const variants = variantKind
+    ? await renderVariants(ctx, brief, references, 1, (_index, ext) =>
+        creativeKey(ctx.brand.id, ctx.jobId, VARIANT_SLOT_INDEX[variantKind], ext),
+      )
+    : await renderVariants(ctx, brief, references, ctx.request.variantCount, (index, ext) =>
+        creativeKey(ctx.brand.id, ctx.jobId, index + 1, ext),
+      );
+
+  return variantKind ? variants.map((variant) => ({ ...variant, variantKind })) : variants;
 }
 
 /**
  * Loads the product's reference photos once so a regeneration conditions on
- * exactly what the first pass did.
+ * exactly what the first pass did. `variantKind` gates the brand's own logo/
+ * style photos (FR-1.4 "website" material) — only the 'website' variant (or
+ * uniform mode, where there is no kind to gate on) gets them; 'trend' and
+ * 'clean' condition on the client's own product photos only.
  */
-async function loadReferences(ctx: StageContext): Promise<ImageReference[]> {
+async function loadReferences(
+  ctx: StageContext,
+  variantKind?: VariantKind,
+): Promise<ImageReference[]> {
   const rows = await ctx.db
     .select()
     .from(schema.productImages)
     .where(eq(schema.productImages.productId, ctx.request.productId));
 
-  return Promise.all(
+  const productReferences = await Promise.all(
     rows.map(async (row) => {
       // Prefer the background-removed variant when the asset-prep step has run
       // (FR-3.6): a cleaned cut-out conditions the model far better than a
@@ -439,6 +589,48 @@ async function loadReferences(ctx: StageContext): Promise<ImageReference[]> {
       };
     }),
   );
+
+  const includeBrandReferences = !variantKind || variantKind === 'website';
+  return [
+    ...productReferences,
+    ...(includeBrandReferences ? await loadBrandReferences(ctx) : []),
+  ];
+}
+
+/**
+ * The brand's own logo and photography, when the user has opted them in.
+ *
+ * Ordered after the product photos deliberately. The product is what the
+ * advertisement is selling and has to stay the dominant reference; brand
+ * assets are there to say how it should look, not what it should be. Labels do
+ * the rest of that work — the image adapters pass them through to the model,
+ * and a mislabelled style reference is precisely how a brand's hero shot ends
+ * up reproduced as the subject.
+ *
+ * Every read is best-effort. A missing object is a degraded creative, never a
+ * failed job: the storage key is stored at import time and the object could
+ * have been pruned since, and that is not worth killing a paid generation for.
+ */
+async function loadBrandReferences(ctx: StageContext): Promise<ImageReference[]> {
+  const references: ImageReference[] = [];
+
+  const read = async (key: string, label: string) => {
+    try {
+      references.push({ data: await ctx.storage.get(key), mediaType: mediaTypeFor(key), label });
+    } catch (error) {
+      console.warn(`[content:image] job ${ctx.jobId}: could not load ${label} (${key}):`, error);
+    }
+  };
+
+  if (ctx.logoStorageKey) {
+    await read(ctx.logoStorageKey, "the brand's logo");
+  }
+
+  for (const key of ctx.styleReferenceKeys ?? []) {
+    await read(key, 'style reference — visual treatment only, do not copy its contents');
+  }
+
+  return references;
 }
 
 /**
@@ -510,8 +702,11 @@ async function renderVariants(
  * generation over one would throw away images the customer has been charged
  * for. Callers fall back to the full-size asset when this returns null.
  */
-async function writeThumbnail(
-  ctx: StageContext,
+/** Narrower than `StageContext` — only `storage`/`jobId` are used below — so
+ *  a caller with no full stage context (asset-edit.ts) can reuse this without
+ *  fabricating one. `StageContext` still satisfies it structurally. */
+export async function writeThumbnail(
+  ctx: Pick<StageContext, 'storage' | 'jobId'>,
   storageKey: string,
   data: Buffer,
 ): Promise<string | null> {
@@ -705,6 +900,31 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
               'whose name, voice and handle you should use. ' +
               (brand.audience ? `They serve: ${brand.audience}. ` : '') +
               `Voice: ${toneDirection(brand.tone)}. ` +
+              // FR-1.4. A tone dropdown gives five words; the brand's own site
+              // shows how it actually writes, which is what makes generated
+              // copy sound like them rather than like generic marketing. Same
+              // fence as the brief: it governs how to write, never what about.
+              (ctx.siteIdentity
+                ? `How this brand writes, observed from their own website: ${ctx.siteIdentity.voiceSummary} ` +
+                  `Their character: ${ctx.siteIdentity.brandPersonality} ` +
+                  'Match that register, sentence rhythm and vocabulary. This tells you HOW to write, ' +
+                  'not what to write about — the subject is the product named above, which may be ' +
+                  "nothing like what their website discusses. " +
+                  // Unlike the image brief, copy *may* use what the brand sells:
+                  // a caption that echoes the brand's real promises reads as
+                  // theirs, and words carry none of the hijack risk a rendered
+                  // image does. Still bounded to claims the site actually makes.
+                  (ctx.siteIdentity.messagingThemes.length
+                    ? `Promises this brand actually makes on its site: ${ctx.siteIdentity.messagingThemes.join('; ')}. ` +
+                      'Echo these where they genuinely apply to this product. Never restate one that does not — ' +
+                      'a free-returns promise on a product it does not cover is a false claim. '
+                    : '') +
+                  (ctx.siteIdentity.offering
+                    ? `For context, the business describes itself as: ${ctx.siteIdentity.offering} ` +
+                      'Use this to judge register only. If the product above is not one of those things, ' +
+                      'follow the product. '
+                    : '')
+                : '') +
               // Real catalogues are mixed; a saree shop may also sell gadgets.
               "If the product does not fit the shop's usual category, follow the " +
               'product and never describe it as something it is not. ' +
@@ -809,6 +1029,7 @@ export async function regenerateFailures(
   brief: Brief,
   checked: CheckedVariant[],
   rounds: number,
+  variantKind?: VariantKind,
 ): Promise<CheckedVariant[]> {
   if (rounds < 1) return checked;
 
@@ -822,7 +1043,7 @@ export async function regenerateFailures(
   if (failedSlots.length === 0) return checked;
 
   const result = [...checked];
-  const references = await loadReferences(ctx);
+  const references = await loadReferences(ctx, variantKind);
 
   for (let round = 1; round <= rounds; round++) {
     const pending = failedSlots.filter(({ index }) => !result[index]!.passed);
@@ -841,8 +1062,18 @@ export async function regenerateFailures(
         pending.length,
         // Slot number keeps the retry beside the variant it replaces; the round
         // suffix stops it overwriting that variant, which is still the fallback.
+        // In diverse mode `pending` only ever has one entry (each kind's own
+        // mini-pipeline runs a length-1 batch), so `index` is always 0 — the
+        // fixed per-kind slot is used instead, or the retry would collide with
+        // whichever other kind also failed on the same round.
         (offset, ext) =>
-          creativeKey(ctx.brand.id, ctx.jobId, pending[offset]!.index + 1, ext, round),
+          creativeKey(
+            ctx.brand.id,
+            ctx.jobId,
+            variantKind ? VARIANT_SLOT_INDEX[variantKind] : pending[offset]!.index + 1,
+            ext,
+            round,
+          ),
       );
       replacements = await qaImages(ctx, rendered, brief);
     } catch (error) {

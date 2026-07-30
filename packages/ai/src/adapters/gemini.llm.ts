@@ -205,8 +205,29 @@ export class GeminiLlmAdapter implements LlmService {
       );
     }
 
+    // Syntactically valid JSON that still fails the caller's schema — a field
+    // type mismatch, an enum value the JSON-schema `enum` didn't actually keep
+    // the model inside, a field it omitted despite `required`. Wrapped and
+    // marked retryable for the same reason the truncated-JSON case above it
+    // is: this is the model's constrained decoding producing a bad instance
+    // this one time, and a rerun is the fix, not a permanent failure. Left as
+    // a raw ZodError it was unrecognised by `isRetryable`, so it skipped the
+    // cheap in-call retry and went straight to failing the whole pipeline
+    // stage — the expensive way to recover from something a second attempt
+    // usually fixes in place.
+    let value: ReturnType<typeof req.parse>;
+    try {
+      value = req.parse(parsed);
+    } catch (error) {
+      throw new ProviderError(
+        `google.json:${req.role}: response did not match the expected schema — ${describeError(error)}`,
+        'google',
+        { retryable: true, cause: error },
+      );
+    }
+
     return {
-      value: req.parse(parsed),
+      value,
       cost: buildCostEvent({
         provider: this.provider,
         model,

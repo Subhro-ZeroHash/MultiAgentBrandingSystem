@@ -1,10 +1,18 @@
 import { describeError } from '@bmas/ai';
 import { closeDatabase } from '@bmas/db';
-import { QUEUES, contentGenerationJobSchema, scheduledPostPublishJobSchema } from '@bmas/shared';
+import {
+  QUEUES,
+  contentEditJobSchema,
+  contentGenerationJobSchema,
+  scheduledPostPublishJobSchema,
+  trendResearchJobSchema,
+} from '@bmas/shared';
 import { UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
+import { runAssetEdit } from './pipeline/asset-edit.js';
 import { runGeneration } from './pipeline/generate.js';
 import { runScheduledPostPublish } from './pipeline/scheduled-post-publish.js';
+import { runTrendResearch } from './pipeline/trend-research.js';
 
 const ctx = createContext();
 
@@ -56,6 +64,33 @@ scheduledPostPublishWorker.on('failed', (job, error) => {
   console.error(`[scheduled-post:publish] job ${job?.id} failed: ${describeError(error)}`);
 });
 
+// One search-and-synthesize pass per job, no image spend involved — modest
+// concurrency is fine and keeps it from competing with generation for the
+// LLM's own rate limits.
+const trendResearchWorker = new Worker(
+  QUEUES.trendResearch,
+  async (job) => runTrendResearch(ctx, trendResearchJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+trendResearchWorker.on('failed', (job, error) => {
+  console.error(`[trend-research] job ${job?.id} failed: ${describeError(error)}`);
+});
+
+// One provider call per job. `runAssetEdit` never rethrows (see its own
+// comment — attempts:1 is a deliberate, capped user-facing budget), so
+// 'failed' here would only ever fire on something outside that try/catch,
+// e.g. the job payload itself failing to parse.
+const contentEditWorker = new Worker(
+  QUEUES.contentEdit,
+  async (job) => runAssetEdit(ctx, contentEditJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+contentEditWorker.on('failed', (job, error) => {
+  console.error(`[asset-edit] job ${job?.id} failed: ${describeError(error)}`);
+});
+
 console.warn(`content-worker started (concurrency ${ctx.concurrency})`);
 
 /** Draining waits on Redis, so an unreachable Redis makes `close()` hang
@@ -79,7 +114,12 @@ async function shutdown(signal: string): Promise<void> {
 
   try {
     // Waits for in-flight generations so a deploy never abandons a paid job.
-    await Promise.all([generationWorker.close(), scheduledPostPublishWorker.close()]);
+    await Promise.all([
+      generationWorker.close(),
+      scheduledPostPublishWorker.close(),
+      trendResearchWorker.close(),
+      contentEditWorker.close(),
+    ]);
     await closeDatabase(ctx.db);
   } catch (error) {
     console.error(`content-worker shutdown error: ${describeError(error)}`);

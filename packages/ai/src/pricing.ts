@@ -68,6 +68,25 @@ export function priceImages(model: string, count: number): number {
   return Math.round((IMAGE_RATES[model] ?? 0) * count);
 }
 
+/**
+ * Flat per-call rates in micro-USD for providers billed by the call rather
+ * than by token or image — currently just web search.
+ *
+ * TODO(content): UNVERIFIED. Tavily bills in credits (1 for a basic search) at
+ * roughly $8 per 1,000 credits on paid tiers; the free tier's 1,000
+ * credits/month cost nothing. This estimates the paid-tier marginal cost so
+ * the ledger is not silently zero once free-tier volume is exhausted.
+ * Re-check against Tavily's pricing page before relying on this for a real
+ * unit-economics number.
+ */
+export const SEARCH_RATES: Record<string, number> = {
+  'tavily-search': 8_000,
+};
+
+export function priceSearch(model: string): number {
+  return SEARCH_RATES[model] ?? 0;
+}
+
 export function buildCostEvent(
   input: Omit<CostEvent, 'costMicroUsd'> & { costMicroUsd?: number },
 ): CostEvent {

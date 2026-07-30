@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { and, eq, schema, type Database } from '@bmas/db';
 import type { CreateBrandKitInput, CreateProductInput, UpdateBrandKitInput } from '@bmas/shared';
 import { DATABASE, OBJECT_STORE } from '../core/core.module.js';
@@ -29,7 +35,29 @@ export class BrandsService {
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
   ) {}
 
-  async findOne(brandId: string) {
+  // ---------------------------------------------------------------------------
+  // Ownership
+  //
+  // Auth is unbuilt (see CLAUDE.md), but every other brand-scoped module
+  // (trends, scheduling, brand-site, social) resolves the caller from the
+  // x-user-id header and refuses a brand that is not theirs. This module was
+  // missed when that convention was established, leaving every brand/product
+  // route addressable by UUID alone. These bring it in line.
+  // ---------------------------------------------------------------------------
+
+  private async assertBrandOwned(brandId: string, ownerId: string): Promise<void> {
+    const [brand] = await this.db
+      .select({ ownerId: schema.brands.ownerId })
+      .from(schema.brands)
+      .where(eq(schema.brands.id, brandId))
+      .limit(1);
+    if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
+    if (brand.ownerId !== ownerId) {
+      throw new ForbiddenException('This brand belongs to another account.');
+    }
+  }
+
+  async findOne(brandId: string, ownerId: string) {
     const [brand] = await this.db
       .select()
       .from(schema.brands)
@@ -37,10 +65,15 @@ export class BrandsService {
       .limit(1);
 
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
+    if (brand.ownerId !== ownerId) {
+      throw new ForbiddenException('This brand belongs to another account.');
+    }
     return brand;
   }
 
-  async update(brandId: string, input: UpdateBrandKitInput) {
+  async update(brandId: string, ownerId: string, input: UpdateBrandKitInput) {
+    await this.assertBrandOwned(brandId, ownerId);
+
     const [updated] = await this.db
       .update(schema.brands)
       .set({
@@ -89,14 +122,16 @@ export class BrandsService {
     return brand;
   }
 
-  async listProducts(brandId: string) {
+  async listProducts(brandId: string, ownerId: string) {
+    await this.assertBrandOwned(brandId, ownerId);
     return this.db.select().from(schema.products).where(eq(schema.products.brandId, brandId));
   }
 
-  async createProduct(input: CreateProductInput) {
+  async createProduct(input: CreateProductInput, ownerId: string) {
     // Checked rather than left to the foreign key: a bad brandId would surface
     // as a raw constraint violation and a 500, when it is the caller's mistake.
-    await this.findOne(input.brandId);
+    // Also covers ownership, since findOne now enforces it.
+    await this.findOne(input.brandId, ownerId);
 
     const [product] = await this.db
       .insert(schema.products)
@@ -123,7 +158,14 @@ export class BrandsService {
    * TODO(content): the asset-prep step (FR-3.6) that background-removes the
    * photo into cleanedStorageKey is not built; the raw upload is used as-is.
    */
-  async addProductImage(brandId: string, productId: string, input: ProductImageUpload) {
+  async addProductImage(
+    brandId: string,
+    productId: string,
+    ownerId: string,
+    input: ProductImageUpload,
+  ) {
+    await this.assertBrandOwned(brandId, ownerId);
+
     if (!ALLOWED_MEDIA_TYPES.has(input.mediaType)) {
       throw new BadRequestException(
         `Unsupported image type "${input.mediaType}". Use png, jpeg, or webp.`,

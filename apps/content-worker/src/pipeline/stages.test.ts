@@ -77,14 +77,40 @@ const copy = {
 function context(overrides: {
   request?: Partial<CreativeRequest>;
   rows?: FakeRows;
+  siteIdentity?: StageContext['siteIdentity'];
+  logoStorageKey?: string | null;
+  styleReferenceKeys?: string[];
 }): StageContext {
   return {
     brand,
     request: { ...baseRequest, ...overrides.request } as CreativeRequest,
     db: fakeDb(overrides.rows ?? { product: { name: 'Uttarakhand Trip', description: null } }),
     jobId: 'job-1',
+    siteIdentity: overrides.siteIdentity ?? null,
+    logoStorageKey: overrides.logoStorageKey ?? null,
+    styleReferenceKeys: overrides.styleReferenceKeys ?? [],
   } as unknown as StageContext;
 }
+
+/** Shaped like a real analysis, including the trap: a home-decor brand whose
+ *  website has nothing to do with the trip being advertised. */
+const siteIdentity = {
+  visualIdentity:
+    'A vibrant, eclectic palette contrasting sunny yellow and bold red against deep navy. ' +
+    'Rounded humanist sans-serifs for body, stylised display letterforms for headings.',
+  colorUsage: 'Deep navy carries most of the page, with sunny yellow reserved for calls to action.',
+  typography: 'A rounded humanist sans with wide apertures, set at 400 for body and 700 for headings.',
+  imageryStyle: 'Bright, even, punchy lighting with vivid saturation and shallow depth.',
+  brandPersonality: 'Cheerful and irreverent, a little maximalist, never precious about itself.',
+  voiceSummary: 'Upbeat and conversational, short punchy sentences, playful puns.',
+  messagingThemes: ['designed in India', 'free returns for 30 days'],
+  offering: 'Colourful home decor, furnishings and lifestyle accessories.',
+  suggestedName: 'Chumbak',
+  suggestedCategory: 'Lifestyle and Home Decor',
+  suggestedAudience: 'Lifestyle shoppers',
+  suggestedTone: ['playful'],
+  suggestedLanguages: ['English'],
+} as unknown as NonNullable<StageContext['siteIdentity']>;
 
 describe('composeBrief', () => {
   it('sizes the canvas from the requested output format', async () => {
@@ -256,6 +282,124 @@ describe('composeBrief', () => {
     it('has no banned-topics line when the brand sets none', async () => {
       const brief = await composeBrief(context({}));
       expect(brief.prompt).not.toMatch(/banned|Do not depict or reference/i);
+    });
+  });
+
+  /**
+   * FR-1.4. The website identity is the largest piece of brand context the
+   * prompt carries, which makes it the most capable of hijacking the subject —
+   * the same failure mode `brand.category` is fenced against above. These pin
+   * both halves: that it reaches the prompt at all, and that it stays fenced.
+   */
+  describe('website visual identity', () => {
+    it('is absent entirely when no site profile has been applied', async () => {
+      const brief = await composeBrief(context({}));
+      expect(brief.prompt).not.toMatch(/read from their website/i);
+    });
+
+    it('carries the art direction into the prompt when one has', async () => {
+      const brief = await composeBrief(context({ siteIdentity }));
+      expect(brief.prompt).toContain('A vibrant, eclectic palette');
+      expect(brief.prompt).toMatch(/read from their website/i);
+    });
+
+    it('subordinates the website to the style template the user picked', async () => {
+      // Precedence matters: a brand whose site is muted can still ask for a
+      // bold poster, and the template is the control they just used.
+      const brief = await composeBrief(context({ siteIdentity }));
+      expect(brief.prompt).toMatch(/Where it conflicts with the art direction above/i);
+
+      // And it must sit after the template, not before it.
+      expect(brief.prompt.indexOf('Clean e-commerce studio shot')).toBeLessThan(
+        brief.prompt.indexOf('A vibrant, eclectic palette'),
+      );
+    });
+
+    it('restates that the subject is the product, not whatever the site sells', async () => {
+      const brief = await composeBrief(context({ siteIdentity }));
+      expect(brief.prompt).toMatch(
+        /must not change what is depicted — the subject is still Uttarakhand Trip/i,
+      );
+    });
+
+    it('points the type instructions at the described letterforms', async () => {
+      const brief = await composeBrief(context({ siteIdentity }), copy);
+      expect(brief.prompt).toMatch(/letterforms described in the brand's visual identity/i);
+    });
+
+    it('leaves the type instructions alone without a site profile', async () => {
+      const brief = await composeBrief(context({}), copy);
+      expect(brief.prompt).not.toMatch(/letterforms described in the brand's visual identity/i);
+    });
+
+    it('breaks the identity out into the decisions it governs', async () => {
+      // One paragraph got skimmed; palette *proportion* in particular was
+      // invisible when hex codes were all the model had.
+      const brief = await composeBrief(context({ siteIdentity }));
+      expect(brief.prompt).toContain('Colour: Deep navy carries most of the page');
+      expect(brief.prompt).toContain('Typography: A rounded humanist sans');
+      expect(brief.prompt).toContain('Photographic treatment: Bright, even, punchy');
+      expect(brief.prompt).toContain('Character: Cheerful and irreverent');
+    });
+
+    it('keeps what the brand sells out of the image brief entirely', async () => {
+      // `offering` and `messagingThemes` are read by the copywriter, never the
+      // designer — putting them here is how a saree shop's trade ends up in a
+      // travel poster.
+      const brief = await composeBrief(context({ siteIdentity }));
+      expect(brief.prompt).not.toMatch(/home decor|furnishings|free returns/i);
+    });
+  });
+
+  /**
+   * The logo and the brand's photography arrive as extra images in the same
+   * provider call, distinguished only by their labels. These pin that the brief
+   * explains each one — an unexplained attachment gets treated as another
+   * product photo, which is how a logo ends up rendered as the subject.
+   */
+  describe('brand asset attachments', () => {
+    it('says nothing about a logo when none is applied', async () => {
+      const brief = await composeBrief(context({}));
+      expect(brief.prompt).not.toMatch(/logo is attached/i);
+      expect(brief.prompt).toContain('Do not invent logo marks, emblems, packaging labels, or shop signage.');
+    });
+
+    it('instructs placement and reproduction when a logo is applied', async () => {
+      const brief = await composeBrief(context({ logoStorageKey: 'brands/b/site/logo.png' }));
+      expect(brief.prompt).toMatch(/logo is attached/i);
+      expect(brief.prompt).toMatch(/Reproduce it exactly as supplied/i);
+      expect(brief.prompt).toMatch(/Place it once, small/i);
+    });
+
+    it('narrows the no-invented-marks ban instead of contradicting it', async () => {
+      // Left unnarrowed, "do not invent logo marks" reads as forbidding the
+      // very logo the next section tells the model to place.
+      const brief = await composeBrief(context({ logoStorageKey: 'brands/b/site/logo.png' }));
+      expect(brief.prompt).toMatch(/The only mark permitted is the brand's actual logo/i);
+    });
+
+    it('fences style references to treatment only', async () => {
+      const brief = await composeBrief(
+        context({ styleReferenceKeys: ['brands/b/site/style-0.png'] }),
+      );
+      expect(brief.prompt).toMatch(/Read them for treatment ONLY/);
+      expect(brief.prompt).toMatch(/Do NOT reproduce anything shown in them/);
+      expect(brief.prompt).toMatch(/the subject is Uttarakhand Trip and nothing else/);
+    });
+
+    it('says nothing about style references when none are applied', async () => {
+      const brief = await composeBrief(context({}));
+      expect(brief.prompt).not.toMatch(/style reference/i);
+    });
+
+    it('labels the customer photograph so it is distinguishable from brand assets', async () => {
+      const brief = await composeBrief(
+        context({
+          rows: { product: { name: 'Uttarakhand Trip', description: null }, hasImage: true },
+          logoStorageKey: 'brands/b/site/logo.png',
+        }),
+      );
+      expect(brief.prompt).toContain('labelled "reference photograph"');
     });
   });
 });

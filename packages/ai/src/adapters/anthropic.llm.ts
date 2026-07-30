@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ProviderNotConfiguredError, ProviderError } from '../errors.js';
+import { ProviderNotConfiguredError, ProviderError, describeError } from '../errors.js';
 import type {
   LlmJsonRequest,
   LlmService,
@@ -138,8 +138,24 @@ export class AnthropicLlmAdapter implements LlmService {
       );
     }
 
+    // Syntactically valid JSON that still fails the caller's schema. Same
+    // reasoning as the truncated-JSON case just above: wrapped and marked
+    // retryable rather than left as a raw ZodError, which `isRetryable` does
+    // not recognise — unwrapped, this skipped the cheap in-call retry and
+    // failed the whole pipeline stage over something a rerun usually fixes.
+    let value: T;
+    try {
+      value = req.parse(parsed);
+    } catch (error) {
+      throw new ProviderError(
+        `anthropic.json:${req.role}: response did not match the expected schema — ${describeError(error)}`,
+        'anthropic',
+        { retryable: true, cause: error },
+      );
+    }
+
     return {
-      value: req.parse(parsed),
+      value,
       cost: buildCostEvent({
         provider: 'anthropic',
         model,

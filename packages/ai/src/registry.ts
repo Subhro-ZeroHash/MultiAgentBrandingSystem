@@ -8,9 +8,12 @@ import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
 import { StubImageAdapter } from './adapters/stub.image.js';
+import { StubSearchAdapter } from './adapters/stub.search.js';
+import { TavilySearchAdapter } from './adapters/tavily.search.js';
 import type { AnswerEngineClient } from './engine.js';
 import type { ImageGenService } from './image.js';
 import type { LlmService, ModelRole } from './llm.js';
+import type { WebSearchService } from './search.js';
 
 /** `stub` draws placeholders locally — see adapters/stub.image.ts. */
 export type ImageProviderName = 'gemini' | 'fal' | 'stub';
@@ -18,12 +21,16 @@ export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 /** Which provider serves `LlmService` — text, JSON, and vision QA. */
 export type LlmProviderName = 'anthropic' | 'gemini';
 
+/** `stub` returns fixture results locally — see adapters/stub.search.ts. */
+export type SearchProviderName = 'tavily' | 'stub';
+
 export interface AiConfig {
   anthropicApiKey?: string;
   googleApiKey?: string;
   falApiKey?: string;
   openaiApiKey?: string;
   perplexityApiKey?: string;
+  tavilyApiKey?: string;
 
   /** Local-only API host overrides; see AnthropicAdapterConfig.baseUrl. */
   anthropicBaseUrl?: string;
@@ -40,6 +47,10 @@ export interface AiConfig {
   imageProviderEdit?: ImageProviderName;
   /** Which adapter serves text/JSON/vision. Defaults to `anthropic`. */
   llmProvider?: LlmProviderName;
+  /** Which adapter serves `webSearch()`. Defaults to `tavily`; an unset
+   *  TAVILY_API_KEY surfaces as ProviderNotConfiguredError at call time, the
+   *  same failure mode every other unconfigured adapter already has. */
+  searchProvider?: SearchProviderName;
 }
 
 const ANTHROPIC_MODELS: Record<ModelRole, string> = {
@@ -77,6 +88,7 @@ export class AiRegistry {
   private readonly llmService: LlmService;
   private readonly images: Record<ImageProviderName, ImageGenService>;
   private readonly engines: Map<AnswerEngine, AnswerEngineClient>;
+  private readonly searches: Record<SearchProviderName, WebSearchService>;
 
   constructor(private readonly config: AiConfig) {
     // LLM_MODEL_* overrides are provider-agnostic strings, so they must match
@@ -116,6 +128,11 @@ export class AiRegistry {
       ['chatgpt', new OpenAiAnswerEngine({ apiKey: config.openaiApiKey })],
       ['gemini', new GeminiAnswerEngine({ apiKey: config.googleApiKey })],
     ]);
+
+    this.searches = {
+      tavily: new TavilySearchAdapter({ apiKey: config.tavilyApiKey }),
+      stub: new StubSearchAdapter(),
+    };
   }
 
   llm(): LlmService {
@@ -136,6 +153,11 @@ export class AiRegistry {
     return this.engines.get(engine);
   }
 
+  /** Real-time web search for the Trend Research Agent — see search.ts. */
+  webSearch(): WebSearchService {
+    return this.searches[this.config.searchProvider ?? 'tavily'];
+  }
+
   /** Engines with credentials present — probes skip everything else. */
   configuredEngines(): AnswerEngineClient[] {
     return [...this.engines.values()].filter((client) => client.isConfigured());
@@ -150,6 +172,7 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     falApiKey: env.FAL_KEY,
     openaiApiKey: env.OPENAI_API_KEY,
     perplexityApiKey: env.PERPLEXITY_API_KEY,
+    tavilyApiKey: env.TAVILY_API_KEY,
     ...(env.ANTHROPIC_BASE_URL ? { anthropicBaseUrl: env.ANTHROPIC_BASE_URL } : {}),
     ...(env.GOOGLE_API_BASE_URL ? { googleBaseUrl: env.GOOGLE_API_BASE_URL } : {}),
     models: {
@@ -165,5 +188,6 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
     imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,
     llmProvider: env.LLM_PROVIDER as LlmProviderName | undefined,
+    searchProvider: env.WEB_SEARCH_PROVIDER as SearchProviderName | undefined,
   });
 }

@@ -1,5 +1,5 @@
 import { describeError, isPermanentFailure } from '@bmas/ai';
-import { eq, schema, sql } from '@bmas/db';
+import { and, desc, eq, ne, schema, sql } from '@bmas/db';
 import { UnrecoverableError } from 'bullmq';
 import type { ContentGenerationJob, CreativeRequest } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
@@ -10,13 +10,131 @@ import {
   generateImages,
   qaImages,
   regenerateFailures,
+  type CheckedVariant,
   type StageContext,
+  type TrendContext,
+  type VariantKind,
 } from './stages.js';
+
+/** The three knowledge sources a diverse-mode generation fans out across. */
+const DIVERSE_VARIANT_KINDS: readonly VariantKind[] = ['trend', 'website', 'clean'];
+
+/**
+ * The user cancelled while this job was mid-pipeline.
+ *
+ * Not a failure: the row is already `cancelled` and that is the state the user
+ * asked for, so the catch below must not overwrite it with `failed` or spend a
+ * retry re-running work nobody wants.
+ */
+class GenerationCancelledError extends Error {
+  constructor(jobId: string) {
+    super(`Generation ${jobId} was cancelled`);
+    this.name = 'GenerationCancelledError';
+  }
+}
 
 /** Where this run sits in BullMQ's retry sequence, both 1-based. */
 export interface AttemptInfo {
   attempt: number;
   maxAttempts: number;
+}
+
+/**
+ * The brand's website-derived identity, if there is one to use (FR-1.4).
+ *
+ * Gated on `appliedAt`: an import the user never confirmed, or confirmed only
+ * for the Brand Kit fields, must not reach generation. Reading the column here
+ * rather than in the stages means one query per job instead of two, and one
+ * place where that rule lives.
+ *
+ * A failure is swallowed deliberately. This is enrichment — a brand with no
+ * site profile generates perfectly well without one — so a bad row should cost
+ * some polish, never a paid job that was otherwise fine.
+ */
+async function loadSiteIdentity(
+  ctx: WorkerContext,
+  brandId: string,
+): Promise<Pick<StageContext, 'siteIdentity' | 'logoStorageKey' | 'styleReferenceKeys'>> {
+  const none = { siteIdentity: null, logoStorageKey: null, styleReferenceKeys: [] };
+
+  try {
+    const [row] = await ctx.db
+      .select({
+        analysis: schema.brandSiteProfiles.analysis,
+        appliedAt: schema.brandSiteProfiles.appliedAt,
+        logoStorageKey: schema.brandSiteProfiles.logoStorageKey,
+        logoAppliedAt: schema.brandSiteProfiles.logoAppliedAt,
+        styleReferenceKeys: schema.brandSiteProfiles.styleReferenceKeys,
+        styleReferencesAppliedAt: schema.brandSiteProfiles.styleReferencesAppliedAt,
+      })
+      .from(schema.brandSiteProfiles)
+      .where(eq(schema.brandSiteProfiles.brandId, brandId))
+      .limit(1);
+
+    if (!row) return none;
+
+    // Each opt-in is read independently: a user may want the art direction but
+    // not the logo, and resolving them together would couple two choices the
+    // apply endpoint deliberately keeps apart.
+    return {
+      siteIdentity: row.appliedAt ? (row.analysis ?? null) : null,
+      logoStorageKey: row.logoAppliedAt ? row.logoStorageKey : null,
+      styleReferenceKeys: row.styleReferencesAppliedAt ? (row.styleReferenceKeys ?? []) : [],
+    };
+  } catch (error) {
+    console.error(`[generate] could not load the site profile for brand ${brandId}:`, error);
+    return none;
+  }
+}
+
+/**
+ * The brand's most recent Trend Research result, if any — the 'trend'
+ * variant's counterpart to `loadSiteIdentity` above, same shape: one best-
+ * effort read, swallowed on failure, because a brand that never ran (or
+ * whose last run found nothing) still generates fine without one.
+ *
+ * Automatic rather than a picked idea: the user asked for "the news and
+ * trends we get by tavily" to shape one image, not a new required step in
+ * the create flow, so this takes whatever the brand's last successful run
+ * already surfaced. Same "sort ideas by score.overall in memory" idiom as
+ * `trends.service.ts::getRun` — a run has at most 8 ideas, not worth a
+ * database-side jsonb sort.
+ */
+async function loadTrendContext(
+  ctx: WorkerContext,
+  brandId: string,
+): Promise<TrendContext | null> {
+  try {
+    const [run] = await ctx.db
+      .select({ id: schema.trendResearchRuns.id })
+      .from(schema.trendResearchRuns)
+      .where(
+        and(
+          eq(schema.trendResearchRuns.brandId, brandId),
+          eq(schema.trendResearchRuns.status, 'succeeded'),
+        ),
+      )
+      .orderBy(desc(schema.trendResearchRuns.createdAt))
+      .limit(1);
+    if (!run) return null;
+
+    const ideas = await ctx.db
+      .select({
+        title: schema.trendIdeas.title,
+        summary: schema.trendIdeas.summary,
+        recommendation: schema.trendIdeas.recommendation,
+        score: schema.trendIdeas.score,
+      })
+      .from(schema.trendIdeas)
+      .where(eq(schema.trendIdeas.runId, run.id));
+    if (ideas.length === 0) return null;
+
+    const top = [...ideas].sort((a, b) => b.score.overall - a.score.overall)[0]!;
+    return { title: top.title, summary: top.summary, recommendation: top.recommendation };
+  } catch (error) {
+    console.error(`[generate] could not load trend context for brand ${brandId}:`, error);
+    return null;
+  }
 }
 
 /**
@@ -48,24 +166,48 @@ export async function runGeneration(
     .limit(1);
   if (!brand) throw new Error(`Brand ${job.brandId} not found`);
 
+  const request = row.request as unknown as CreativeRequest;
+  const diverse = request.variantMode === 'diverse';
+
   const stageCtx: StageContext = {
     ai: ctx.ai,
     brand,
-    request: row.request as unknown as CreativeRequest,
+    request,
     db: ctx.db,
     storage: ctx.storage,
     jobId: job.jobId,
+    ...(await loadSiteIdentity(ctx, job.brandId)),
+    // Only fetched in diverse mode — a uniform-mode job (every scheduled
+    // campaign) never reads it, so there is no reason to spend the query.
+    trendContext: diverse ? await loadTrendContext(ctx, job.brandId) : null,
   };
 
+  /**
+   * Advances the stage, and doubles as the cancellation checkpoint.
+   *
+   * The `ne(cancelled)` makes this a claim rather than a blind write: if the
+   * user cancelled while the previous stage was running, no row comes back and
+   * the pipeline stops before paying for the next one. Stage boundaries are the
+   * right granularity — a provider call already in flight cannot be recalled,
+   * but the three still ahead of it can be.
+   */
   const setStage = async (stage: string) => {
-    await ctx.db
+    const [row] = await ctx.db
       .update(schema.generationJobs)
       .set({
         stage,
         status: 'running',
         startedAt: sql`coalesce(${schema.generationJobs.startedAt}, now())`,
       })
-      .where(eq(schema.generationJobs.id, job.jobId));
+      .where(
+        and(
+          eq(schema.generationJobs.id, job.jobId),
+          ne(schema.generationJobs.status, 'cancelled'),
+        ),
+      )
+      .returning();
+
+    if (!row) throw new GenerationCancelledError(job.jobId);
   };
 
   try {
@@ -76,16 +218,42 @@ export async function runGeneration(
     const copy = await generateCopy(stageCtx);
 
     await setStage('brief');
-    const brief = await composeBrief(stageCtx, copy[0]);
-
     await setStage('image');
-    const images = await generateImages(stageCtx, brief);
-
     await setStage('qa');
-    const readback = await qaImages(stageCtx, images, brief);
-    // FR-3.5: a failed readback earns one bounded retry rather than shipping a
-    // variant with misspelled text on it. The ceiling is configuration.
-    const checked = await regenerateFailures(stageCtx, brief, readback, ctx.qaRegenerationRounds);
+
+    // Diverse mode: three independent brief→image→QA→retry mini-pipelines,
+    // one per knowledge source, run in parallel and merged. Each reuses
+    // qaImages/regenerateFailures completely unchanged — they already operate
+    // on an arbitrary-length variant array, and a length-1 array (one kind's
+    // own single image) is just the degenerate case. Uniform mode (every
+    // scheduled-campaign generation) is untouched: one brief, one call.
+    const checked: CheckedVariant[] = diverse
+      ? (
+          await Promise.all(
+            DIVERSE_VARIANT_KINDS.map(async (kind) => {
+              const kindBrief = await composeBrief(stageCtx, copy[0], kind);
+              const kindImages = await generateImages(stageCtx, kindBrief, kind);
+              const kindReadback = await qaImages(stageCtx, kindImages, kindBrief);
+              const kindChecked = await regenerateFailures(
+                stageCtx,
+                kindBrief,
+                kindReadback,
+                ctx.qaRegenerationRounds,
+                kind,
+              );
+              return kindChecked.map((variant) => ({ ...variant, variantKind: kind }));
+            }),
+          )
+        ).flat()
+      : await (async () => {
+          const brief = await composeBrief(stageCtx, copy[0]);
+          const images = await generateImages(stageCtx, brief);
+          const readback = await qaImages(stageCtx, images, brief);
+          // FR-3.5: a failed readback earns one bounded retry rather than
+          // shipping a variant with misspelled text on it. The ceiling is
+          // configuration.
+          return regenerateFailures(stageCtx, brief, readback, ctx.qaRegenerationRounds);
+        })();
 
     // One transaction: a job that reports `succeeded` must never be missing
     // half its output. Partial rows would surface in the UI as a generation
@@ -101,6 +269,7 @@ export async function runGeneration(
             height: variant.height,
             provider: variant.provider,
             model: variant.model,
+            variantKind: variant.variantKind ?? null,
             qaResult: {
               passed: variant.passed,
               checked: variant.checked,
@@ -145,8 +314,37 @@ export async function runGeneration(
     // No-op for an ordinary one-shot generation; only fires for jobs a
     // scheduled campaign created, moving that post to 'pending_approval' and
     // notifying the user it's ready to review.
-    await onGenerationSucceeded(ctx.db, job.jobId);
+    //
+    // Isolated in its own try/catch rather than left to the one below: the job
+    // row was already committed 'succeeded' above, with real assets/copy
+    // inserted and providers already paid for. If this hook throws (e.g. a
+    // transient DB blip), the outer catch cannot tell that apart from a real
+    // pipeline failure — it would flip the row back to 'running'/'failed' and,
+    // on a non-final attempt, let BullMQ retry the whole job, re-running the
+    // pipeline from scratch and inserting a second set of asset/copy rows
+    // while double-billing every provider call. A hook failure is treated as
+    // best-effort instead, the same way `sendExpoPush` inside it already is.
+    try {
+      await onGenerationSucceeded(ctx.db, job.jobId);
+    } catch (hookError) {
+      console.error(
+        `[content:generation] job ${job.jobId}: succeeded, but the post-success hook failed — ${describeError(hookError)}`,
+        hookError,
+      );
+    }
   } catch (error) {
+    // Cancellation is an outcome, not a fault. The row already says
+    // `cancelled`; writing `failed` over it would contradict what the user was
+    // told, and retrying would re-run work they explicitly stopped.
+    if (error instanceof GenerationCancelledError) {
+      console.warn(`[content:generation] job ${job.jobId}: cancelled by the user, stopping`);
+      await ctx.db
+        .update(schema.generationJobs)
+        .set({ stage: null, finishedAt: new Date() })
+        .where(eq(schema.generationJobs.id, job.jobId));
+      return;
+    }
+
     // A failure that cannot succeed on a retry ends the job here, whatever
     // attempts remain. Without this a quota-exhausted key re-ran the whole
     // pipeline three times over ~30s of backoff, paying for every image the

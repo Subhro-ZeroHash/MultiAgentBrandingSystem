@@ -30,6 +30,13 @@ const envSchema = z.object({
   /** Serves text/JSON/vision. `gemini` needs no Anthropic credential. */
   LLM_PROVIDER: z.enum(['anthropic', 'gemini']).default('anthropic'),
 
+  /** Real-time web search for the Trend Research Agent. Declared here purely
+   *  for startup validation and the "three places" rule (CLAUDE.md) —
+   *  createAiRegistryFromEnv reads process.env directly, the same as every
+   *  other provider key in this schema. */
+  TAVILY_API_KEY: optionalText(),
+  WEB_SEARCH_PROVIDER: z.enum(['tavily', 'stub']).default('tavily'),
+
   S3_BUCKET: z.string().default('bmas-assets'),
   S3_ENDPOINT: optionalUrl(),
   /** Host clients use to fetch assets. Differs from S3_ENDPOINT whenever the

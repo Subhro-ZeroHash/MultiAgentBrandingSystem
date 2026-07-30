@@ -34,8 +34,10 @@ const DEFAULTS = {
 } as const;
 
 /** HTTP statuses worth trying again. 429 is deliberately excluded here and
- *  handled by `isRetryable`, because not every 429 is transient. */
-const RETRYABLE_STATUS = new Set([408, 409, 500, 502, 503, 504]);
+ *  handled by `isRetryable`, because not every 429 is transient. 529 is
+ *  Anthropic's "overloaded_error" status — its documented signal to retry
+ *  with backoff, distinct from the generic 5xx codes above it. */
+const RETRYABLE_STATUS = new Set([408, 409, 500, 502, 503, 504, 529]);
 
 /** Walks `cause` so a status buried under a wrapper is still found. */
 function statusOf(error: unknown): number | undefined {
