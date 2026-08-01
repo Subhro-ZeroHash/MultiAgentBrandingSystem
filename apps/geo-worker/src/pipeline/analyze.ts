@@ -63,14 +63,18 @@ export async function analyzeAnswer(
     .join('\n');
 
   const system = [
-    'You extract brand mentions from an AI assistant answer for a visibility-tracking product.',
+    'You extract business mentions from an AI assistant answer for a brand-visibility product.',
+    'You are given ONE tracked brand and a list of known competitors.',
     'Rules:',
-    '1. Only report entities explicitly named in the answer text. Never infer from your own knowledge.',
-    '2. `excerpt` must be copied verbatim from the answer.',
-    '3. `position` is the 1-based order in which the entity first appears among all named businesses.',
-    '4. `sentiment` describes how the answer characterises the entity, not your own opinion.',
-    '5. `citedUrl` is a URL from the provided citation list only when the answer ties it to that entity; otherwise null.',
-    '6. If neither the tracked brand nor any competitor appears, return an empty mentions array.',
+    '1. Report every distinct business named in the answer (a brand, shop, restaurant, or retailer), in the order it appears. Reporting the whole field is what makes share-of-voice meaningful — do not report only the tracked brand.',
+    '2. entityType is "brand" ONLY for the tracked brand named below, including clear variants of its name (an abbreviation, or the name with or without a suffix such as "Silks" or "(A2B)"). EVERY other business is "competitor", including businesses that are not in the known-competitor list.',
+    '3. Never label a business as "brand" unless it is the tracked brand. Do NOT report products, dishes, ingredients, cities, or generic categories — only named businesses.',
+    '4. Never infer from your own knowledge; report only what the answer text names.',
+    '5. `excerpt` must be copied verbatim from the answer.',
+    '6. `position` is the 1-based order in which the business first appears among all named businesses.',
+    '7. `sentiment` describes how the answer characterises the business, not your own opinion.',
+    '8. `citedUrl` is a URL from the provided citation list only when the answer ties it to that business; otherwise null.',
+    '9. If no businesses are named at all, return an empty mentions array.',
   ].join('\n');
 
   const prompt = [
