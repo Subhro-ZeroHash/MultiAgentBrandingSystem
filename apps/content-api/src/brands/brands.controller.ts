@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post } from '@nestjs/common';
 import { createBrandKitSchema, createProductSchema, updateBrandKitSchema, type UpdateBrandKitInput } from '@bmas/shared';
 import { z } from 'zod';
 import { getUserIdFromHeader } from '../common/user-id.js';
@@ -20,6 +20,11 @@ type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 @Controller('brands')
 export class BrandsController {
   constructor(private readonly brands: BrandsService) {}
+
+  @Get()
+  list(@Headers('x-user-id') userIdHeader: string | undefined) {
+    return this.brands.listForOwner(getUserIdFromHeader(userIdHeader));
+  }
 
   @Get(':id')
   findOne(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
@@ -44,6 +49,11 @@ export class BrandsController {
       getUserIdFromHeader(userIdHeader),
       body as Parameters<BrandsService['create']>[1],
     );
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
+    return this.brands.remove(id, getUserIdFromHeader(userIdHeader));
   }
 
   @Get(':id/products')

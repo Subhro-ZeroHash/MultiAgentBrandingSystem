@@ -3,11 +3,18 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { and, eq, schema, type Database } from '@bmas/db';
+import type { Queue } from 'bullmq';
 import type { CreateBrandKitInput, CreateProductInput, UpdateBrandKitInput } from '@bmas/shared';
-import { DATABASE, OBJECT_STORE } from '../core/core.module.js';
+import {
+  DATABASE,
+  GENERATION_QUEUE,
+  OBJECT_STORE,
+  SCHEDULED_POST_PUBLISH_QUEUE,
+} from '../core/core.module.js';
 import { productImageKey, type ObjectStore } from '../core/object-store.js';
 
 /** Reference photos are conditioning input, not arbitrary uploads. Bounded so a
@@ -30,9 +37,13 @@ export interface ProductImageUpload {
  */
 @Injectable()
 export class BrandsService {
+  private readonly logger = new Logger(BrandsService.name);
+
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
+    @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly publishQueue: Queue,
+    @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -55,6 +66,16 @@ export class BrandsService {
     if (brand.ownerId !== ownerId) {
       throw new ForbiddenException('This brand belongs to another account.');
     }
+  }
+
+  /** Every brand the caller owns, oldest first so the list order is stable as
+   *  brands are added — the client picks an active one from this. */
+  async listForOwner(ownerId: string) {
+    return this.db
+      .select()
+      .from(schema.brands)
+      .where(eq(schema.brands.ownerId, ownerId))
+      .orderBy(schema.brands.createdAt);
   }
 
   async findOne(brandId: string, ownerId: string) {
@@ -120,6 +141,77 @@ export class BrandsService {
 
     if (!brand) throw new Error('Insert returned no row');
     return brand;
+  }
+
+  /**
+   * Deletes a brand and everything filed under it.
+   *
+   * The row deletion itself is one statement — every child table (products,
+   * generation jobs, scheduled campaigns and posts, trend research, the site
+   * profile, and GEO's tracking tables) cascades from `core.brands`, and
+   * `core.cost_events` deliberately nulls its brand instead so the spend
+   * ledger stays complete.
+   *
+   * What does not cascade is queued work: BullMQ lives in Redis, so a delayed
+   * publish job or a not-yet-run generation would still fire against rows that
+   * no longer exist. Those are drained first, the same way cancelling a
+   * campaign does it (`SchedulingService.tearDownCampaign`).
+   */
+  async remove(brandId: string, ownerId: string): Promise<{ id: string; name: string }> {
+    const brand = await this.findOne(brandId, ownerId);
+
+    // Every brand-scoped screen needs something to point at, and the app has
+    // no "no brand selected" state to fall back to. Refusing here is kinder
+    // than leaving an account that cannot generate anything.
+    const owned = await this.db
+      .select({ id: schema.brands.id })
+      .from(schema.brands)
+      .where(eq(schema.brands.ownerId, ownerId));
+    if (owned.length <= 1) {
+      throw new BadRequestException(
+        'This is your only brand. Create another one before deleting this.',
+      );
+    }
+
+    await this.drainQueuedWork(brandId);
+
+    await this.db.delete(schema.brands).where(eq(schema.brands.id, brandId));
+    return { id: brand.id, name: brand.name };
+  }
+
+  /**
+   * Removes this brand's not-yet-run jobs from Redis.
+   *
+   * Best-effort per job: a job that already started, or that BullMQ has
+   * cleaned up, throws on `remove()`. That is not a reason to abort the
+   * delete — the worst case is one orphaned job that no-ops when it looks its
+   * row up and finds nothing, which both processors already handle.
+   */
+  private async drainQueuedWork(brandId: string): Promise<void> {
+    // Publish jobs are keyed by the scheduled post's own id (see
+    // SchedulingService.enqueuePublish), so the row ids are the job ids.
+    const posts = await this.db
+      .select({ id: schema.scheduledPosts.id })
+      .from(schema.scheduledPosts)
+      .where(eq(schema.scheduledPosts.brandId, brandId));
+
+    // Generation jobs are keyed by idempotency key, not by row id.
+    const generations = await this.db
+      .select({ idempotencyKey: schema.generationJobs.idempotencyKey })
+      .from(schema.generationJobs)
+      .where(eq(schema.generationJobs.brandId, brandId));
+
+    const removals = [
+      ...posts.map((post) => this.publishQueue.getJob(post.id)),
+      ...generations.map((generation) => this.generationQueue.getJob(generation.idempotencyKey)),
+    ];
+
+    const found = await Promise.all(removals.map((p) => p.catch(() => undefined)));
+    await Promise.all(found.map((job) => job?.remove().catch(() => undefined)));
+
+    this.logger.log(
+      `Draining brand ${brandId}: ${posts.length} scheduled posts, ${generations.length} generations.`,
+    );
   }
 
   async listProducts(brandId: string, ownerId: string) {
