@@ -4,13 +4,19 @@ import {
   QUEUES,
   contentEditJobSchema,
   contentGenerationJobSchema,
+  intelligenceResearchJobSchema,
   scheduledPostPublishJobSchema,
   trendResearchJobSchema,
 } from '@bmas/shared';
-import { UnrecoverableError, Worker } from 'bullmq';
+import { Queue, UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
 import { runAssetEdit } from './pipeline/asset-edit.js';
 import { runGeneration } from './pipeline/generate.js';
+import { runIntelligenceResearch } from './pipeline/intelligence-research.js';
+import {
+  runResearchSchedulerTick,
+  scheduleResearchSchedulerTick,
+} from './pipeline/research-scheduler.js';
 import { runScheduledPostPublish } from './pipeline/scheduled-post-publish.js';
 import { runTrendResearch } from './pipeline/trend-research.js';
 
@@ -77,6 +83,42 @@ trendResearchWorker.on('failed', (job, error) => {
   console.error(`[trend-research] job ${job?.id} failed: ${describeError(error)}`);
 });
 
+// The leads/business-intelligence counterpart to trend research, same
+// concurrency reasoning: one search-and-synthesize pass, no image spend.
+const intelligenceResearchWorker = new Worker(
+  QUEUES.intelligenceResearch,
+  async (job) => runIntelligenceResearch(ctx, intelligenceResearchJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+intelligenceResearchWorker.on('failed', (job, error) => {
+  console.error(`[intelligence-research] job ${job?.id} failed: ${describeError(error)}`);
+});
+
+// Producer-side handles for the scheduler tick to enqueue into. Separate from
+// the Worker instances above (which only consume) — BullMQ's Queue and Worker
+// are different roles on the same queue name, and the tick needs to add jobs,
+// not process them.
+const trendResearchProducer = new Queue(QUEUES.trendResearch, { connection: ctx.redis });
+const intelligenceResearchProducer = new Queue(QUEUES.intelligenceResearch, {
+  connection: ctx.redis,
+});
+const researchSchedulerQueue = new Queue(QUEUES.researchScheduler, { connection: ctx.redis });
+
+// One repeatable job, registered idempotently on every boot (see
+// scheduleResearchSchedulerTick's own comment on why that's safe).
+await scheduleResearchSchedulerTick(researchSchedulerQueue);
+
+const researchSchedulerWorker = new Worker(
+  QUEUES.researchScheduler,
+  async () => runResearchSchedulerTick(ctx, trendResearchProducer, intelligenceResearchProducer),
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+researchSchedulerWorker.on('failed', (job, error) => {
+  console.error(`[research-scheduler] tick ${job?.id} failed: ${describeError(error)}`);
+});
+
 // One provider call per job. `runAssetEdit` never rethrows (see its own
 // comment — attempts:1 is a deliberate, capped user-facing budget), so
 // 'failed' here would only ever fire on something outside that try/catch,
@@ -118,7 +160,12 @@ async function shutdown(signal: string): Promise<void> {
       generationWorker.close(),
       scheduledPostPublishWorker.close(),
       trendResearchWorker.close(),
+      intelligenceResearchWorker.close(),
+      researchSchedulerWorker.close(),
       contentEditWorker.close(),
+      trendResearchProducer.close(),
+      intelligenceResearchProducer.close(),
+      researchSchedulerQueue.close(),
     ]);
     await closeDatabase(ctx.db);
   } catch (error) {

@@ -12,6 +12,7 @@ export const AI_REGISTRY = Symbol('AI_REGISTRY');
 export const GENERATION_QUEUE = Symbol('GENERATION_QUEUE');
 export const SCHEDULED_POST_PUBLISH_QUEUE = Symbol('SCHEDULED_POST_PUBLISH_QUEUE');
 export const TREND_RESEARCH_QUEUE = Symbol('TREND_RESEARCH_QUEUE');
+export const INTELLIGENCE_RESEARCH_QUEUE = Symbol('INTELLIGENCE_RESEARCH_QUEUE');
 export const CONTENT_EDIT_QUEUE = Symbol('CONTENT_EDIT_QUEUE');
 export const ASSET_URLS = Symbol('ASSET_URLS');
 export const OBJECT_STORE = Symbol('OBJECT_STORE');
@@ -77,6 +78,10 @@ function redisConnection() {
       useFactory: () => new Queue(QUEUES.trendResearch, { connection: redisConnection() }),
     },
     {
+      provide: INTELLIGENCE_RESEARCH_QUEUE,
+      useFactory: () => new Queue(QUEUES.intelligenceResearch, { connection: redisConnection() }),
+    },
+    {
       provide: CONTENT_EDIT_QUEUE,
       useFactory: () => new Queue(QUEUES.contentEdit, { connection: redisConnection() }),
     },
@@ -87,6 +92,7 @@ function redisConnection() {
     GENERATION_QUEUE,
     SCHEDULED_POST_PUBLISH_QUEUE,
     TREND_RESEARCH_QUEUE,
+    INTELLIGENCE_RESEARCH_QUEUE,
     CONTENT_EDIT_QUEUE,
     ASSET_URLS,
     OBJECT_STORE,
@@ -98,6 +104,7 @@ export class CoreModule implements OnApplicationShutdown {
     @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
     @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly scheduledPostPublishQueue: Queue,
     @Inject(TREND_RESEARCH_QUEUE) private readonly trendResearchQueue: Queue,
+    @Inject(INTELLIGENCE_RESEARCH_QUEUE) private readonly intelligenceResearchQueue: Queue,
     @Inject(CONTENT_EDIT_QUEUE) private readonly contentEditQueue: Queue,
   ) {}
 
@@ -107,6 +114,7 @@ export class CoreModule implements OnApplicationShutdown {
       this.generationQueue.close(),
       this.scheduledPostPublishQueue.close(),
       this.trendResearchQueue.close(),
+      this.intelligenceResearchQueue.close(),
       this.contentEditQueue.close(),
     ]);
   }

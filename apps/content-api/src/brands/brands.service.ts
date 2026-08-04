@@ -16,6 +16,8 @@ import {
   SCHEDULED_POST_PUBLISH_QUEUE,
 } from '../core/core.module.js';
 import { productImageKey, type ObjectStore } from '../core/object-store.js';
+import { AutomationSettingsService } from './automation-settings.service.js';
+import { BrandContextService } from './brand-context.service.js';
 
 /** Reference photos are conditioning input, not arbitrary uploads. Bounded so a
  *  single request cannot exhaust memory, and restricted to the types the image
@@ -44,6 +46,8 @@ export class BrandsService {
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
     @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly publishQueue: Queue,
     @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
+    private readonly context: BrandContextService,
+    private readonly automation: AutomationSettingsService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -140,6 +144,15 @@ export class BrandsService {
       .returning();
 
     if (!brand) throw new Error('Insert returned no row');
+
+    // Every brand owns its Brand Brain from the moment it exists: a context row
+    // seeded from the kit, and automation settings defaulting to fully manual.
+    // Both are idempotent, so this is also the repair path for brands created
+    // before the feature landed — but doing it here means the common case never
+    // takes the "missing, create it" branch on a read.
+    await this.context.ensureContext(brand.id);
+    await this.automation.ensureSettings(brand.id);
+
     return brand;
   }
 

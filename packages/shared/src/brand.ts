@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { entityIdSchema } from './common.js';
+import { entityIdSchema, partialForUpdate } from './common.js';
 
 /**
  * The Brand Kit is the one entity both systems share: content generation reads
@@ -56,5 +56,7 @@ export const createBrandKitSchema = brandKitSchema
   });
 export type CreateBrandKitInput = z.infer<typeof createBrandKitSchema>;
 
-export const updateBrandKitSchema = createBrandKitSchema.partial();
+/** Defaults stripped, not merely made optional — see `partialForUpdate`. A
+ *  plain `.partial()` here let a rename empty the brand's banned topics. */
+export const updateBrandKitSchema = partialForUpdate(createBrandKitSchema);
 export type UpdateBrandKitInput = z.infer<typeof updateBrandKitSchema>;

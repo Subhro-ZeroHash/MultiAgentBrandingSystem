@@ -1,5 +1,11 @@
 import { describeError, withRetry, withTimeout, type AiRegistry } from '@bmas/ai';
-import { eq, schema, type Brand, type Database } from '@bmas/db';
+import {
+  eq,
+  schema,
+  type Brand,
+  type ContentTaskContext,
+  type Database,
+} from '@bmas/db';
 import {
   OUTPUT_FORMAT_DIMENSIONS,
   copyPackSchema,
@@ -53,6 +59,12 @@ export interface StageContext {
    *  otherwise, same "resolve once, no stage has to ask" shape as
    *  `siteIdentity`. */
   trendContext?: TrendContext | null;
+  /** Brand Memory for this job, assembled by the Context Manager in @bmas/db
+   *  (see `loadBrandMemory` in generate.ts). Carries what the Brand Kit does
+   *  not: what the brand stands for, what it posts about, and what this user
+   *  has already asked to have changed. Optional so the stages degrade to
+   *  their previous behaviour when the read failed. */
+  brandMemory?: ContentTaskContext | null;
 }
 
 /** Which extra knowledge source a variant's brief draws on, when a job runs
@@ -290,6 +302,17 @@ export async function composeBrief(
     brand.colors.length
       ? `Work the brand colours (${brand.colors.join(', ')}) into the palette as accents. Do not let them dictate what appears in the scene.`
       : null,
+    // Brand Memory. Fenced exactly like `brand.category` and the site-identity
+    // block below, and for the same reason: this is the brand's standing
+    // character, not this campaign's subject. Positioning in particular is a
+    // sentence about the business, and a model handed it unqualified will
+    // happily illustrate the sentence instead of the product.
+    ctx.brandMemory?.positioning
+      ? `What sets this brand apart: ${ctx.brandMemory.positioning} Let this inform the mood and the level of polish, not the subject.`
+      : null,
+    ctx.brandMemory?.contentPillars.length
+      ? `Themes this brand's content usually lives in: ${ctx.brandMemory.contentPillars.join(', ')}. Treat these as the brand's habitual register, not as things to depict.`
+      : null,
     '',
     '**Art direction:**',
     STYLE_DIRECTION[request.styleTemplate],
@@ -361,6 +384,20 @@ export async function composeBrief(
     brand.bannedTopics.length
       ? `Do not depict or reference, in any form: ${brand.bannedTopics.join(', ')}. This overrides every other instruction above if they would conflict.`
       : null,
+    // Learned memory, and the most concretely useful kind: a regeneration
+    // instruction is the user stating in their own words what was wrong with
+    // an image we already showed them. Repeating the same mistake across jobs
+    // is the single clearest way this platform reads as having no memory.
+    ctx.brandMemory?.rejectedPatterns.length
+      ? `This customer has previously asked for these corrections on their creatives — do not reproduce the problems they describe: ${ctx.brandMemory.rejectedPatterns.join('; ')}.`
+      : null,
+    ...(ctx.brandMemory?.learnings.length
+      ? [
+          `What has been observed to work for this brand: ${ctx.brandMemory.learnings
+            .map((learning) => learning.summary)
+            .join(' ')} Favour this where it does not conflict with the art direction.`,
+        ]
+      : []),
     '',
     // Named before the photograph section so the model has been told what each
     // attachment is before it is asked to use any of them. Several images
@@ -931,6 +968,19 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
               'Write for real customers, not marketers. ' +
               'Be authentic, avoid hype. ' +
               'No fake claims, no emoji spam, no pricing you were not given.' +
+              // Brand Memory. Unlike the image brief, copy may lean on what the
+              // brand stands for directly — words carry none of the hijack risk
+              // a rendered image does, and a caption that echoes the brand's
+              // actual positioning is precisely what makes it sound like them.
+              (ctx.brandMemory?.positioning
+                ? `What sets this brand apart, in their own words: ${ctx.brandMemory.positioning} ` +
+                  'Let this shape the angle where it genuinely applies to this product. '
+                : '') +
+              (ctx.brandMemory?.learnings.length
+                ? `What has been observed to work for this brand's audience: ${ctx.brandMemory.learnings
+                    .map((learning) => learning.summary)
+                    .join(' ')} Lean that way unless the product calls for otherwise. `
+                : '') +
               // Non-negotiable, so it sits in the system message rather than
               // the user turn where a long brief could bury it.
               (brand.bannedTopics.length

@@ -5,7 +5,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, inArray, schema, type Database, type ScheduledPost } from '@bmas/db';
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  recordFeedbackSignal,
+  schema,
+  type Database,
+  type ScheduledPost,
+} from '@bmas/db';
 import {
   QUEUES,
   computeScheduleSlots,
@@ -667,6 +676,30 @@ export class SchedulingService {
       )
       .returning();
     if (!updated) throw new BadRequestException('This post is no longer awaiting approval.');
+
+    // Brand Memory. Recorded at the weakest confidence in the set on purpose:
+    // "good enough to ship" is not "do more of this", and a system that treats
+    // it as one concludes that whatever it produced first is what the brand
+    // wants. It is still worth keeping — the pattern across many approvals is
+    // what Phase 5's analyzer will read.
+    //
+    // The caption is carried rather than a fixed sentence. An approval whose
+    // summary is a constant is worse than useless if it ever clears the prompt
+    // confidence floor: it becomes the newest content_format learning and puts
+    // a content-free sentence into every brief. Today it stays below that floor
+    // (see FEEDBACK_CONFIDENCE in the Context Manager, pinned by a test), but
+    // that is one constant away from changing, and a summary that names what
+    // was approved is useful either way.
+    await recordFeedbackSignal(this.db, {
+      brandId: updated.brandId,
+      kind: 'approved',
+      summary: updated.caption
+        ? `A post was approved and published as generated. Its caption was: "${updated.caption.slice(0, 200)}"`
+        : 'A post was approved for publishing as generated, without changes.',
+      sourcePostId: updated.id,
+      detail: { campaignId: updated.campaignId },
+    });
+
     return updated;
   }
 
@@ -708,6 +741,21 @@ export class SchedulingService {
     // It will not publish now, so its job is dead weight — and leaving it armed
     // means a later status change could let it fire.
     await this.removePublishJob(postId);
+
+    // A rejection is the strongest routine signal the platform gets: the user
+    // looked at a finished creative and declined to ship it. The caption is
+    // carried because it is the only description of *what* was rejected that
+    // survives — the image itself cannot go into a prompt.
+    await recordFeedbackSignal(this.db, {
+      brandId: updated.brandId,
+      kind: 'rejected',
+      summary: updated.caption
+        ? `The user rejected a post rather than publish it. Its caption was: "${updated.caption.slice(0, 200)}"`
+        : 'The user rejected a generated post rather than publish it.',
+      sourcePostId: updated.id,
+      detail: { campaignId: updated.campaignId },
+    });
+
     return updated;
   }
 

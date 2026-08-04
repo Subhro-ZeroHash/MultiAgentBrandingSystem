@@ -399,9 +399,59 @@ export class SocialService {
     // The `ig` rendition, not the stored bytes: a print format like poster_a4 is
     // 2480x3508 (0.707), below Instagram's 4:5 floor, and Meta rejects it
     // outright. The proxy letterboxes it into a legal shape on the way out.
-    return buildAssetLink(env.PUBLIC_ASSET_BASE_URL, assetId, env.ENCRYPTION_KEY, {
+    const link = buildAssetLink(env.PUBLIC_ASSET_BASE_URL, assetId, env.ENCRYPTION_KEY, {
       variant: 'ig',
     }).url;
+
+    await this.assertImageUrlReachable(link, env.PUBLIC_ASSET_BASE_URL);
+    return link;
+  }
+
+  /**
+   * Confirms the image URL actually serves an image before Meta is asked to
+   * download it.
+   *
+   * Without this, a `PUBLIC_ASSET_BASE_URL` pointing at a dead tunnel — the
+   * normal state of affairs a few hours after `pnpm tunnel` was last run,
+   * since the free Cloudflare URL changes on every restart — surfaces as
+   * Meta's "Only photo or video can be accepted as media type". That message
+   * describes what Meta received (an error page) rather than why, and sends
+   * you looking at the image, the aspect ratio, or the account, none of which
+   * are the problem. Failing here instead names the actual cause.
+   */
+  private async assertImageUrlReachable(url: string, baseUrl: string): Promise<void> {
+    const staleTunnelHint =
+      `Instagram could not have downloaded the image: ${baseUrl} is not serving it. ` +
+      'That origin is almost certainly a stale tunnel — the free Cloudflare URL changes ' +
+      'every time `pnpm tunnel` restarts. Restart the tunnel and set both ' +
+      'PUBLIC_ASSET_BASE_URL and INSTAGRAM_OAUTH_REDIRECT_URI to the new hostname.';
+
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    } catch {
+      throw new BadRequestException(staleTunnelHint);
+    }
+
+    // The body is never needed here — only the headers prove the URL serves an
+    // image. Cancelling avoids pulling the whole file across the tunnel twice
+    // (once for this check, once for Meta).
+    void response.body?.cancel();
+
+    if (!response.ok) {
+      throw new BadRequestException(
+        `${staleTunnelHint} (it answered ${response.status} for the signed image link)`,
+      );
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.startsWith('image/')) {
+      throw new BadRequestException(
+        `${baseUrl} answered with '${contentType || 'no content-type'}' instead of an image for ` +
+          'the signed link. Meta rejects that as "Only photo or video can be accepted as media ' +
+          'type". If that origin is a tunnel, it is pointing somewhere other than the web app.',
+      );
+    }
   }
 
   /**

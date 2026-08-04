@@ -1,4 +1,12 @@
-import { and, eq, inArray, schema, type Database } from '@bmas/db';
+import {
+  and,
+  eq,
+  getPublishingContext,
+  inArray,
+  recordContextSnapshot,
+  schema,
+  type Database,
+} from '@bmas/db';
 import type { ScheduledPostPublishJob } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
 import { sendExpoPush } from './scheduled-post-hooks.js';
@@ -93,6 +101,20 @@ export async function runScheduledPostPublish(
     // approved — the latter still needs expiring, so look at why.
     await expireIfUnreviewed(ctx, job.scheduledPostId);
     return;
+  }
+
+  // Publishing context (Rule 8): what the automation policy was at the moment
+  // this went out, and which accounts were connected. Credential-free by
+  // construction — `getPublishingContext` never selects the encrypted token —
+  // so this is safe to snapshot. The actual token is still fetched by the
+  // `/social/post` endpoint below, which owns decryption.
+  const publishing = await getPublishingContext(ctx.db, post.brandId).catch(() => null);
+  if (publishing) {
+    await recordContextSnapshot(ctx.db, {
+      brandId: post.brandId,
+      agentType: 'publishing',
+      snapshot: { ...publishing, scheduledPostId: post.id },
+    });
   }
 
   if (!post.accountId || !post.selectedAssetId || !post.caption) {

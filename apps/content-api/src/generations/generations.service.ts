@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { desc, eq, inArray, schema, type Database } from '@bmas/db';
+import { desc, eq, inArray, recordFeedbackSignal, schema, type Database } from '@bmas/db';
 import { QUEUES, type CreativeRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
@@ -285,6 +285,17 @@ export class GenerationsService {
           removeOnFail: 500,
         },
       );
+      // Brand Memory. The most directly useful signal the platform collects:
+      // the user has stated, in their own words, what was wrong with an image
+      // we showed them. Recorded only once the edit is genuinely queued — an
+      // instruction whose job failed to enqueue was never acted on, and the
+      // row is deleted below.
+      await recordFeedbackSignal(this.db, {
+        brandId: job.brandId,
+        kind: 'regenerated',
+        summary: `The user asked for this correction on a generated creative: "${instruction.slice(0, 200)}"`,
+        detail: { assetId: asset.id, rootAssetId: root, jobId },
+      });
     } catch (error) {
       await this.db.delete(schema.assetEdits).where(eq(schema.assetEdits.id, edit.id));
       throw error;

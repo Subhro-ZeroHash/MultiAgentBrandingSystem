@@ -302,6 +302,16 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  e2e:
+    dependencies:
+      '@bmas/db':
+        specifier: workspace:*
+        version: link:../packages/db
+    devDependencies:
+      tsx:
+        specifier: ^4.23.1
+        version: 4.23.1
+
   packages/ai:
     dependencies:
       '@anthropic-ai/sdk':
@@ -391,6 +401,9 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@22.20.1)(vite@8.1.5(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.1))
 
   packages/shared:
     dependencies:

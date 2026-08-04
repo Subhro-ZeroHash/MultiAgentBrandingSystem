@@ -8,5 +8,9 @@ import { SchedulingService } from './scheduling.service.js';
   imports: [GenerationsModule],
   controllers: [ScheduledCampaignsController, ScheduledPostsController],
   providers: [SchedulingService],
+  // Exported so TrendsModule can offer "Schedule for Approval" as a second
+  // destination for a trend opportunity, alongside the existing one-shot
+  // /create flow — see TrendsService.scheduleOpportunity.
+  exports: [SchedulingService],
 })
 export class SchedulingModule {}

@@ -1,5 +1,14 @@
 import { describeError, isPermanentFailure } from '@bmas/ai';
-import { and, desc, eq, ne, schema, sql } from '@bmas/db';
+import {
+  and,
+  eq,
+  getContentContext,
+  ne,
+  recordContextSnapshot,
+  schema,
+  sql,
+  type ContentTaskContext,
+} from '@bmas/db';
 import { UnrecoverableError } from 'bullmq';
 import type { ContentGenerationJob, CreativeRequest } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
@@ -12,7 +21,6 @@ import {
   regenerateFailures,
   type CheckedVariant,
   type StageContext,
-  type TrendContext,
   type VariantKind,
 } from './stages.js';
 
@@ -40,99 +48,29 @@ export interface AttemptInfo {
 }
 
 /**
- * The brand's website-derived identity, if there is one to use (FR-1.4).
+ * Brand Memory for this generation, assembled by the Context Manager.
  *
- * Gated on `appliedAt`: an import the user never confirmed, or confirmed only
- * for the Brand Kit fields, must not reach generation. Reading the column here
- * rather than in the stages means one query per job instead of two, and one
- * place where that rule lives.
+ * Replaces the two hand-rolled loaders that used to live here
+ * (`loadSiteIdentity` and `loadTrendContext`). They resolved the website
+ * opt-ins and the latest trend idea correctly, but they were the *only* brand
+ * data generation ever saw — the goals, positioning, content pillars and
+ * learned preferences the platform had been accumulating reached no prompt at
+ * all. Same reads, one place, plus everything that was being written and never
+ * read.
  *
- * A failure is swallowed deliberately. This is enrichment — a brand with no
- * site profile generates perfectly well without one — so a bad row should cost
- * some polish, never a paid job that was otherwise fine.
+ * A failure is swallowed deliberately, as before: this is enrichment, and a
+ * brand with no context generates perfectly well without it. A bad row should
+ * cost some polish, never a paid job that was otherwise fine.
  */
-async function loadSiteIdentity(
+async function loadBrandMemory(
   ctx: WorkerContext,
   brandId: string,
-): Promise<Pick<StageContext, 'siteIdentity' | 'logoStorageKey' | 'styleReferenceKeys'>> {
-  const none = { siteIdentity: null, logoStorageKey: null, styleReferenceKeys: [] };
-
+  includeTrend: boolean,
+): Promise<ContentTaskContext | null> {
   try {
-    const [row] = await ctx.db
-      .select({
-        analysis: schema.brandSiteProfiles.analysis,
-        appliedAt: schema.brandSiteProfiles.appliedAt,
-        logoStorageKey: schema.brandSiteProfiles.logoStorageKey,
-        logoAppliedAt: schema.brandSiteProfiles.logoAppliedAt,
-        styleReferenceKeys: schema.brandSiteProfiles.styleReferenceKeys,
-        styleReferencesAppliedAt: schema.brandSiteProfiles.styleReferencesAppliedAt,
-      })
-      .from(schema.brandSiteProfiles)
-      .where(eq(schema.brandSiteProfiles.brandId, brandId))
-      .limit(1);
-
-    if (!row) return none;
-
-    // Each opt-in is read independently: a user may want the art direction but
-    // not the logo, and resolving them together would couple two choices the
-    // apply endpoint deliberately keeps apart.
-    return {
-      siteIdentity: row.appliedAt ? (row.analysis ?? null) : null,
-      logoStorageKey: row.logoAppliedAt ? row.logoStorageKey : null,
-      styleReferenceKeys: row.styleReferencesAppliedAt ? (row.styleReferenceKeys ?? []) : [],
-    };
+    return await getContentContext(ctx.db, brandId, { includeTrend });
   } catch (error) {
-    console.error(`[generate] could not load the site profile for brand ${brandId}:`, error);
-    return none;
-  }
-}
-
-/**
- * The brand's most recent Trend Research result, if any — the 'trend'
- * variant's counterpart to `loadSiteIdentity` above, same shape: one best-
- * effort read, swallowed on failure, because a brand that never ran (or
- * whose last run found nothing) still generates fine without one.
- *
- * Automatic rather than a picked idea: the user asked for "the news and
- * trends we get by tavily" to shape one image, not a new required step in
- * the create flow, so this takes whatever the brand's last successful run
- * already surfaced. Same "sort ideas by score.overall in memory" idiom as
- * `trends.service.ts::getRun` — a run has at most 8 ideas, not worth a
- * database-side jsonb sort.
- */
-async function loadTrendContext(
-  ctx: WorkerContext,
-  brandId: string,
-): Promise<TrendContext | null> {
-  try {
-    const [run] = await ctx.db
-      .select({ id: schema.trendResearchRuns.id })
-      .from(schema.trendResearchRuns)
-      .where(
-        and(
-          eq(schema.trendResearchRuns.brandId, brandId),
-          eq(schema.trendResearchRuns.status, 'succeeded'),
-        ),
-      )
-      .orderBy(desc(schema.trendResearchRuns.createdAt))
-      .limit(1);
-    if (!run) return null;
-
-    const ideas = await ctx.db
-      .select({
-        title: schema.trendIdeas.title,
-        summary: schema.trendIdeas.summary,
-        recommendation: schema.trendIdeas.recommendation,
-        score: schema.trendIdeas.score,
-      })
-      .from(schema.trendIdeas)
-      .where(eq(schema.trendIdeas.runId, run.id));
-    if (ideas.length === 0) return null;
-
-    const top = [...ideas].sort((a, b) => b.score.overall - a.score.overall)[0]!;
-    return { title: top.title, summary: top.summary, recommendation: top.recommendation };
-  } catch (error) {
-    console.error(`[generate] could not load trend context for brand ${brandId}:`, error);
+    console.error(`[generate] could not load brand context for brand ${brandId}:`, error);
     return null;
   }
 }
@@ -169,6 +107,10 @@ export async function runGeneration(
   const request = row.request as unknown as CreativeRequest;
   const diverse = request.variantMode === 'diverse';
 
+  // The trend read is only worth paying for in diverse mode — a uniform-mode
+  // job (every scheduled campaign) never reaches the 'trend' variant.
+  const memory = await loadBrandMemory(ctx, job.brandId, diverse);
+
   const stageCtx: StageContext = {
     ai: ctx.ai,
     brand,
@@ -176,11 +118,29 @@ export async function runGeneration(
     db: ctx.db,
     storage: ctx.storage,
     jobId: job.jobId,
-    ...(await loadSiteIdentity(ctx, job.brandId)),
-    // Only fetched in diverse mode — a uniform-mode job (every scheduled
-    // campaign) never reads it, so there is no reason to spend the query.
-    trendContext: diverse ? await loadTrendContext(ctx, job.brandId) : null,
+    siteIdentity: memory?.siteIdentity ?? null,
+    logoStorageKey: memory?.logoStorageKey ?? null,
+    styleReferenceKeys: memory?.styleReferenceKeys ?? [],
+    trendContext: memory?.currentTrend
+      ? {
+          title: memory.currentTrend.title,
+          summary: memory.currentTrend.summary,
+          recommendation: memory.currentTrend.recommendation,
+        }
+      : null,
+    brandMemory: memory,
   };
+
+  // Correlated to the job, so "why did this creative come out like that?" is
+  // answerable from the row rather than reconstructed from today's context.
+  if (memory) {
+    await recordContextSnapshot(ctx.db, {
+      brandId: job.brandId,
+      agentType: 'content',
+      snapshot: { ...memory, variantMode: request.variantMode ?? 'uniform' },
+      usedInJobId: job.jobId,
+    });
+  }
 
   /**
    * Advances the stage, and doubles as the cancellation checkpoint.

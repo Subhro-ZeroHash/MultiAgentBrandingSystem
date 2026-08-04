@@ -15,6 +15,7 @@ import type {
   SiteExtraction,
   SiteProfileStatus,
 } from '@bmas/shared';
+import { BrandContextService } from '../brands/brand-context.service.js';
 import { AI_REGISTRY, DATABASE, OBJECT_STORE } from '../core/core.module.js';
 import type { ObjectStore } from '../core/object-store.js';
 import { analyzeSite } from './analyze-site.js';
@@ -43,6 +44,7 @@ export class BrandSiteService {
     @Inject(DATABASE) private readonly db: Database,
     @Inject(AI_REGISTRY) private readonly ai: AiRegistry,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
+    private readonly context: BrandContextService,
   ) {}
 
   private async assertBrandOwned(brandId: string, ownerId: string): Promise<void> {
@@ -292,6 +294,18 @@ export class BrandSiteService {
       .returning();
 
     if (!updated) throw new Error('Update returned no row');
+
+    // Fill the Brand Brain from the same reading. Gaps only, and skipped
+    // entirely once the user has confirmed their context — see
+    // `updateBrandContextFromWebsite`. Not fatal to the apply: the Brand Kit
+    // write above already succeeded, and failing the request now would tell the
+    // user their palette was rejected when it was not.
+    if (profile.analysis) {
+      await this.context
+        .updateBrandContextFromWebsite(brandId, profile.analysis)
+        .catch(() => undefined);
+    }
+
     return updated as BrandSiteProfile;
   }
 

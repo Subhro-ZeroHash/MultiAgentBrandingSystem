@@ -1,14 +1,16 @@
 # Brand Marketing Multi-Agent System
 
-Two products, one Brand Kit, one repo:
+Two products, one Brand Kit, one repo. The Creative Content Agent now includes the **Brand Brain**—a persistent context and memory system that learns from user feedback and informs all future generations.
 
 | System                     | What it does                                                              | Apps                            |
 | -------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
-| **Creative Content Agent** | Product photos + a structured request → poster/ad image + matching copy   | `content-api`, `content-worker` |
+| **Creative Content Agent** | Product photos + a structured request → poster/ad image + matching copy, informed by accumulated brand memory   | `content-api`, `content-worker` |
 | **GEO**                    | Measures how ChatGPT / Perplexity / Gemini / Claude describe the business | `geo-api`, `geo-worker`         |
+| **Brand Brain** ✨         | Persistent context, learned preferences, feedback capture, and audit trail for every brand | Part of content-api/worker      |
 
-Both read the same `core.brands` Brand Kit and share the provider-abstraction
-layer, the database package, and the Zod contracts.
+Both products read the same `core.brands` Brand Kit and share the provider-abstraction
+layer, the database package, and the Zod contracts. The Brand Brain adds four new tables
+(`brand_context`, `brand_preferences`, `automation_settings`, `context_snapshots`) to make brand knowledge persistent and queryable by the content generation pipeline.
 
 ## Layout
 

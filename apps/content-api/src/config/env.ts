@@ -35,7 +35,11 @@ const envSchema = z.object({
    *  createAiRegistryFromEnv reads process.env directly, the same as every
    *  other provider key in this schema. */
   TAVILY_API_KEY: optionalText(),
-  WEB_SEARCH_PROVIDER: z.enum(['tavily', 'stub']).default('tavily'),
+  /** Second, independent search provider for the signal pipeline (see
+   *  AiRegistry.configuredWebSearches). Optional — the pipeline runs on
+   *  Tavily alone without it. */
+  SERPAPI_KEY: optionalText(),
+  WEB_SEARCH_PROVIDER: z.enum(['tavily', 'serpapi', 'stub']).default('tavily'),
 
   S3_BUCKET: z.string().default('bmas-assets'),
   S3_ENDPOINT: optionalUrl(),

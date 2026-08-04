@@ -19,6 +19,7 @@
     "OPENAI_API_KEY",
     "PERPLEXITY_API_KEY",
     "TAVILY_API_KEY",
+    "SERPAPI_KEY",
     "WEB_SEARCH_PROVIDER",
     "S3_*",
     "R2_*"

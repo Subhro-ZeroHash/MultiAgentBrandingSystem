@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgSchema,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -14,7 +15,14 @@ import {
 // Type-only, same reasoning as the site-profile jsonb columns in core.ts: the
 // schema file stays free of runtime imports, but the payloads are worth typing
 // against the contract that validates them.
-import type { TrendScore, TrendSource, TrendSuggestedRequest } from '@bmas/shared';
+import type {
+  BrandCompetitor,
+  IntelligenceScore,
+  PreferenceValue,
+  TrendScore,
+  TrendSource,
+  TrendSuggestedRequest,
+} from '@bmas/shared';
 import { brands, users } from './core.js';
 
 /** Owned by the content-generation workstream. */
@@ -536,6 +544,19 @@ export const trendContentType = content.enum('trend_content_type', [
   'campaign',
 ]);
 
+/** What the user did with an opportunity once it was shown. Mutated in
+ *  place, not append-only — a run's opportunities have one current state
+ *  each, not a history of states. The append-only side of "ignored"/"worked
+ *  on" is a row in `brand_preferences`, written once via
+ *  `recordFeedbackSignal` when the status changes — this column is UI
+ *  state, that table is memory. */
+export const trendOpportunityStatus = content.enum('trend_opportunity_status', [
+  'new',
+  'saved',
+  'ignored',
+  'working_on',
+]);
+
 /** One "Find Trending Content Ideas" click. Kept separate from
  *  `generation_jobs` — researching is a distinct step upstream of generation,
  *  and a run may never lead to a generation at all if nothing surfaced fits. */
@@ -563,8 +584,21 @@ export const trendResearchRuns = content.table(
   ],
 );
 
-export const trendIdeas = content.table(
-  'trend_ideas',
+/**
+ * Raw evidence, one row per search-provider result — the layer that exists
+ * independently of any AI judgment. See the header of
+ * `packages/shared/src/content/trends.ts` for the full reasoning: storing
+ * only a synthesized "idea" means every past judgment is a black box; storing
+ * the signals it was built from means the evidence outlives the model call
+ * that interpreted it.
+ *
+ * `source` and `signalType` are `text`, not enums, on purpose — adding a
+ * provider (Bing, Reddit, a paid social-listening contract) later is new rows
+ * under this same shape, not a migration. `SignalSource`/`SignalType` in
+ * @bmas/shared are where that vocabulary actually lives and grows.
+ */
+export const trendSignals = content.table(
+  'trend_signals',
   {
     id: text('id')
       .primaryKey()
@@ -572,6 +606,52 @@ export const trendIdeas = content.table(
     runId: text('run_id')
       .notNull()
       .references(() => trendResearchRuns.id, { onDelete: 'cascade' }),
+    source: text('source').notNull(),
+    signalType: text('signal_type').notNull(),
+    /** Null until synthesis clusters this signal under a canonical name.
+     *  Several signals share one topic once clustered. */
+    topic: text('topic'),
+    title: text('title').notNull(),
+    snippet: text('snippet').notNull(),
+    /** 0-100. How prominent this one piece of evidence is on its own — not
+     *  brand relevance, which is judged once at the opportunity level. */
+    strength: real('strength').notNull(),
+    sourceUrl: text('source_url').notNull(),
+    publishedAt: text('published_at'),
+    /** Set once synthesis clusters this signal into an opportunity. Stays
+     *  null forever for a signal judged too weak/irrelevant to cluster —
+     *  that is a legitimate outcome, not a bug. `ON DELETE SET NULL`: the
+     *  raw evidence outlives the opportunity it once fed, matching
+     *  `brand_preferences.learned_from`'s reasoning — deleting a conclusion
+     *  should not erase the evidence that produced it. */
+    opportunityId: text('opportunity_id').references((): AnyPgColumn => trendOpportunities.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('trend_signals_run_idx').on(t.runId),
+    index('trend_signals_opportunity_idx').on(t.opportunityId),
+  ],
+);
+
+/** The AI's conclusion after clustering related signals and judging them
+ *  against the brand — what "Trend Alerts" actually shows. Replaces the
+ *  single-layer `trend_ideas` model: everything below `signalCount` used to
+ *  live directly off one search call, now lives off a clustered set of
+ *  `trend_signals` rows this table's id is the parent of. */
+export const trendOpportunities = content.table(
+  'trend_opportunities',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    runId: text('run_id')
+      .notNull()
+      .references(() => trendResearchRuns.id, { onDelete: 'cascade' }),
+    /** Canonical cluster name, matching the `topic` written onto every
+     *  signal feeding this opportunity. */
+    topic: text('topic').notNull(),
     category: trendCategory('category').notNull(),
     title: text('title').notNull(),
     summary: text('summary').notNull(),
@@ -583,31 +663,422 @@ export const trendIdeas = content.table(
      *  `overall` is never asked of the model directly — see
      *  computeTrendScore in @bmas/shared. */
     score: jsonb('score').$type<TrendScore>().notNull(),
+    /** Denormalized count of signals clustered into this opportunity —
+     *  "supported by 5 signals" without a join on every feed read. */
+    signalCount: integer('signal_count').notNull(),
     /** Cross-checked against the run's actual search results before storage;
      *  a citation that didn't survive that check is dropped, not stored. */
     sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
-    /** Prefills a generation request when the user acts on this idea.
-     *  Missing brandId/productId on purpose — the app fills those in once the
-     *  user picks a product, and every field here stays user-editable. */
+    /** Prefills a generation request when the user acts on this opportunity.
+     *  Missing brandId/productId on purpose — the app fills those in once
+     *  the user picks a product, and every field here stays user-editable. */
     suggestedRequest: jsonb('suggested_request').$type<TrendSuggestedRequest>().notNull(),
+    status: trendOpportunityStatus('status').notNull().default('new'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('trend_ideas_run_idx').on(t.runId)],
+  (t) => [index('trend_opportunities_run_idx').on(t.runId)],
 );
 
 export const trendResearchRunsRelations = relations(trendResearchRuns, ({ one, many }) => ({
   brand: one(brands, { fields: [trendResearchRuns.brandId], references: [brands.id] }),
-  ideas: many(trendIdeas),
+  signals: many(trendSignals),
+  opportunities: many(trendOpportunities),
 }));
 
-export const trendIdeasRelations = relations(trendIdeas, ({ one }) => ({
-  run: one(trendResearchRuns, { fields: [trendIdeas.runId], references: [trendResearchRuns.id] }),
+export const trendSignalsRelations = relations(trendSignals, ({ one }) => ({
+  run: one(trendResearchRuns, { fields: [trendSignals.runId], references: [trendResearchRuns.id] }),
+  opportunity: one(trendOpportunities, {
+    fields: [trendSignals.opportunityId],
+    references: [trendOpportunities.id],
+  }),
 }));
+
+export const trendOpportunitiesRelations = relations(trendOpportunities, ({ one, many }) => ({
+  run: one(trendResearchRuns, {
+    fields: [trendOpportunities.runId],
+    references: [trendResearchRuns.id],
+  }),
+  signals: many(trendSignals),
+}));
+
+// ---------------------------------------------------------------------------
+// Brand Brain
+//
+// Persistent per-brand understanding, read by every agent in the autonomous
+// loop. Split across four tables because the four kinds of knowledge change on
+// unrelated clocks and have unrelated write patterns — see the header of
+// packages/shared/src/content/brand-context.ts for the full reasoning.
+//
+// `content` rather than `core`: GEO reads the Brand Kit, but none of this. A
+// core change needs both workstream owners (CLAUDE.md rule 4).
+// ---------------------------------------------------------------------------
+
+export const contextSource = content.enum('context_source', ['manual', 'website', 'inferred']);
+
+/**
+ * What the brand says about itself, beyond the Brand Kit (1.1).
+ *
+ * One row per brand, created alongside the brand so every downstream reader can
+ * assume it exists. Mostly nullable on purpose: a brand created in ten seconds
+ * from a name and two colours has none of this yet, and the website importer
+ * fills what it can afterwards.
+ */
+export const brandContexts = content.table(
+  'brand_contexts',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** The market's phrase for this business, e.g. "artisanal bakery" —
+     *  broader than the Brand Kit's taxonomy `category`, and what a trend
+     *  query is actually built from. */
+    industry: text('industry'),
+    /** Trading area for trend scoping. Seeded from the Brand Kit's location,
+     *  but widened independently — a Jaipur shop may market to North India. */
+    location: text('location'),
+    audience: text('audience'),
+    goals: jsonb('goals').$type<string[]>().notNull().default([]),
+    competitors: jsonb('competitors').$type<BrandCompetitor[]>().notNull().default([]),
+    positioning: text('positioning'),
+    /** Themes the brand actually posts about — the guardrail that keeps an
+     *  unattended run from drifting into subjects it has never touched. */
+    contentPillars: jsonb('content_pillars').$type<string[]>().notNull().default([]),
+    notes: text('notes'),
+    source: contextSource('source').notNull().default('manual'),
+    /** Set when a human reviews and accepts the context. Until then the
+     *  website importer may fill blanks; afterwards it leaves the row alone,
+     *  so a re-import cannot quietly undo someone's corrections. */
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('brand_contexts_brand_idx').on(t.brandId)],
+);
+
+export const preferenceType = content.enum('preference_type', [
+  'content_format',
+  'posting_time',
+  'visual_style',
+  'tone',
+  'topic',
+]);
+
+/**
+ * What the platform has learned about this brand's audience (1.2).
+ *
+ * Append-only, and never updated in place: a learning is an observation made at
+ * a moment from a sample, and the sequence is the interesting part — "reels win"
+ * arrived at 0.3 confidence in May and 0.9 in July is a different fact from
+ * "reels win, 0.9". Consumers read the top row per type; nothing is deleted,
+ * so a superseded finding stays auditable.
+ */
+export const brandPreferences = content.table(
+  'brand_preferences',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    preferenceType: preferenceType('preference_type').notNull(),
+    preference: jsonb('preference').$type<PreferenceValue>().notNull(),
+    /** 0-1. Two posts is an anecdote however large the delta, so consumers
+     *  filter on this rather than treating every row as equally true. */
+    confidence: real('confidence').notNull(),
+    /** The scheduled post whose performance produced this. Null when the user
+     *  stated the preference outright instead of us measuring it. Nulled
+     *  rather than cascaded — deleting a post should not erase what it taught
+     *  us. */
+    learnedFrom: text('learned_from').references(() => scheduledPosts.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Serves the only two reads there are: "latest per type for this brand"
+    // and, by prefix, "everything for this brand".
+    index('brand_preferences_brand_type_created_idx').on(t.brandId, t.preferenceType, t.createdAt),
+    // Not for any query — for the `ON DELETE SET NULL` on `learned_from`.
+    // Without it, deleting a scheduled post sequentially scans this table to
+    // find referencing rows, and this is the fastest-growing table in the
+    // system (one row per regeneration, approval and rejection). Cancelling a
+    // campaign deletes posts in bulk, so that scan runs once per post.
+    index('brand_preferences_learned_from_idx').on(t.learnedFrom),
+  ],
+);
+
+export const trendFrequency = content.enum('trend_frequency', ['daily', 'three_days', 'weekly']);
+
+export const approvalPolicy = content.enum('approval_policy', [
+  'assist',
+  'semi_automatic',
+  'full_autopilot',
+]);
+
+/**
+ * How much of the loop this brand lets the platform run unattended (1.3).
+ *
+ * One row per brand, created with the brand, defaulting to fully manual —
+ * automation is opted into, never inherited. The scheduler (Phase 2) reads this
+ * table and nothing else to decide what work exists.
+ */
+export const automationSettings = content.table(
+  'automation_settings',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    trendFrequency: trendFrequency('trend_frequency').notNull().default('weekly'),
+    lastResearchAt: timestamp('last_research_at', { withTimezone: true }),
+    /** Stored rather than derived from `lastResearchAt` + cadence so the
+     *  scheduler's "who is due" is an indexed range scan instead of a
+     *  computation over every brand. Recomputed on every cadence change and
+     *  after every run — see `nextResearchAt` in @bmas/shared, which both this
+     *  and the settings screen call so they cannot drift apart. */
+    nextResearchAt: timestamp('next_research_at', { withTimezone: true }),
+    /** Master switch. Off means the scheduler skips this brand entirely,
+     *  whatever `approvalPolicy` says. */
+    contentAutomationEnabled: boolean('content_automation_enabled').notNull().default(false),
+    /** Separate from `approvalPolicy` so that moving to full autopilot does
+     *  not silently grant the right to post to a live Instagram account —
+     *  publishing is the one step with no undo. */
+    autoPublishEnabled: boolean('auto_publish_enabled').notNull().default(false),
+    approvalPolicy: approvalPolicy('approval_policy').notNull().default('assist'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('automation_settings_brand_idx').on(t.brandId),
+    // The scheduler's sole query: enabled brands whose next run has come.
+    index('automation_settings_due_idx').on(t.contentAutomationEnabled, t.nextResearchAt),
+  ],
+);
+
+/**
+ * The context an agent was actually handed, at one moment (1.4).
+ *
+ * Append-only forensics. When a run produces something off-brand the first
+ * question is what the model was told, and re-deriving it later answers with
+ * today's context rather than the one that ran — the brand may have been edited
+ * since, which is frequently the explanation.
+ */
+export const contextSnapshots = content.table(
+  'context_snapshots',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** Which agent's projection this is — 'trend' | 'strategy' | 'content' |
+     *  'performance'. Text rather than an enum: the agent roster is still
+     *  moving, and a snapshot is a log line, not a constraint worth a
+     *  migration every time one is added. */
+    agentType: text('agent_type').notNull(),
+    snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull(),
+    usedInJobId: text('used_in_job_id').references(() => generationJobs.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('context_snapshots_brand_created_idx').on(t.brandId, t.createdAt),
+    index('context_snapshots_job_idx').on(t.usedInJobId),
+  ],
+);
+
+export const brandContextsRelations = relations(brandContexts, ({ one }) => ({
+  brand: one(brands, { fields: [brandContexts.brandId], references: [brands.id] }),
+}));
+
+export const brandPreferencesRelations = relations(brandPreferences, ({ one }) => ({
+  brand: one(brands, { fields: [brandPreferences.brandId], references: [brands.id] }),
+  source: one(scheduledPosts, {
+    fields: [brandPreferences.learnedFrom],
+    references: [scheduledPosts.id],
+  }),
+}));
+
+export const automationSettingsRelations = relations(automationSettings, ({ one }) => ({
+  brand: one(brands, { fields: [automationSettings.brandId], references: [brands.id] }),
+}));
+
+export const contextSnapshotsRelations = relations(contextSnapshots, ({ one }) => ({
+  brand: one(brands, { fields: [contextSnapshots.brandId], references: [brands.id] }),
+  job: one(generationJobs, {
+    fields: [contextSnapshots.usedInJobId],
+    references: [generationJobs.id],
+  }),
+}));
+
+// ---------------------------------------------------------------------------
+// Leads / Business Intelligence
+//
+// A second research agent, same machinery as Trend Research (search →
+// brand-aware judgment → scored, sourced rows) but a different question: not
+// "can this become content?" but "should the brand owner know about this?"
+// Kept in its own tables rather than folded into trend_research_runs /
+// trend_ideas — a policy change and a festival post idea are different kinds
+// of thing, and conflating their feeds would bury one under the other rather
+// than let each be read as intended.
+// ---------------------------------------------------------------------------
+
+export const intelligenceCategory = content.enum('intelligence_category', [
+  'government_policy',
+  'brand_news',
+  'industry_news',
+  'competitor',
+  'local',
+]);
+
+export const intelligenceUrgency = content.enum('intelligence_urgency', [
+  'low',
+  'medium',
+  'high',
+]);
+
+export const intelligenceItemStatus = content.enum('intelligence_item_status', [
+  'new',
+  'read',
+  'saved',
+  'dismissed',
+]);
+
+export const intelligenceRunStatus = content.enum('intelligence_run_status', [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
+/** One "Refresh My Intelligence Feed" run — the leads-side counterpart of
+ *  `trend_research_runs`. */
+export const intelligenceRuns = content.table(
+  'intelligence_runs',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    status: intelligenceRunStatus('status').notNull().default('queued'),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('intelligence_runs_brand_created_idx').on(t.brandId, t.createdAt),
+    index('intelligence_runs_status_idx').on(t.status),
+  ],
+);
+
+export const intelligenceItems = content.table(
+  'intelligence_items',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    runId: text('run_id')
+      .notNull()
+      .references(() => intelligenceRuns.id, { onDelete: 'cascade' }),
+    category: intelligenceCategory('category').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull(),
+    /** The answer to "so what?" — why this specific brand should care. */
+    whyItMatters: text('why_it_matters').notNull(),
+    urgency: intelligenceUrgency('urgency').notNull(),
+    /** The five model-judged axes plus the computed `overall` ranking number,
+     *  same split as `trend_ideas.score` — see computeIntelligenceScore in
+     *  @bmas/shared. */
+    score: jsonb('score').$type<IntelligenceScore>().notNull(),
+    /** Cross-checked against the run's actual search results before storage,
+     *  same as trend_ideas.sources. */
+    sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
+    status: intelligenceItemStatus('status').notNull().default('new'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('intelligence_items_run_idx').on(t.runId),
+    // The feed's own read: this brand's items newest-first, optionally
+    // filtered to a category tab. A run's brandId only reaches this table via
+    // its parent run, so the feed query joins runs anyway — this index serves
+    // the join's inner side.
+    index('intelligence_items_run_category_idx').on(t.runId, t.category),
+  ],
+);
+
+export const intelligenceRunsRelations = relations(intelligenceRuns, ({ one, many }) => ({
+  brand: one(brands, { fields: [intelligenceRuns.brandId], references: [brands.id] }),
+  items: many(intelligenceItems),
+}));
+
+export const intelligenceItemsRelations = relations(intelligenceItems, ({ one }) => ({
+  run: one(intelligenceRuns, { fields: [intelligenceItems.runId], references: [intelligenceRuns.id] }),
+}));
+
+// ---------------------------------------------------------------------------
+// AI Research prompt box
+//
+// "Ask about your brand..." — a one-off question answered from live search
+// plus the same Context Manager output the two research agents use, not a
+// third research pipeline. Persisted so the prompt screen can show a history
+// of what was asked, the same way trend_research_runs gives the trend screen
+// a history.
+// ---------------------------------------------------------------------------
+
+export const aiResearchQueries = content.table(
+  'ai_research_queries',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    question: text('question').notNull(),
+    answer: text('answer').notNull(),
+    sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('ai_research_queries_brand_created_idx').on(t.brandId, t.createdAt)],
+);
+
+export const aiResearchQueriesRelations = relations(aiResearchQueries, ({ one }) => ({
+  brand: one(brands, { fields: [aiResearchQueries.brandId], references: [brands.id] }),
+}));
+
+export type IntelligenceRunRow = typeof intelligenceRuns.$inferSelect;
+export type NewIntelligenceRunRow = typeof intelligenceRuns.$inferInsert;
+export type IntelligenceItemRow = typeof intelligenceItems.$inferSelect;
+export type NewIntelligenceItemRow = typeof intelligenceItems.$inferInsert;
+export type AiResearchQueryRow = typeof aiResearchQueries.$inferSelect;
+export type NewAiResearchQueryRow = typeof aiResearchQueries.$inferInsert;
+
+export type BrandContextRow = typeof brandContexts.$inferSelect;
+export type NewBrandContextRow = typeof brandContexts.$inferInsert;
+export type BrandPreferenceRow = typeof brandPreferences.$inferSelect;
+export type NewBrandPreferenceRow = typeof brandPreferences.$inferInsert;
+export type AutomationSettingsRow = typeof automationSettings.$inferSelect;
+export type NewAutomationSettingsRow = typeof automationSettings.$inferInsert;
+export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
+export type NewContextSnapshotRow = typeof contextSnapshots.$inferInsert;
 
 export type TrendResearchRunRow = typeof trendResearchRuns.$inferSelect;
 export type NewTrendResearchRunRow = typeof trendResearchRuns.$inferInsert;
-export type TrendIdeaRow = typeof trendIdeas.$inferSelect;
-export type NewTrendIdeaRow = typeof trendIdeas.$inferInsert;
+export type TrendSignalRow = typeof trendSignals.$inferSelect;
+export type NewTrendSignalRow = typeof trendSignals.$inferInsert;
+export type TrendOpportunityRow = typeof trendOpportunities.$inferSelect;
+export type NewTrendOpportunityRow = typeof trendOpportunities.$inferInsert;
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type NewSocialAccount = typeof socialAccounts.$inferInsert;

@@ -79,8 +79,16 @@ export function priceImages(model: string, count: number): number {
  * Re-check against Tavily's pricing page before relying on this for a real
  * unit-economics number.
  */
+/**
+ * TODO(content): UNVERIFIED. SerpApi bills per search on a monthly plan
+ * (e.g. $75/5,000 searches on the Developer plan) rather than pay-as-you-go
+ * credits; this estimates the per-search marginal cost on that tier so the
+ * ledger isn't silently zero. Re-check against SerpApi's pricing page before
+ * relying on this for a real unit-economics number.
+ */
 export const SEARCH_RATES: Record<string, number> = {
   'tavily-search': 8_000,
+  'serpapi-search': 15_000,
 };
 
 export function priceSearch(model: string): number {

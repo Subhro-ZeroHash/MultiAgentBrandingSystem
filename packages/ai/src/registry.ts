@@ -7,6 +7,7 @@ import { GeminiImageAdapter } from './adapters/gemini.image.js';
 import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
+import { SerpApiSearchAdapter } from './adapters/serpapi.search.js';
 import { StubImageAdapter } from './adapters/stub.image.js';
 import { StubSearchAdapter } from './adapters/stub.search.js';
 import { TavilySearchAdapter } from './adapters/tavily.search.js';
@@ -22,7 +23,7 @@ export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 export type LlmProviderName = 'anthropic' | 'gemini';
 
 /** `stub` returns fixture results locally — see adapters/stub.search.ts. */
-export type SearchProviderName = 'tavily' | 'stub';
+export type SearchProviderName = 'tavily' | 'serpapi' | 'stub';
 
 export interface AiConfig {
   anthropicApiKey?: string;
@@ -31,6 +32,7 @@ export interface AiConfig {
   openaiApiKey?: string;
   perplexityApiKey?: string;
   tavilyApiKey?: string;
+  serpApiKey?: string;
 
   /** Local-only API host overrides; see AnthropicAdapterConfig.baseUrl. */
   anthropicBaseUrl?: string;
@@ -131,6 +133,7 @@ export class AiRegistry {
 
     this.searches = {
       tavily: new TavilySearchAdapter({ apiKey: config.tavilyApiKey }),
+      serpapi: new SerpApiSearchAdapter({ apiKey: config.serpApiKey }),
       stub: new StubSearchAdapter(),
     };
   }
@@ -153,7 +156,9 @@ export class AiRegistry {
     return this.engines.get(engine);
   }
 
-  /** Real-time web search for the Trend Research Agent — see search.ts. */
+  /** Real-time web search for a caller that wants exactly one provider. Most
+   *  of the codebase does — content generation's brand-site importer, the AI
+   *  research prompt box. See search.ts. */
   webSearch(): WebSearchService {
     return this.searches[this.config.searchProvider ?? 'tavily'];
   }
@@ -161,6 +166,24 @@ export class AiRegistry {
   /** Engines with credentials present — probes skip everything else. */
   configuredEngines(): AnswerEngineClient[] {
     return [...this.engines.values()].filter((client) => client.isConfigured());
+  }
+
+  /**
+   * Every search provider with credentials present, `stub` excluded.
+   *
+   * The signal pipeline (trend-research.ts, intelligence-research.ts) is the
+   * one caller that wants *all* of them rather than the single active one
+   * `webSearch()` resolves to: a topic two independent providers both surface
+   * is stronger evidence than either alone, which only exists to observe if
+   * both are actually queried. Mirrors `configuredEngines()`'s reasoning for
+   * GEO's answer-engine sweep — same shape, same "run against everything
+   * configured, skip what isn't" behaviour.
+   */
+  configuredWebSearches(): WebSearchService[] {
+    return Object.entries(this.searches)
+      .filter(([name]) => name !== 'stub')
+      .map(([, service]) => service)
+      .filter((service) => service.isConfigured());
   }
 }
 
@@ -173,6 +196,7 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     openaiApiKey: env.OPENAI_API_KEY,
     perplexityApiKey: env.PERPLEXITY_API_KEY,
     tavilyApiKey: env.TAVILY_API_KEY,
+    serpApiKey: env.SERPAPI_KEY,
     ...(env.ANTHROPIC_BASE_URL ? { anthropicBaseUrl: env.ANTHROPIC_BASE_URL } : {}),
     ...(env.GOOGLE_API_BASE_URL ? { googleBaseUrl: env.GOOGLE_API_BASE_URL } : {}),
     models: {

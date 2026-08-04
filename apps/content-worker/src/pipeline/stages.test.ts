@@ -80,6 +80,7 @@ function context(overrides: {
   siteIdentity?: StageContext['siteIdentity'];
   logoStorageKey?: string | null;
   styleReferenceKeys?: string[];
+  brandMemory?: StageContext['brandMemory'];
 }): StageContext {
   return {
     brand,
@@ -89,6 +90,7 @@ function context(overrides: {
     siteIdentity: overrides.siteIdentity ?? null,
     logoStorageKey: overrides.logoStorageKey ?? null,
     styleReferenceKeys: overrides.styleReferenceKeys ?? [],
+    brandMemory: overrides.brandMemory ?? null,
   } as unknown as StageContext;
 }
 
@@ -400,6 +402,72 @@ describe('composeBrief', () => {
         }),
       );
       expect(brief.prompt).toContain('labelled "reference photograph"');
+    });
+  });
+
+  /**
+   * Brand Memory reaching the brief (Brand Intelligence layer).
+   *
+   * These pin the half of the feature that is otherwise invisible: the context
+   * was already being *stored* — positioning, content pillars, the corrections
+   * a user asked for — and none of it reached a prompt. A regression here is
+   * silent, because the brief still composes perfectly well without it and
+   * nothing fails; the creatives simply stop being personalised.
+   */
+  describe('brand memory', () => {
+    const memory = {
+      positioning: 'Small-group Himalayan trips led by people who actually live there.',
+      contentPillars: ['behind the scenes', 'customer stories'],
+      rejectedPatterns: ['make the background lighter', 'remove the extra text'],
+      learnings: [
+        { type: 'visual_style', summary: 'Product-focused creatives outperform lifestyle ones.', value: null, confidence: 0.7 },
+      ],
+    } as unknown as StageContext['brandMemory'];
+
+    it('puts positioning and content pillars into the brief', async () => {
+      const brief = await composeBrief(context({ brandMemory: memory }));
+      expect(brief.prompt).toContain('Small-group Himalayan trips');
+      expect(brief.prompt).toContain('behind the scenes, customer stories');
+    });
+
+    it('fences positioning to mood rather than subject', async () => {
+      // Positioning is a sentence *about the business*. Handed over unqualified
+      // it gets illustrated instead of the product — the same failure the
+      // brand.category and site-identity blocks are each fenced against.
+      const brief = await composeBrief(context({ brandMemory: memory }));
+      expect(brief.prompt).toMatch(/inform the mood and the level of polish, not the subject/);
+      expect(brief.prompt).toMatch(/not as things to depict/);
+    });
+
+    it("carries forward corrections the user already asked for", async () => {
+      const brief = await composeBrief(context({ brandMemory: memory }));
+      expect(brief.prompt).toContain('make the background lighter');
+      expect(brief.prompt).toContain('remove the extra text');
+    });
+
+    it('includes learned preferences, subordinate to the art direction', async () => {
+      const brief = await composeBrief(context({ brandMemory: memory }));
+      expect(brief.prompt).toContain('Product-focused creatives outperform lifestyle ones.');
+      expect(brief.prompt).toMatch(/where it does not conflict with the art direction/);
+    });
+
+    it('composes an identical brief when there is no memory to add', async () => {
+      // A brand with no stated context, and the degraded path where the
+      // context read failed, must both land exactly where they did before this
+      // layer existed — brand memory is enrichment, never a dependency.
+      const withNull = await composeBrief(context({ brandMemory: null }));
+      const withEmpty = await composeBrief(
+        context({
+          brandMemory: {
+            positioning: null,
+            contentPillars: [],
+            rejectedPatterns: [],
+            learnings: [],
+          } as unknown as StageContext['brandMemory'],
+        }),
+      );
+      expect(withNull.prompt).toBe(withEmpty.prompt);
+      expect(withNull.prompt).not.toMatch(/previously asked for these corrections/);
     });
   });
 });

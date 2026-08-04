@@ -1,31 +1,47 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
-import type { WebSearchRequest, WebSearchResult } from '@bmas/ai';
-import { eq, schema, sql, type Brand } from '@bmas/db';
+import type { WebSearchRequest, WebSearchResult, WebSearchService } from '@bmas/ai';
+import {
+  eq,
+  getTrendContext,
+  inArray,
+  recordContextSnapshot,
+  renderBrandContextLines,
+  schema,
+  sql,
+  type Brand,
+  type TrendTaskContext,
+} from '@bmas/db';
 import {
   computeTrendScore,
-  trendResearchSynthesisSchema,
+  trendOpportunitySynthesisSchema,
   type CostEvent,
+  type SignalType,
   type TrendCategory,
-  type TrendIdeaDraft,
+  type TrendOpportunityDraft,
   type TrendResearchJob,
   type TrendSource,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
 
 /**
- * Trend Research Agent.
- *
- * Sits upstream of the creative pipeline, not inside it: given a brand, it
- * searches the live web for what's currently relevant, filters that against
- * the Brand Kit, and stores scored, ranked ideas. A user acting on one gets a
- * normal `POST /generations` call prefilled from `suggestedRequest` — nothing
- * in stages.ts changes to support this.
+ * Trend Research Agent — signal-based.
  *
  * Two stages, same split used for the website importer: deterministic search
  * first (real, current, sourced — an LLM's training data cannot supply this),
- * then one judgment call on top (`orchestrator` role) to filter for *this*
- * brand and score what came back. The search stage can never be replaced by
- * asking the model harder; the scoring stage could not be done any other way.
+ * then one judgment call on top (`orchestrator` role) to cluster and score
+ * what came back. The search stage can never be replaced by asking the model
+ * harder; the clustering stage could not be done any other way.
+ *
+ * What changed from the single-layer version: search results are stored as
+ * `trend_signals` — raw, unranked, unfiltered — *before* any AI judgment
+ * runs, queried from every configured search provider rather than one. Only
+ * afterward does a single LLM call cluster related signals into
+ * `trend_opportunities`, each backed by however many signals actually
+ * support it. "FIFA World Cup searches increasing" from Tavily and "Football
+ * news increasing" from SerpApi are two signals; if the model clusters both
+ * under one opportunity, that opportunity is evidenced by two independent
+ * providers agreeing, not one API's opinion dressed up as a trend. See the
+ * header of packages/shared/src/content/trends.ts for the full reasoning.
  */
 
 const SEARCH_TIMEOUT_MS = 15_000;
@@ -35,20 +51,23 @@ const SEARCH_TIMEOUT_MS = 15_000;
 // (stages.ts) despite a smaller, flatter schema — confirmed live, this timed
 // out at 45s on both the first attempt and the retry. Raised well past what a
 // real run needs rather than re-tuned to the edge, since search-result size
-// (and so prompt size) varies with how much is actually trending.
-const SYNTHESIS_TIMEOUT_MS = 90_000;
+// (and so prompt size) varies with how much is actually trending, and now
+// scales with however many providers are configured.
+const SYNTHESIS_TIMEOUT_MS = 120_000;
 
 /**
- * Headroom for up to 8 ideas, each carrying two prose fields, five scores,
- * up to five sources, and a suggested request. Sized generously on purpose —
- * the brand-site importer's synthesis call was truncated twice at lower
- * ceilings, and a truncated response here fails the same way: constrained
- * decoding produces valid-looking JSON that doesn't parse.
+ * Headroom for up to 8 opportunities, each carrying two prose fields, five
+ * scores, a signal-index list, and a suggested request. Sized generously on
+ * purpose — the brand-site importer's synthesis call was truncated twice at
+ * lower ceilings, and a truncated response here fails the same way:
+ * constrained decoding produces valid-looking JSON that doesn't parse. Larger
+ * than the single-layer version's ceiling because the prompt now carries
+ * every configured provider's results, not just one.
  */
-const MAX_SYNTHESIS_TOKENS = 12_000;
+const MAX_SYNTHESIS_TOKENS = 16_000;
 
-/** Per-search-category result cap. Three categories at this size is enough
- *  material to judge relevance from without one category's snippets
+/** Per-search-category, per-provider result cap. Two providers at this size
+ *  is enough material to cluster from without one provider's results
  *  dominating the synthesis prompt. */
 const RESULTS_PER_QUERY = 8;
 
@@ -56,23 +75,26 @@ const RESULTS_PER_QUERY = 8;
  *  defensive ceiling against an unusually long one, not the expected case. */
 const MAX_SNIPPET_CHARS = 500;
 
-interface CollectedSignal {
-  category: TrendCategory;
-  request: WebSearchRequest;
-  results: WebSearchResult[];
-}
+/** Which kind of evidence a category's search results count as. Independent
+ *  of which provider produced them — a `news_mention` from Tavily and one
+ *  from SerpApi are the same signal type, just corroborating sources. */
+const SIGNAL_TYPE_FOR_CATEGORY: Record<TrendCategory, SignalType> = {
+  industry_topic: 'news_mention',
+  event_festival: 'event_proximity',
+  social_trend: 'social_trend_mention',
+};
 
 /**
  * The three searches a research run fans out, built from the Brand Kit plus
  * this run's overrides. Pure and exported so query construction is testable
- * without a network call — the same split `buildTrendSearchQueries`'s
- * counterparts in brand-site use for their own provider-facing shaping.
+ * without a network call.
  *
  * Geography goes into the query text, not into `WebSearchRequest.locale`.
- * `brand.location` is a city ("Jaipur"), and Tavily's country filter wants a
- * country — mapping one to the other would need a geocoding step this MVP
- * does not have. The query text carries it either way, so nothing is lost by
- * leaving `locale` unset; it stays reserved for when a real country is known.
+ * `brand.location` is a city ("Jaipur"), and a provider's country filter
+ * wants a country — mapping one to the other would need a geocoding step
+ * this MVP does not have. The query text carries it either way, so nothing
+ * is lost by leaving `locale` unset; it stays reserved for when a real
+ * country is known.
  */
 export function buildTrendSearchQueries(input: {
   brand: Pick<Brand, 'category' | 'location'>;
@@ -137,71 +159,108 @@ async function recordCost(
   });
 }
 
+/** One row of raw evidence, before a database id or clustering. Carries its
+ *  own id (generated client-side, not returned from the insert) so the
+ *  synthesis prompt's numbered list and the post-synthesis backfill both
+ *  reference the exact same row regardless of what order Postgres happens to
+ *  return inserted rows in — not a guarantee `RETURNING` actually makes. */
+interface SignalCandidate {
+  id: string;
+  source: string;
+  signalType: SignalType;
+  title: string;
+  snippet: string;
+  strength: number;
+  sourceUrl: string;
+  publishedAt: string | null;
+}
+
 /**
- * Runs the three searches. One category failing does not sink the run — a
- * Tavily hiccup on the events query still leaves the other two categories
- * worth synthesising from — but every category failing means there is nothing
- * real to ground the synthesis in, which is a hard stop rather than a
- * degraded result: an LLM asked to invent trends from nothing will do exactly
- * that, and this agent exists specifically not to.
+ * Runs every category query against every configured search provider.
+ *
+ * One (provider, category) pair failing does not sink the run — a Tavily
+ * hiccup on the events query still leaves SerpApi's events results, or
+ * Tavily's other two categories, worth collecting — but every pair failing
+ * means there is no real evidence to cluster, which is a hard stop: an LLM
+ * asked to invent opportunities from nothing will do exactly that, and this
+ * agent exists specifically not to.
  */
-async function collectTrendSignals(
+async function collectSignals(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
   queries: Array<{ category: TrendCategory; request: WebSearchRequest }>,
-): Promise<CollectedSignal[]> {
-  const collected: CollectedSignal[] = [];
+): Promise<SignalCandidate[]> {
+  const providers = ctx.ai.configuredWebSearches();
+  const candidates: SignalCandidate[] = [];
 
   for (const { category, request } of queries) {
-    try {
-      const { value: results, cost } = await withRetry(() =>
-        withTimeout(
-          ctx.ai.webSearch().search(request, { brandId: brand.id, referenceId: runId }),
-          SEARCH_TIMEOUT_MS,
-          `trend search (${category})`,
-        ),
-      );
-      await recordCost(ctx, brand.id, runId, cost);
-      collected.push({ category, request, results });
-    } catch (error) {
-      console.warn(
-        `[trend-research] ${category} search failed for run ${runId}: ${describeError(error)}`,
-      );
+    for (const provider of providers) {
+      try {
+        const { value: results, cost } = await withRetry(() =>
+          withTimeout(
+            provider.search(request, { brandId: brand.id, referenceId: runId }),
+            SEARCH_TIMEOUT_MS,
+            `signal search (${provider.provider}/${category})`,
+          ),
+        );
+        await recordCost(ctx, brand.id, runId, cost);
+        candidates.push(...mapResultsToSignals(provider, category, results));
+      } catch (error) {
+        console.warn(
+          `[trend-research] ${provider.provider}/${category} search failed for run ${runId}: ${describeError(error)}`,
+        );
+      }
     }
   }
 
-  if (collected.every((signal) => signal.results.length === 0)) {
+  if (candidates.length === 0) {
     throw new Error(
-      'No search results were available to research trends from — every search failed or returned nothing.',
+      'No signals were collected — every search provider failed or returned nothing.',
     );
   }
 
-  return collected;
+  return candidates;
 }
 
-function describeSignalsForPrompt(signals: CollectedSignal[]): string {
-  const CATEGORY_LABEL: Record<TrendCategory, string> = {
-    industry_topic: 'INDUSTRY / CURRENT TOPICS',
-    event_festival: 'UPCOMING EVENTS & FESTIVALS',
-    social_trend: 'SOCIAL MEDIA (approximated via search — not a dedicated trends API)',
-  };
+/** Turns one provider's raw results into signal candidates. Strength is a
+ *  rank-based heuristic, not a provider-reported number — no search API in
+ *  this codebase exposes a uniform relevance score across providers, and a
+ *  result's position in its own result list is the one signal every
+ *  provider's ranking already encodes. Falls off by 12 points per position,
+ *  floored at 10 so even a last-place result still counts as *some*
+ *  evidence rather than being silently worthless in the cluster's strength
+ *  weighting. */
+function mapResultsToSignals(
+  provider: WebSearchService,
+  category: TrendCategory,
+  results: WebSearchResult[],
+): SignalCandidate[] {
+  return results.map((result, index) => ({
+    id: crypto.randomUUID(),
+    source: provider.provider,
+    signalType: SIGNAL_TYPE_FOR_CATEGORY[category],
+    title: (result.title?.trim() || result.snippet.slice(0, 120).trim() || 'Untitled').slice(
+      0,
+      300,
+    ),
+    snippet: result.snippet.slice(0, MAX_SNIPPET_CHARS),
+    strength: Math.max(100 - index * 12, 10),
+    sourceUrl: result.url,
+    publishedAt: result.publishedAt,
+  }));
+}
 
+function describeSignalsForPrompt(signals: SignalCandidate[]): string {
   return signals
-    .map(({ category, results }) => {
-      if (results.length === 0) return `## ${CATEGORY_LABEL[category]}\n(search returned nothing)`;
-
-      const rows = results
-        .map((result, i) => {
-          const date = result.publishedAt ? ` (${result.publishedAt})` : '';
-          const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
-          return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
-        })
-        .join('\n');
-
-      return `## ${CATEGORY_LABEL[category]}\n${rows}`;
+    .map((signal, index) => {
+      const date = signal.publishedAt ? ` (${signal.publishedAt})` : '';
+      return (
+        `[${index}] (${signal.source}/${signal.signalType}) ${signal.title}${date} — ${signal.sourceUrl}\n` +
+        `   ${signal.snippet}`
+      );
     })
-    .join('\n\n');
+    .join('\n');
 }
 
 /**
@@ -210,67 +269,58 @@ function describeSignalsForPrompt(signals: CollectedSignal[]): string {
  * structured-output validator rejects this schema outright with an opaque
  * `400 INVALID_ARGUMENT` — no detail beyond that — once `maxItems` co-occurs
  * with the enum-heavy `suggestedRequest` object a few levels down, and the
- * failure disappears the moment either is removed. This looks like an
- * undocumented complexity ceiling in how Gemini validates enum-heavy nested
- * schemas, not a mistake in the shape itself — every sub-schema here passes
- * fine in isolation. `trendResearchSynthesisSchema.parse()` (`ideas.max(8)`,
- * `sources.max(5)`) is the real enforcement either way, so nothing is actually
- * unbounded; the prompt asks for the same counts in words instead.
+ * failure disappears the moment either is removed. `clipOpportunityCounts`
+ * below is the real enforcement, same split the single-layer version used.
  */
-/**
- * Clips array lengths before zod validation.
- *
- * With `maxItems` gone from the JSON schema (see the comment on
- * SYNTHESIS_SCHEMA), nothing stops the model from returning 9 ideas or 6
- * sources — a mild overshoot on an "up to 8" instruction is a realistic
- * outcome, not a malformed response. Without this, `trendResearchSynthesisSchema
- * .parse()` would throw on that overshoot, and a raw ZodError is not one of
- * the errors `withRetry` recognises as retryable, so the entire run would
- * hard-fail over what is fundamentally a cosmetic overage. Clipping first
- * turns that into "a few extra ideas silently dropped".
- */
-export function clipSynthesisCounts(raw: unknown): unknown {
-  if (typeof raw !== 'object' || raw === null || !('ideas' in raw)) return raw;
-  const ideas = (raw as { ideas: unknown }).ideas;
-  if (!Array.isArray(ideas)) return raw;
+export function clipOpportunityCounts(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || !('opportunities' in raw)) return raw;
+  const opportunities = (raw as { opportunities: unknown }).opportunities;
+  if (!Array.isArray(opportunities)) return raw;
 
-  return {
-    ...raw,
-    ideas: ideas.slice(0, 8).map((idea) => {
-      if (typeof idea !== 'object' || idea === null || !('sources' in idea)) return idea;
-      const sources = (idea as { sources: unknown }).sources;
-      return Array.isArray(sources) ? { ...idea, sources: sources.slice(0, 5) } : idea;
-    }),
-  };
+  return { ...raw, opportunities: opportunities.slice(0, 8) };
 }
 
 const SYNTHESIS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['ideas'],
+  required: ['opportunities'],
   properties: {
-    ideas: {
+    opportunities: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
         required: [
+          'signalIndexes',
+          'topic',
           'category',
           'title',
           'summary',
           'recommendation',
           'contentType',
           'score',
-          'sources',
           'suggestedRequest',
         ],
         properties: {
-          category: { enum: ['industry_topic', 'event_festival', 'social_trend'] },
-          title: { type: 'string', description: 'Short, specific — names the actual trend.' },
-          summary: {
+          signalIndexes: {
+            type: 'array',
+            items: { type: 'integer' },
+            description:
+              'Indexes (the [N] numbers) of every signal below that this opportunity was ' +
+              'clustered from. At least one. An opportunity with no listed signals will be ' +
+              'discarded, so never invent one to fill a quota.',
+          },
+          topic: {
             type: 'string',
             description:
-              'What this trend actually is, grounded in the search results above. 2-4 sentences.',
+              'A short canonical name for this cluster, e.g. "FIFA World Cup 2026" — not the ' +
+              "brand's angle on it.",
+          },
+          category: { enum: ['industry_topic', 'event_festival', 'social_trend'] },
+          title: { type: 'string', description: 'Short, specific — names the actual opportunity.' },
+          summary: {
+            type: 'string',
+            description: 'What this opportunity actually is, grounded in the clustered signals. 2-4 sentences.',
           },
           recommendation: {
             type: 'string',
@@ -300,7 +350,9 @@ const SYNTHESIS_SCHEMA = {
               },
               popularity: {
                 type: 'number',
-                description: '0-100. How much genuine attention this has right now.',
+                description:
+                  '0-100. How much genuine attention this has right now — weigh how many signals ' +
+                  'support it and from how many different providers, not just one result\'s wording.',
               },
               freshness: {
                 type: 'number',
@@ -313,19 +365,6 @@ const SYNTHESIS_SCHEMA = {
                   'natural offer tie-in, a real date to build toward.',
               },
             },
-          },
-          sources: {
-            // No `maxItems` — see the comment on SYNTHESIS_SCHEMA above.
-            // `trendResearchSynthesisSchema` still caps this at 5 after parse.
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['url', 'title'],
-              properties: { url: { type: 'string' }, title: { type: ['string', 'null'] } },
-            },
-            description:
-              'Only URLs that actually appear in the search results above. Never invent one.',
           },
           suggestedRequest: {
             type: 'object',
@@ -364,8 +403,8 @@ const SYNTHESIS_SCHEMA = {
               extraInstructions: {
                 type: ['string', 'null'],
                 description:
-                  'The trend context itself, written as direction to a designer — this is what ' +
-                  'reaches the image brief. Max 500 characters.',
+                  'The opportunity\'s real context, written as direction to a designer — this is ' +
+                  'what reaches the image brief. Max 500 characters.',
               },
             },
           },
@@ -376,41 +415,42 @@ const SYNTHESIS_SCHEMA = {
 } as const;
 
 /**
- * The judgment call: filters raw search results down to what actually fits
- * this brand, and scores what survives. Runs on `orchestrator` — read once
- * per research run, worth the strongest model available rather than the
- * cheapest one that fans out per platform.
+ * The judgment call: clusters raw signals into opportunities and scores each
+ * against the brand. Runs on `orchestrator` — read once per research run,
+ * worth the strongest model available rather than the cheapest one that
+ * fans out per platform.
  */
-async function synthesizeTrendIdeas(
+async function synthesizeOpportunities(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
+  brandContext: TrendTaskContext,
   focus: string | null,
   locationOverride: string | null,
-  signals: CollectedSignal[],
-): Promise<{ ideas: TrendIdeaDraft[]; cost: CostEvent }> {
-  const location = locationOverride ?? brand.location;
+  signals: SignalCandidate[],
+): Promise<{ opportunities: TrendOpportunityDraft[]; cost: CostEvent }> {
+  const location = locationOverride ?? brandContext.identity.location ?? brand.location;
 
-  // One more retry layer than usual, and narrowly scoped to one specific
-  // failure: verified live against the real API that this exact schema and a
-  // realistically-sized prompt succeed the large majority of the time (5/5 in
-  // direct testing) — SYNTHESIS_SCHEMA is not malformed. What recurs is
-  // Gemini's structured-output validator occasionally rejecting a *valid*
-  // complex schema with an opaque `400 INVALID_ARGUMENT` and no further
-  // detail — provider-side flakiness in constrained decoding under a schema
-  // this deeply nested, not a client error. `withRetry`'s shared classifier
-  // correctly refuses to retry 400s in general (most really are permanent,
-  // and retrying those on principle would hide real bugs), so this catches
-  // only Google's specific INVALID_ARGUMENT shape rather than loosening that
-  // rule for every caller. Kept to one extra attempt: BullMQ's own job-level
-  // retry is the backstop beyond this, and re-running the whole job repeats
-  // the three searches too, which a synthesis-only retry avoids paying for.
+  // Same narrowly-scoped retry as the single-layer version had — see its own
+  // prior comment: verified live that this schema and a realistically-sized
+  // prompt succeed the large majority of the time; what recurs is Gemini's
+  // structured-output validator occasionally rejecting a *valid* complex
+  // schema with an opaque `400 INVALID_ARGUMENT`, provider-side flakiness
+  // under a schema this deeply nested, not a client error.
   const GEMINI_STRUCTURED_OUTPUT_REJECTION = /INVALID_ARGUMENT/;
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await synthesizeTrendIdeasOnce(ctx, runId, brand, focus, location, signals);
+      return await synthesizeOpportunitiesOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        focus,
+        location,
+        signals,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -423,29 +463,37 @@ async function synthesizeTrendIdeas(
   throw lastError;
 }
 
-async function synthesizeTrendIdeasOnce(
+async function synthesizeOpportunitiesOnce(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
+  brandContext: TrendTaskContext,
   focus: string | null,
   location: string | null,
-  signals: CollectedSignal[],
-): Promise<{ ideas: TrendIdeaDraft[]; cost: CostEvent }> {
+  signals: SignalCandidate[],
+): Promise<{ opportunities: TrendOpportunityDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
     () =>
       withTimeout(
-        ctx.ai.llm().generateJson<{ ideas: TrendIdeaDraft[] }>(
+        ctx.ai.llm().generateJson<{ opportunities: TrendOpportunityDraft[] }>(
           {
             role: 'orchestrator',
             system:
-              'You are a marketing strategist turning live search results into content ideas for ' +
-              'one specific small business. You work ONLY from the search results you are given — ' +
-              'they are current and real; your own knowledge is not, and might be stale by months. ' +
-              'Never invent a trend, event, date, or fact that is not actually present in the results. ' +
-              'If nothing in a category is genuinely relevant to this brand, return fewer ideas — or ' +
-              'none from that category — rather than manufacturing a weak one to fill a quota.\n\n' +
-              'Relevance is the whole job. A trend can be huge and completely wrong for this brand; a ' +
-              "small one can be a perfect fit. Score honestly on both axes, not just popularity." +
+              'You are a marketing strategist turning raw search signals into content ' +
+              'opportunities for one specific small business. You work ONLY from the signals you ' +
+              'are given below — they are current and real; your own knowledge is not, and might ' +
+              'be stale by months. Never invent a trend, event, date, or fact that is not actually ' +
+              'present in the signals.\n\n' +
+              'Cluster related signals into opportunities first — several signals about the same ' +
+              'topic (e.g. "World Cup searches rising" and "football news increasing") become ONE ' +
+              'opportunity backed by multiple signals, not several near-duplicate opportunities. ' +
+              'A topic two independent signal sources both surfaced is stronger evidence than ' +
+              'either alone; weigh that in `popularity`.\n\n' +
+              'Relevance is the whole job after that. A topic can have many signals and still be ' +
+              'completely wrong for this brand; a lightly-signalled one can be a perfect fit. Score ' +
+              'honestly on both axes, not just how many signals support it. If nothing clusters into ' +
+              'a genuinely relevant opportunity, return fewer — or none — rather than manufacturing ' +
+              'a weak one to fill a quota.' +
               (brand.bannedTopics.length
                 ? ` Never suggest content touching: ${brand.bannedTopics.join(', ')} — under any framing.`
                 : ''),
@@ -454,24 +502,23 @@ async function synthesizeTrendIdeasOnce(
                 role: 'user',
                 content: [
                   '**The brand:**',
-                  `Name: ${brand.name}. Industry: ${brand.category ?? 'unspecified'}.`,
-                  brand.audience ? `Target audience: ${brand.audience}.` : '',
+                  ...renderBrandContextLines(brandContext),
                   location ? `Location: ${location}.` : '',
-                  `Voice: ${brand.tone.join(', ')}.`,
-                  brand.languages.length ? `Languages: ${brand.languages.join(', ')}.` : '',
                   focus ? `The user is specifically interested in: ${focus}.` : '',
+                  brandContext.recentTopics.length
+                    ? `\n**Already suggested to this brand recently — do not repeat these, and do not ` +
+                      `rephrase them:** ${brandContext.recentTopics.join('; ')}.`
+                    : '',
                   '',
-                  '**Live search results, grouped by what was searched for:**',
+                  '**Raw signals collected, numbered — reference these numbers in `signalIndexes`:**',
                   describeSignalsForPrompt(signals),
                   '',
-                  'Produce up to 8 ranked ideas. For `suggestedRequest`, pick the campaignType, ' +
-                    'styleTemplate and outputFormat that best fit each idea — these prefill an actual ' +
-                    'generation request, so they must be genuinely apt, not a default. Put the trend\'s ' +
-                    'real context into `extraInstructions`, written as direction to a designer who has ' +
-                    'not seen the search results: name the event/topic and why it matters to this brand.',
-                  'Every `sources` entry must be a URL that literally appears above, and there must ' +
-                    'be no more than 5 per idea. Do not cite anything else, and do not paraphrase a ' +
-                    'URL from memory.',
+                  'Produce up to 8 ranked opportunities. For `suggestedRequest`, pick the ' +
+                    'campaignType, styleTemplate and outputFormat that best fit each opportunity — ' +
+                    'these prefill an actual generation request, so they must be genuinely apt, not ' +
+                    'a default. Put the opportunity\'s real context into `extraInstructions`, written ' +
+                    'as direction to a designer who has not seen the signals: name the event/topic ' +
+                    'and why it matters to this brand.',
                 ]
                   .filter(Boolean)
                   .join('\n'),
@@ -479,12 +526,12 @@ async function synthesizeTrendIdeasOnce(
             ],
             maxTokens: MAX_SYNTHESIS_TOKENS,
             schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
-            parse: (raw) => trendResearchSynthesisSchema.parse(clipSynthesisCounts(raw)),
+            parse: (raw) => trendOpportunitySynthesisSchema.parse(clipOpportunityCounts(raw)),
           },
           { brandId: brand.id, referenceId: runId },
         ),
         SYNTHESIS_TIMEOUT_MS,
-        'trend synthesis',
+        'opportunity synthesis',
       ),
     {
       onRetry: ({ attempt, error }) =>
@@ -495,22 +542,67 @@ async function synthesizeTrendIdeasOnce(
     },
   );
 
-  return { ideas: value.ideas, cost };
+  return { opportunities: value.opportunities, cost };
 }
 
-/** Drops any citation whose URL was not actually returned by search.
+/** What one opportunity draft becomes once its signal indexes are resolved
+ *  against the real signal candidates and validated. */
+interface ResolvedOpportunity {
+  id: string;
+  draft: TrendOpportunityDraft;
+  signalIds: string[];
+  sources: TrendSource[];
+}
+
+/**
+ * Resolves each draft's `signalIndexes` against the actual signal list.
  *
- * A model asked to cite its sources is not a model that reliably cites them
- * correctly — it will occasionally paraphrase a URL from memory or attach one
- * that merely looks plausible. Silently trusting that would put a fabricated
- * link in front of the user as if it were a real source; stripping it here
- * means an idea can lose a citation but never gain a fake one. */
-export function verifySources(
-  sources: TrendSource[],
-  signals: CollectedSignal[],
-): TrendSource[] {
-  const known = new Set(signals.flatMap((signal) => signal.results.map((r) => r.url)));
-  return sources.filter((source) => known.has(source.url));
+ * A model asked to reference indexes is not a model that reliably stays in
+ * bounds — an out-of-range or duplicate index is dropped rather than
+ * crashing the run, the same "don't trust, verify" posture the single-layer
+ * version's `verifySources` took toward fabricated citations. An opportunity
+ * left with zero valid signals after filtering is dropped entirely: an
+ * opportunity with no evidence is exactly the "manufactured to fill a quota"
+ * failure the prompt is told not to produce, and this is the backstop for
+ * when it happens anyway.
+ *
+ * `sources` is derived mechanically from the resolved signals' URLs rather
+ * than asked of the model — every source an opportunity cites is therefore
+ * guaranteed to be a real search result by construction, not by a
+ * post-hoc fabrication check.
+ */
+export function resolveOpportunitySignals(
+  drafts: TrendOpportunityDraft[],
+  signals: SignalCandidate[],
+): ResolvedOpportunity[] {
+  return drafts
+    .map((draft) => {
+      const seen = new Set<number>();
+      const resolvedSignals = draft.signalIndexes
+        .filter((index) => {
+          if (index < 0 || index >= signals.length || seen.has(index)) return false;
+          seen.add(index);
+          return true;
+        })
+        .map((index) => signals[index]!);
+
+      const sources: TrendSource[] = [];
+      const seenUrls = new Set<string>();
+      for (const signal of resolvedSignals) {
+        if (seenUrls.has(signal.sourceUrl)) continue;
+        seenUrls.add(signal.sourceUrl);
+        sources.push({ url: signal.sourceUrl, title: signal.title });
+        if (sources.length >= 8) break;
+      }
+
+      return {
+        id: crypto.randomUUID(),
+        draft,
+        signalIds: resolvedSignals.map((signal) => signal.id),
+        sources,
+      };
+    })
+    .filter((resolved) => resolved.signalIds.length > 0);
 }
 
 export async function runTrendResearch(ctx: WorkerContext, job: TrendResearchJob): Promise<void> {
@@ -534,41 +626,99 @@ export async function runTrendResearch(ctx: WorkerContext, job: TrendResearchJob
     .where(eq(schema.trendResearchRuns.id, run.id));
 
   try {
+    const brandContext = await getTrendContext(ctx.db, brand.id);
+
     const queries = buildTrendSearchQueries({
-      brand: { category: brand.category, location: brand.location },
+      brand: {
+        category: brandContext.identity.industry ?? brand.category,
+        location: brandContext.identity.location ?? brand.location,
+      },
       locationOverride: run.locationOverride,
       focus: run.focus,
     });
-    const signals = await collectTrendSignals(ctx, run.id, brand, queries);
+    await recordContextSnapshot(ctx.db, {
+      brandId: brand.id,
+      agentType: 'trend',
+      snapshot: { ...brandContext, queries: queries.map((query) => query.request.query) },
+    });
 
-    const { ideas, cost } = await synthesizeTrendIdeas(
+    const signals = await collectSignals(ctx, run.id, brand, queries);
+
+    const signalRows = signals.map((signal) => ({
+      id: signal.id,
+      runId: run.id,
+      source: signal.source,
+      signalType: signal.signalType,
+      title: signal.title,
+      snippet: signal.snippet,
+      strength: signal.strength,
+      sourceUrl: signal.sourceUrl,
+      publishedAt: signal.publishedAt,
+    }));
+
+    // Persisted immediately, before synthesis runs — not bundled into the
+    // transaction below. This is the entire point of the signal model: raw
+    // evidence must outlive the model call that interprets it. If synthesis
+    // fails after this (a real, observed failure mode — provider quota,
+    // timeout, a rejected schema), the run is marked failed but the signals
+    // collected stay queryable via GET .../signals rather than vanishing
+    // with the run. Delete-then-insert for the same BullMQ-redelivery
+    // reasoning the transaction below has: a retried run must not duplicate
+    // signals from the partial attempt before it.
+    await ctx.db.transaction(async (tx) => {
+      await tx.delete(schema.trendOpportunities).where(eq(schema.trendOpportunities.runId, run.id));
+      await tx.delete(schema.trendSignals).where(eq(schema.trendSignals.runId, run.id));
+      if (signalRows.length) await tx.insert(schema.trendSignals).values(signalRows);
+    });
+
+    const { opportunities: drafts, cost } = await synthesizeOpportunities(
       ctx,
       run.id,
       brand,
+      brandContext,
       run.focus,
       run.locationOverride,
       signals,
     );
     await recordCost(ctx, brand.id, run.id, cost);
 
-    const rows = ideas.map((idea) => ({
+    const resolved = resolveOpportunitySignals(drafts, signals);
+
+    const opportunityRows = resolved.map(({ id, draft, signalIds, sources }) => ({
+      id,
       runId: run.id,
-      category: idea.category,
-      title: idea.title,
-      summary: idea.summary,
-      recommendation: idea.recommendation,
-      contentType: idea.contentType,
-      score: { ...idea.score, overall: computeTrendScore(idea.score) },
-      sources: verifySources(idea.sources, signals),
-      suggestedRequest: idea.suggestedRequest,
+      topic: draft.topic,
+      category: draft.category,
+      title: draft.title,
+      summary: draft.summary,
+      recommendation: draft.recommendation,
+      contentType: draft.contentType,
+      score: { ...draft.score, overall: computeTrendScore(draft.score) },
+      signalCount: signalIds.length,
+      sources,
+      suggestedRequest: draft.suggestedRequest,
     }));
 
-    // Replace rather than append: a retried run (BullMQ redelivery after a
-    // crash between insert and status update) must not duplicate ideas from
-    // the partial attempt before it.
+    // Opportunities and the signal->opportunity backfill happen together
+    // once synthesis has actually succeeded — the signals themselves are
+    // already durable from the transaction above.
     await ctx.db.transaction(async (tx) => {
-      await tx.delete(schema.trendIdeas).where(eq(schema.trendIdeas.runId, run.id));
-      if (rows.length) await tx.insert(schema.trendIdeas).values(rows);
+      if (opportunityRows.length) await tx.insert(schema.trendOpportunities).values(opportunityRows);
+
+      // Backfills the provenance link: which raw evidence a stored
+      // opportunity was actually clustered from. One UPDATE per opportunity
+      // rather than a single bulk statement — opportunity count is at most
+      // 8, so the extra round trips cost nothing worth optimizing away, and
+      // it keeps each opportunity's signal set and topic together in one
+      // readable statement instead of a harder-to-audit CASE expression.
+      for (const { id, draft, signalIds } of resolved) {
+        if (signalIds.length === 0) continue;
+        await tx
+          .update(schema.trendSignals)
+          .set({ topic: draft.topic, opportunityId: id })
+          .where(inArray(schema.trendSignals.id, signalIds));
+      }
+
       await tx
         .update(schema.trendResearchRuns)
         .set({ status: 'succeeded', finishedAt: new Date(), error: null })

@@ -5,6 +5,7 @@ import { BrandsModule } from './brands/brands.module.js';
 import { CoreModule } from './core/core.module.js';
 import { GenerationsModule } from './generations/generations.module.js';
 import { HealthModule } from './health/health.module.js';
+import { IntelligenceModule } from './intelligence/intelligence.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { SchedulingModule } from './scheduling/scheduling.module.js';
 import { SocialModule } from './social/social.module.js';
@@ -15,6 +16,7 @@ import { TrendsModule } from './trends/trends.module.js';
  *   brands        -> the Brand Kit and its products
  *   brand-site    -> reads the brand's own website into the Brand Kit (FR-1.4)
  *   trends        -> Trend Research Agent: search + score ideas ahead of generation
+ *   intelligence  -> Leads/Business-Intelligence Agent + the AI research prompt box
  *   generations   -> intake, job status, variant selection and edits
  *   scheduling    -> plan a campaign once, generate + gate every post on approval
  *   social        -> Instagram/Facebook OAuth & posting
@@ -29,6 +31,7 @@ import { TrendsModule } from './trends/trends.module.js';
     BrandsModule,
     BrandSiteModule,
     TrendsModule,
+    IntelligenceModule,
     GenerationsModule,
     SchedulingModule,
     SocialModule,

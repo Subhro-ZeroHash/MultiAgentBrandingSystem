@@ -12,6 +12,13 @@ export const QUEUES = {
   contentEdit: 'content-edit',
   scheduledPostPublish: 'scheduled-post-publish',
   trendResearch: 'trend-research',
+  intelligenceResearch: 'intelligence-research',
+  /** The autonomous scheduler's own tick, not a per-brand job. One repeatable
+   *  BullMQ job with a fixed id ('scheduler-tick') fires every
+   *  RESEARCH_SCHEDULER_INTERVAL_HOURS and fans out real work — enqueuing
+   *  trend-research and intelligence-research jobs for whichever brands
+   *  automation_settings says are due. */
+  researchScheduler: 'research-scheduler',
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
 } as const;
@@ -46,6 +53,25 @@ export const trendResearchJobSchema = z.object({
   brandId: entityIdSchema,
 });
 export type TrendResearchJob = z.infer<typeof trendResearchJobSchema>;
+
+export const intelligenceResearchJobSchema = z.object({
+  runId: entityIdSchema,
+  brandId: entityIdSchema,
+});
+export type IntelligenceResearchJob = z.infer<typeof intelligenceResearchJobSchema>;
+
+/** How often the scheduler wakes up to check `automation_settings` for brands
+ *  that are due. Not the same clock as a brand's own cadence (daily / three
+ *  days / weekly, see TrendFrequency) — this is just how granular "due" gets
+ *  checked. A brand due for weekly research does not need a minute-accurate
+ *  trigger; ten hours keeps the miss window small without a job waking up and
+ *  finding nothing to do almost every time it runs. */
+export const RESEARCH_SCHEDULER_INTERVAL_HOURS = 10;
+
+/** Empty payload — the tick itself carries no state, it just re-reads
+ *  `automation_settings` fresh every time it fires. */
+export const researchSchedulerTickJobSchema = z.object({});
+export type ResearchSchedulerTickJob = z.infer<typeof researchSchedulerTickJobSchema>;
 
 /** One prompt against one engine. Fan-out happens at enqueue time so a single
  * slow engine can't hold up the rest of the sweep. */
