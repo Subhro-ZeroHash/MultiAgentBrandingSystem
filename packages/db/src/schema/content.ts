@@ -16,9 +16,12 @@ import {
 // schema file stays free of runtime imports, but the payloads are worth typing
 // against the contract that validates them.
 import type {
+  AutoTriggeredJobRef,
   BrandCompetitor,
+  IntelligencePoolScore,
   IntelligenceScore,
   PreferenceValue,
+  TrendPoolScore,
   TrendScore,
   TrendSource,
   TrendSuggestedRequest,
@@ -544,6 +547,27 @@ export const trendContentType = content.enum('trend_content_type', [
   'campaign',
 ]);
 
+/** The fixed, India-scoped category taxonomy the research pool (Layer A, see
+ *  research-pool.ts) is organized by. Mirrors `categoryKeySchema` in
+ *  @bmas/shared — the two must stay in step, same rule `styleTemplate` above
+ *  already follows. Free-text `brands.category`/`brand_contexts.industry`
+ *  normalize into this lazily, cached on `brand_contexts.category_key` — see
+ *  `ensureBrandCategoryKey` in content-worker. */
+export const categoryKey = content.enum('category_key', [
+  'technology',
+  'fashion_apparel',
+  'food_beverage',
+  'fitness_wellness',
+  'sports',
+  'entertainment',
+  'beauty_personal_care',
+  'home_lifestyle',
+  'finance',
+  'travel_hospitality',
+  'education',
+  'other',
+]);
+
 /** What the user did with an opportunity once it was shown. Mutated in
  *  place, not append-only — a run's opportunities have one current state
  *  each, not a history of states. The append-only side of "ignored"/"worked
@@ -555,6 +579,17 @@ export const trendOpportunityStatus = content.enum('trend_opportunity_status', [
   'saved',
   'ignored',
   'working_on',
+]);
+
+/** Bucketed from `score.overall` by `computeActionTier` (@bmas/shared) at
+ *  write time — see the Trend Opportunity Engine header comment in
+ *  trend-research.ts. Stored rather than recomputed on read so a later
+ *  change to the score thresholds doesn't retroactively relabel old rows. */
+export const trendActionTier = content.enum('trend_action_tier', [
+  'immediate_action',
+  'recommended',
+  'monitor',
+  'ignore',
 ]);
 
 /** One "Find Trending Content Ideas" click. Kept separate from
@@ -674,6 +709,31 @@ export const trendOpportunities = content.table(
      *  the user picks a product, and every field here stays user-editable. */
     suggestedRequest: jsonb('suggested_request').$type<TrendSuggestedRequest>().notNull(),
     status: trendOpportunityStatus('status').notNull().default('new'),
+    /** Which pool item (see the Global Research Pool section below) this
+     *  opportunity's relevance was scored against, when Layer B sourced it
+     *  from the pool rather than a fresh per-brand search. Null on rows from
+     *  before the pool existed, and `ON DELETE SET NULL` so a pool item
+     *  outliving its own cadence never blocks deleting a stale one. */
+    poolItemId: text('pool_item_id').references((): AnyPgColumn => poolTrendItems.id, {
+      onDelete: 'set null',
+    }),
+    /** The single product this opportunity was judged to best fit, or null if
+     *  none in the brand's catalog genuinely tied in — see productRelevance
+     *  in @bmas/shared. Required for auto-trigger, since a generation
+     *  request always needs a product; `ON DELETE SET NULL` so deleting a
+     *  product never blocks deleting an old opportunity. */
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
+    /** Computed once at write time by computeActionTier — see this column's
+     *  enum doc comment above. */
+    actionTier: trendActionTier('action_tier').notNull(),
+    /** Whether the auto-trigger pipeline (opportunity-trigger.ts) already
+     *  generated content for this opportunity. Guards against re-triggering
+     *  the same opportunity if a run is ever retried. */
+    autoTriggered: boolean('auto_triggered').notNull().default(false),
+    autoTriggeredAt: timestamp('auto_triggered_at', { withTimezone: true }),
+    /** The 3 generation jobs auto-trigger created, for the UI's "Recommended
+     *  Content" section to link to and poll without a separate lookup. */
+    generationJobIds: jsonb('generation_job_ids').$type<AutoTriggeredJobRef[]>().notNull().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('trend_opportunities_run_idx').on(t.runId)],
@@ -752,6 +812,16 @@ export const brandContexts = content.table(
      *  website importer may fill blanks; afterwards it leaves the row alone,
      *  so a re-import cannot quietly undo someone's corrections. */
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /** Normalized from `industry` (falling back to the Brand Kit's free-text
+     *  `category`) via a one-time LLM classification. Null until Layer B
+     *  first needs it — classification is lazy, not eager, so brand creation
+     *  and every context read stay LLM-free. See `ensureBrandCategoryKey`. */
+    categoryKey: categoryKey('category_key'),
+    /** The exact industry/category text `categoryKey` was classified from. An
+     *  edit to `industry` changes this string, which is how a stale
+     *  classification gets detected and re-run — cheaper than a dirty flag
+     *  every unrelated field edit would also have to know to clear. */
+    categoryKeyClassifiedFor: text('category_key_classified_for'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -851,6 +921,15 @@ export const automationSettings = content.table(
      *  publishing is the one step with no undo. */
     autoPublishEnabled: boolean('auto_publish_enabled').notNull().default(false),
     approvalPolicy: approvalPolicy('approval_policy').notNull().default('assist'),
+    /** Opt-in gate for the Trend Opportunity Engine's auto-trigger step (see
+     *  maybeAutoTriggerBestOpportunity in trend-research.ts). Off by default
+     *  — this spends real generation cost the moment a run produces an
+     *  `immediate_action` opportunity, so it is deliberately a separate,
+     *  narrower switch from `contentAutomationEnabled` rather than implied
+     *  by it. */
+    autoTriggerHighScoreOpportunities: boolean('auto_trigger_high_score_opportunities')
+      .notNull()
+      .default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1005,6 +1084,11 @@ export const intelligenceItems = content.table(
      *  same as trend_ideas.sources. */
     sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
     status: intelligenceItemStatus('status').notNull().default('new'),
+    /** Same provenance link as `trend_opportunities.pool_item_id` — null for
+     *  `competitor`/`brand_news` items, which are never pool-derived. */
+    poolItemId: text('pool_item_id').references((): AnyPgColumn => poolIntelligenceItems.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -1024,6 +1108,239 @@ export const intelligenceRunsRelations = relations(intelligenceRuns, ({ one, man
 
 export const intelligenceItemsRelations = relations(intelligenceItems, ({ one }) => ({
   run: one(intelligenceRuns, { fields: [intelligenceItems.runId], references: [intelligenceRuns.id] }),
+}));
+
+// ---------------------------------------------------------------------------
+// Global Research Pool (Layer A)
+//
+// Trend Research and Intelligence Research used to run their whole
+// search-and-synthesize pipeline once per brand, per click — cheap at one
+// brand, but N brands in the same industry pay for and repeat nearly
+// identical searches (a festival calendar, an industry news cycle) N times
+// over. Most of what those searches surface is not actually brand-specific;
+// only its *relevance* is.
+//
+// The pool is what makes that shareable: one search+synthesis pass runs per
+// category (or once nationally, `scope = 'national'`, for things that are not
+// industry-qualified at all — festival dates, general local news), on a fixed
+// schedule independent of brand count. `trend_opportunities` /
+// `intelligence_items` above are still what the app renders — a brand's own
+// research run (Layer B) now loads the pool for its category and runs one
+// cheap relevance-scoring call against it instead of searching the web
+// itself, and records which pool item it scored via `pool_item_id`.
+//
+// See packages/shared/src/content/research-pool.ts for the Zod contracts and
+// `apps/content-worker/src/pipeline/{trend,intelligence}-pool-refresh.ts` for
+// the Layer A pipelines that populate these tables. Deliberately not a
+// separate schema file the way core/geo get one each: every table here is
+// still `content`-schema and content-workstream owned, and splitting it out
+// would need a real circular import between two schema files (pool tables
+// reference `trend_category`/`intelligence_category`/etc. defined above,
+// while `trend_opportunities.pool_item_id` above references the pool tables
+// back) — one file avoids that entirely.
+// ---------------------------------------------------------------------------
+
+export const poolRunStatus = content.enum('pool_run_status', [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
+export const poolRunScope = content.enum('pool_run_scope', ['category', 'national']);
+
+/** One Layer A trend refresh — search + synthesis run once for a category (or
+ *  once nationally for `event_festival`, which isn't industry-qualified in
+ *  the query text — see buildTrendPoolQueries), shared by every brand in
+ *  scope. The category-level counterpart of `trend_research_runs`. */
+export const poolTrendRuns = content.table(
+  'pool_trend_runs',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    scope: poolRunScope('scope').notNull(),
+    /** Null iff scope = 'national'. */
+    category: categoryKey('category'),
+    status: poolRunStatus('status').notNull().default('queued'),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    /** When this run's items stop counting as fresh. Set once the run
+     *  succeeds, from `poolExpiresAt` in @bmas/shared — stored rather than
+     *  derived so "is the pool stale" is a plain `expiresAt < now()`
+     *  comparison, same reasoning `automation_settings.nextResearchAt`
+     *  already documents. */
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('pool_trend_runs_scope_category_created_idx').on(t.scope, t.category, t.createdAt),
+    index('pool_trend_runs_expires_idx').on(t.expiresAt),
+    // At most one active (queued/running) refresh per bucket — closes the
+    // exact race `asset_edits_one_active_per_root_idx` closes in
+    // generations.service.ts: the scheduler tick and a brand's lazy backfill
+    // can both decide the same bucket is stale at the same moment, and only
+    // one may actually run the refresh. The loser's insert gets a Postgres
+    // 23505 the caller (pool-loader.ts) catches and polls on instead.
+    uniqueIndex('pool_trend_runs_one_active_per_bucket_idx')
+      .on(t.scope, t.category)
+      .where(sql`${t.status} IN ('queued', 'running')`),
+  ],
+);
+
+export const poolTrendItems = content.table(
+  'pool_trend_items',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    runId: text('run_id')
+      .notNull()
+      .references(() => poolTrendRuns.id, { onDelete: 'cascade' }),
+    topic: text('topic').notNull(),
+    category: trendCategory('category').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull(),
+    /** A generic recommendation, not yet brand-specific — Layer B may
+     *  override this per brand rather than always reusing it verbatim. */
+    recommendation: text('recommendation').notNull(),
+    contentType: trendContentType('content_type').notNull(),
+    /** Brand-agnostic axes only (popularity/freshness/marketingPotential) —
+     *  brandRelevance/audienceRelevance don't exist yet at this layer. See
+     *  trendPoolScoreSchema in @bmas/shared. */
+    score: jsonb('score').$type<TrendPoolScore>().notNull(),
+    signalCount: integer('signal_count').notNull(),
+    sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
+    suggestedRequest: jsonb('suggested_request').$type<TrendSuggestedRequest>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('pool_trend_items_run_idx').on(t.runId),
+    index('pool_trend_items_category_idx').on(t.category),
+  ],
+);
+
+/** Raw evidence for the trend pool — same shape and purpose as
+ *  `trend_signals` above, now backing many brands per row instead of one. */
+export const poolTrendSignals = content.table(
+  'pool_trend_signals',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    runId: text('run_id')
+      .notNull()
+      .references(() => poolTrendRuns.id, { onDelete: 'cascade' }),
+    source: text('source').notNull(),
+    signalType: text('signal_type').notNull(),
+    topic: text('topic'),
+    title: text('title').notNull(),
+    snippet: text('snippet').notNull(),
+    strength: real('strength').notNull(),
+    sourceUrl: text('source_url').notNull(),
+    publishedAt: text('published_at'),
+    poolItemId: text('pool_item_id').references((): AnyPgColumn => poolTrendItems.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('pool_trend_signals_run_idx').on(t.runId),
+    index('pool_trend_signals_item_idx').on(t.poolItemId),
+  ],
+);
+
+export const poolIntelligenceRuns = content.table(
+  'pool_intelligence_runs',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    scope: poolRunScope('scope').notNull(),
+    category: categoryKey('category'),
+    status: poolRunStatus('status').notNull().default('queued'),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('pool_intelligence_runs_scope_category_created_idx').on(
+      t.scope,
+      t.category,
+      t.createdAt,
+    ),
+    index('pool_intelligence_runs_expires_idx').on(t.expiresAt),
+    uniqueIndex('pool_intelligence_runs_one_active_per_bucket_idx')
+      .on(t.scope, t.category)
+      .where(sql`${t.status} IN ('queued', 'running')`),
+  ],
+);
+
+export const poolIntelligenceItems = content.table(
+  'pool_intelligence_items',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    runId: text('run_id')
+      .notNull()
+      .references(() => poolIntelligenceRuns.id, { onDelete: 'cascade' }),
+    /** Reuses the existing `intelligence_category` enum above, but only ever
+     *  holds 'government_policy' | 'industry_news' | 'local' here —
+     *  'competitor' and 'brand_news' are inherently brand-specific and never
+     *  pooled. The narrower `poolableIntelligenceCategorySchema` in
+     *  @bmas/shared is what actually constrains writes; the DB enum stays the
+     *  full vocabulary `intelligence_items` also uses. */
+    category: intelligenceCategory('category').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull(),
+    urgency: intelligenceUrgency('urgency').notNull(),
+    /** businessImpact + recency only — brandRelevance/industryRelevance/
+     *  geographicRelevance are Layer B's job (geographicRelevance in
+     *  particular needs the brand's own trading city, which a pool item
+     *  deliberately does not have). */
+    score: jsonb('score').$type<IntelligencePoolScore>().notNull(),
+    sources: jsonb('sources').$type<TrendSource[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('pool_intelligence_items_run_idx').on(t.runId),
+    index('pool_intelligence_items_category_idx').on(t.category),
+  ],
+);
+// No poolIntelligenceSignals table — matches intelligence-research.ts's own
+// existing choice not to persist raw search results, unlike trend research.
+
+export const poolTrendRunsRelations = relations(poolTrendRuns, ({ many }) => ({
+  items: many(poolTrendItems),
+  signals: many(poolTrendSignals),
+}));
+
+export const poolTrendItemsRelations = relations(poolTrendItems, ({ one, many }) => ({
+  run: one(poolTrendRuns, { fields: [poolTrendItems.runId], references: [poolTrendRuns.id] }),
+  signals: many(poolTrendSignals),
+}));
+
+export const poolTrendSignalsRelations = relations(poolTrendSignals, ({ one }) => ({
+  run: one(poolTrendRuns, { fields: [poolTrendSignals.runId], references: [poolTrendRuns.id] }),
+  item: one(poolTrendItems, {
+    fields: [poolTrendSignals.poolItemId],
+    references: [poolTrendItems.id],
+  }),
+}));
+
+export const poolIntelligenceRunsRelations = relations(poolIntelligenceRuns, ({ many }) => ({
+  items: many(poolIntelligenceItems),
+}));
+
+export const poolIntelligenceItemsRelations = relations(poolIntelligenceItems, ({ one }) => ({
+  run: one(poolIntelligenceRuns, {
+    fields: [poolIntelligenceItems.runId],
+    references: [poolIntelligenceRuns.id],
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -1079,6 +1396,17 @@ export type TrendSignalRow = typeof trendSignals.$inferSelect;
 export type NewTrendSignalRow = typeof trendSignals.$inferInsert;
 export type TrendOpportunityRow = typeof trendOpportunities.$inferSelect;
 export type NewTrendOpportunityRow = typeof trendOpportunities.$inferInsert;
+
+export type PoolTrendRunRow = typeof poolTrendRuns.$inferSelect;
+export type NewPoolTrendRunRow = typeof poolTrendRuns.$inferInsert;
+export type PoolTrendItemRow = typeof poolTrendItems.$inferSelect;
+export type NewPoolTrendItemRow = typeof poolTrendItems.$inferInsert;
+export type PoolTrendSignalRow = typeof poolTrendSignals.$inferSelect;
+export type NewPoolTrendSignalRow = typeof poolTrendSignals.$inferInsert;
+export type PoolIntelligenceRunRow = typeof poolIntelligenceRuns.$inferSelect;
+export type NewPoolIntelligenceRunRow = typeof poolIntelligenceRuns.$inferInsert;
+export type PoolIntelligenceItemRow = typeof poolIntelligenceItems.$inferSelect;
+export type NewPoolIntelligenceItemRow = typeof poolIntelligenceItems.$inferInsert;
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type NewSocialAccount = typeof socialAccounts.$inferInsert;

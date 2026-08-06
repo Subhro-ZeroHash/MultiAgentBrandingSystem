@@ -1,218 +1,101 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildTrendSearchQueries,
-  clipOpportunityCounts,
-  resolveOpportunitySignals,
-} from './trend-research.js';
+import { clipRelevanceCounts, resolveRelevanceDrafts } from './trend-research.js';
 
-describe('buildTrendSearchQueries', () => {
-  it('builds one query per category', () => {
-    const queries = buildTrendSearchQueries({
-      brand: { category: 'Saree boutique', location: 'Jaipur' },
-      locationOverride: null,
-      focus: null,
-    });
-    expect(queries.map((q) => q.category)).toEqual([
-      'industry_topic',
-      'event_festival',
-      'social_trend',
-    ]);
-  });
-
-  it('folds the brand location and industry into the query text', () => {
-    const [industry] = buildTrendSearchQueries({
-      brand: { category: 'Saree boutique', location: 'Jaipur' },
-      locationOverride: null,
-      focus: null,
-    });
-    expect(industry?.request.query).toContain('Saree boutique');
-    expect(industry?.request.query).toContain('Jaipur');
-  });
-
-  it('prefers a run-level location override to the Brand Kit location', () => {
-    const [industry] = buildTrendSearchQueries({
-      brand: { category: 'Saree boutique', location: 'Jaipur' },
-      locationOverride: 'Mumbai',
-      focus: null,
-    });
-    expect(industry?.request.query).toContain('Mumbai');
-    expect(industry?.request.query).not.toContain('Jaipur');
-  });
-
-  it('folds a focus line into every query, not just one', () => {
-    const queries = buildTrendSearchQueries({
-      brand: { category: 'Cafe', location: 'Pune' },
-      locationOverride: null,
-      focus: 'new menu launch',
-    });
-    for (const { request } of queries) {
-      expect(request.query.toLowerCase()).toContain('new menu launch');
-    }
-  });
-
-  it('falls back to "small business" when the brand has no category', () => {
-    const [industry] = buildTrendSearchQueries({
-      brand: { category: null, location: null },
-      locationOverride: null,
-      focus: null,
-    });
-    expect(industry?.request.query).toContain('small business');
-  });
-
-  it('never asserts a country via `locale` — geography lives in the query text', () => {
-    const queries = buildTrendSearchQueries({
-      brand: { category: 'Cafe', location: 'Jaipur' },
-      locationOverride: null,
-      focus: null,
-    });
-    for (const { request } of queries) {
-      expect(request.locale).toBeUndefined();
-    }
-  });
-
-  it('asks the events query for a wider recency window than the others', () => {
-    const queries = buildTrendSearchQueries({
-      brand: { category: 'Cafe', location: null },
-      locationOverride: null,
-      focus: null,
-    });
-    const events = queries.find((q) => q.category === 'event_festival');
-    const industry = queries.find((q) => q.category === 'industry_topic');
-    expect(events?.request.recencyDays ?? 0).toBeGreaterThan(industry?.request.recencyDays ?? 0);
-  });
+const poolItem = (n: number) => ({
+  id: `pool-item-${n}`,
+  runId: 'run-1',
+  topic: `topic ${n}`,
+  category: 'event_festival' as const,
+  title: `title ${n}`,
+  summary: 'summary',
+  recommendation: 'recommendation',
+  contentType: 'post' as const,
+  score: { popularity: 80, freshness: 80, marketingPotential: 80 },
+  signalCount: 2,
+  sources: [],
+  suggestedRequest: {
+    campaignType: 'festival' as const,
+    styleTemplate: 'festive' as const,
+    outputFormat: 'instagram_post' as const,
+    headlineText: null,
+    offerText: null,
+    extraInstructions: null,
+  },
+  createdAt: new Date(),
 });
 
-/**
- * SYNTHESIS_SCHEMA carries no `maxItems` — confirmed against the live Gemini
- * API that a schema this deeply nested is rejected outright once an array
- * bound co-occurs with the enum-heavy `suggestedRequest` object. Zod's own
- * `.max()` is the actual enforcement now, and `clipOpportunityCounts` is what
- * keeps a model that overshoots "up to 8" from hard-failing the whole run on
- * that validation instead of just losing the extras.
- */
-describe('clipOpportunityCounts', () => {
-  const opportunity = (n: number) => ({ title: `opportunity ${n}` });
+const baseDraft = {
+  brandRelevance: 90,
+  audienceRelevance: 85,
+  recommendationOverride: null,
+};
 
-  it('drops opportunities beyond the eighth', () => {
-    const raw = { opportunities: Array.from({ length: 11 }, (_unused, i) => opportunity(i)) };
-    const clipped = clipOpportunityCounts(raw) as { opportunities: unknown[] };
-    expect(clipped.opportunities).toHaveLength(8);
+/**
+ * Same "clip rather than reject an overshoot" reasoning trend-pool-refresh's
+ * own `clipPoolItemCounts` tests pin — see that function's comment.
+ */
+describe('clipRelevanceCounts', () => {
+  it('drops items beyond the eighth', () => {
+    const raw = { items: Array.from({ length: 11 }, (_unused, i) => ({ poolItemIndex: i })) };
+    const clipped = clipRelevanceCounts(raw) as { items: unknown[] };
+    expect(clipped.items).toHaveLength(8);
   });
 
   it('leaves a within-bounds payload untouched', () => {
-    const raw = { opportunities: [{ title: 'a' }] };
-    expect(clipOpportunityCounts(raw)).toEqual(raw);
+    const raw = { items: [{ poolItemIndex: 0 }] };
+    expect(clipRelevanceCounts(raw)).toEqual(raw);
   });
 
   it('passes through anything that is not the expected shape rather than throwing', () => {
-    expect(clipOpportunityCounts(null)).toBeNull();
-    expect(clipOpportunityCounts('not an object')).toBe('not an object');
-    expect(clipOpportunityCounts({ noOpportunitiesField: true })).toEqual({
-      noOpportunitiesField: true,
-    });
-    expect(clipOpportunityCounts({ opportunities: 'not an array' })).toEqual({
-      opportunities: 'not an array',
-    });
+    expect(clipRelevanceCounts(null)).toBeNull();
+    expect(clipRelevanceCounts('not an object')).toBe('not an object');
+    expect(clipRelevanceCounts({ noItemsField: true })).toEqual({ noItemsField: true });
+    expect(clipRelevanceCounts({ items: 'not an array' })).toEqual({ items: 'not an array' });
   });
 });
 
-describe('resolveOpportunitySignals', () => {
-  const signals = [
-    {
-      id: 'sig-0',
-      source: 'tavily',
-      signalType: 'news_mention' as const,
-      title: 'A',
-      snippet: '',
-      strength: 100,
-      sourceUrl: 'https://real.example/a',
-      publishedAt: null,
-    },
-    {
-      id: 'sig-1',
-      source: 'serpapi',
-      signalType: 'news_mention' as const,
-      title: 'B',
-      snippet: '',
-      strength: 88,
-      sourceUrl: 'https://real.example/b',
-      publishedAt: null,
-    },
-  ];
+describe('resolveRelevanceDrafts', () => {
+  const poolItems = [poolItem(0), poolItem(1)];
 
-  const baseDraft = {
-    topic: 'World Cup',
-    category: 'event_festival' as const,
-    title: 'World Cup opportunity',
-    summary: 'summary',
-    recommendation: 'recommendation',
-    contentType: 'post' as const,
-    score: {
-      brandRelevance: 80,
-      audienceRelevance: 80,
-      popularity: 80,
-      freshness: 80,
-      marketingPotential: 80,
-    },
-    suggestedRequest: {
-      campaignType: 'festival' as const,
-      styleTemplate: 'festive' as const,
-      outputFormat: 'instagram_post' as const,
-      headlineText: null,
-      offerText: null,
-      extraInstructions: null,
-    },
-  };
-
-  it('resolves valid indexes to real signal ids', () => {
-    const [resolved] = resolveOpportunitySignals(
-      [{ ...baseDraft, signalIndexes: [0, 1] }],
-      signals,
+  it('resolves a valid index to the matching pool item', () => {
+    const [resolved] = resolveRelevanceDrafts(
+      [{ ...baseDraft, poolItemIndex: 1 }],
+      poolItems,
     );
-    expect(resolved?.signalIds).toEqual(['sig-0', 'sig-1']);
+    expect(resolved?.poolItem.id).toBe('pool-item-1');
+    expect(resolved?.draft.brandRelevance).toBe(90);
   });
 
   it('drops an out-of-range index rather than crashing', () => {
-    const [resolved] = resolveOpportunitySignals(
-      [{ ...baseDraft, signalIndexes: [0, 99] }],
-      signals,
-    );
-    expect(resolved?.signalIds).toEqual(['sig-0']);
-  });
-
-  it('dedupes a repeated index', () => {
-    const [resolved] = resolveOpportunitySignals(
-      [{ ...baseDraft, signalIndexes: [0, 0, 1] }],
-      signals,
-    );
-    expect(resolved?.signalIds).toEqual(['sig-0', 'sig-1']);
-  });
-
-  it('drops the whole opportunity when every index is invalid — no evidence, no opportunity', () => {
-    const resolved = resolveOpportunitySignals(
-      [{ ...baseDraft, signalIndexes: [99] }],
-      signals,
-    );
+    const resolved = resolveRelevanceDrafts([{ ...baseDraft, poolItemIndex: 99 }], poolItems);
     expect(resolved).toHaveLength(0);
   });
 
-  it('derives sources mechanically from the resolved signals, not from the model', () => {
-    const [resolved] = resolveOpportunitySignals(
-      [{ ...baseDraft, signalIndexes: [0, 1] }],
-      signals,
-    );
-    expect(resolved?.sources).toEqual([
-      { url: 'https://real.example/a', title: 'A' },
-      { url: 'https://real.example/b', title: 'B' },
-    ]);
+  it('drops a negative index rather than crashing', () => {
+    const resolved = resolveRelevanceDrafts([{ ...baseDraft, poolItemIndex: -1 }], poolItems);
+    expect(resolved).toHaveLength(0);
   });
 
-  it('dedupes sources sharing the same URL across two resolved signals', () => {
-    const duplicateUrlSignal = { ...signals[1]!, id: 'sig-2', sourceUrl: signals[0]!.sourceUrl };
-    const [resolved] = resolveOpportunitySignals(
-      [{ ...baseDraft, signalIndexes: [0, 2] }],
-      [...signals, duplicateUrlSignal],
+  it('dedupes a repeated index, keeping only the first occurrence', () => {
+    const resolved = resolveRelevanceDrafts(
+      [
+        { ...baseDraft, poolItemIndex: 0, brandRelevance: 10 },
+        { ...baseDraft, poolItemIndex: 0, brandRelevance: 99 },
+      ],
+      poolItems,
     );
-    expect(resolved?.sources).toHaveLength(1);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.draft.brandRelevance).toBe(10);
+  });
+
+  it('resolves every distinct valid index in one pass', () => {
+    const resolved = resolveRelevanceDrafts(
+      [
+        { ...baseDraft, poolItemIndex: 0 },
+        { ...baseDraft, poolItemIndex: 1 },
+      ],
+      poolItems,
+    );
+    expect(resolved.map((r) => r.poolItem.id)).toEqual(['pool-item-0', 'pool-item-1']);
   });
 });

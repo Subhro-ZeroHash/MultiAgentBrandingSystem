@@ -192,6 +192,12 @@ export const automationSettingsSchema = z.object({
    *  separate so turning autopilot on does not silently grant posting rights. */
   autoPublishEnabled: z.boolean(),
   approvalPolicy: approvalPolicySchema,
+  /** Opt-in gate for the Trend Opportunity Engine's auto-trigger step — see
+   *  the same field's doc comment on the `automation_settings` table.
+   *  Deliberately separate from `contentAutomationEnabled`: it spends real
+   *  generation cost unprompted, so turning on scheduled research does not
+   *  silently turn this on too. */
+  autoTriggerHighScoreOpportunities: z.boolean(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
@@ -203,6 +209,7 @@ export const updateAutomationSettingsSchema = z
     contentAutomationEnabled: z.boolean(),
     autoPublishEnabled: z.boolean(),
     approvalPolicy: approvalPolicySchema,
+    autoTriggerHighScoreOpportunities: z.boolean(),
   })
   .partial();
 export type UpdateAutomationSettingsInput = z.infer<typeof updateAutomationSettingsSchema>;

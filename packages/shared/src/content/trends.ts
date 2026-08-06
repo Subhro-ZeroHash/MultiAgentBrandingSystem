@@ -63,9 +63,18 @@ export const signalTypeSchema = z.enum([
 ]);
 export type SignalType = z.infer<typeof signalTypeSchema>;
 
+/** `title` is nullish rather than merely nullable because it is filled by a
+ *  model, not by us: a small local model constrained by Ollama's JSON-Schema
+ *  grammar routinely *omits* an optional-looking string field instead of
+ *  emitting `null` for it, which a bare `.nullable()` rejects with
+ *  "expected string, received undefined" and — since the adapter marks schema
+ *  mismatches retryable — burns the whole research run on a missing headline.
+ *  A source is identified by its `url`; the title is a display nicety, so a
+ *  missing one normalizes to `null` (the same value the DB column holds) here
+ *  rather than failing the item. */
 export const trendSourceSchema = z.object({
   url: z.string().url(),
-  title: z.string().max(300).nullable(),
+  title: z.string().max(300).nullish().default(null),
 });
 export type TrendSource = z.infer<typeof trendSourceSchema>;
 
@@ -127,42 +136,85 @@ export const trendModelScoreSchema = z.object({
    *  evergreen topic dressed up as trending. */
   freshness: z.number().min(0).max(100),
   /** How readily this converts into a concrete piece of content: a clear
-   *  angle, a natural offer tie-in, a date to build toward. */
+   *  angle, a natural offer tie-in, a date to build toward. Shown to users as
+   *  "Content Potential". */
   marketingPotential: z.number().min(0).max(100),
+  /** How well this fits the specific product matched to it (see
+   *  `productIndex` on the relevance draft) — distinct from brandRelevance,
+   *  since a trend can suit the brand generally but have no real tie-in to
+   *  any one product it actually sells. */
+  productRelevance: z.number().min(0).max(100),
+  /** How time-sensitive acting on this is: a closing window (a festival date
+   *  passing, a news cycle fading) scores high; an evergreen angle with no
+   *  real deadline scores low. Judged by the model, not derived from
+   *  `freshness` alone — freshness is "how new is this", urgency is "how
+   *  soon does the window close", and the two can disagree (an old-but-
+   *  accelerating trend can still be highly urgent). */
+  urgency: z.number().min(0).max(100),
 });
 export type TrendModelScore = z.infer<typeof trendModelScoreSchema>;
 
 export const trendScoreSchema = trendModelScoreSchema.extend({
-  /** The ranking number opportunities are sorted by. Computed by
-   *  `computeTrendScore` from the five axes above, never asked of the model
-   *  directly — a self-reported composite can silently disagree with its own
-   *  sub-scores, the same failure `computeGeoScore` in geo/visibility.ts was
-   *  written to avoid for the GEO headline number. */
+  /** How much the trend itself is rising, independent of any one brand —
+   *  `round((popularity + freshness) / 2)`. Computed, never asked of the
+   *  model directly, same reasoning as `overall` below. Shown to users as
+   *  "Trend Score". */
+  trendScore: z.number().min(0).max(100),
+  /** The ranking number opportunities are sorted by — the "Opportunity
+   *  Score". Computed by `computeOpportunityScore` from the axes above,
+   *  never asked of the model directly — a self-reported composite can
+   *  silently disagree with its own sub-scores, the same failure
+   *  `computeGeoScore` in geo/visibility.ts was written to avoid for the GEO
+   *  headline number. */
   overall: z.number().min(0).max(100),
 });
 export type TrendScore = z.infer<typeof trendScoreSchema>;
 
+/** 92+ is worth spending real generation cost on unprompted; below 50 isn't
+ *  worth surfacing as actionable at all. See `computeActionTier`. */
+export const trendActionTierSchema = z.enum([
+  'immediate_action',
+  'recommended',
+  'monitor',
+  'ignore',
+]);
+export type TrendActionTier = z.infer<typeof trendActionTierSchema>;
+
+export function computeActionTier(overall: number): TrendActionTier {
+  if (overall >= 92) return 'immediate_action';
+  if (overall >= 75) return 'recommended';
+  if (overall >= 50) return 'monitor';
+  return 'ignore';
+}
+
 /**
- * Weighted so an opportunity that actually fits *this* brand and *this*
- * audience outranks one that is merely popular. An SMB with a narrow niche
- * gets more value from "perfectly on-brand, modest reach" than "huge,
- * generic" — the opposite of what sorting by popularity alone would surface.
+ * Weighted so an opportunity that actually fits *this* brand, *this*
+ * product, and *this* audience outranks one that is merely popular. An SMB
+ * with a narrow niche gets more value from "perfectly on-brand, modest
+ * reach" than "huge, generic" — the opposite of what sorting by popularity
+ * alone would surface. Product and brand fit are weighted equally and
+ * heaviest: an opportunity with no real product tie-in is rarely worth
+ * acting on regardless of how well it otherwise fits the brand.
  */
-export const TREND_SCORE_WEIGHTS = {
-  brandRelevance: 0.3,
-  audienceRelevance: 0.2,
-  marketingPotential: 0.25,
-  freshness: 0.15,
-  popularity: 0.1,
+export const OPPORTUNITY_SCORE_WEIGHTS = {
+  brandRelevance: 0.2,
+  productRelevance: 0.2,
+  audienceRelevance: 0.15,
+  urgency: 0.15,
+  marketingPotential: 0.15,
+  trendScore: 0.15,
 } as const;
 
-export function computeTrendScore(score: TrendModelScore): number {
+export function computeOpportunityScore(
+  score: Omit<TrendModelScore, 'popularity' | 'freshness'> & { trendScore: number },
+): number {
   const overall =
-    score.brandRelevance * TREND_SCORE_WEIGHTS.brandRelevance +
-    score.audienceRelevance * TREND_SCORE_WEIGHTS.audienceRelevance +
-    score.marketingPotential * TREND_SCORE_WEIGHTS.marketingPotential +
-    score.freshness * TREND_SCORE_WEIGHTS.freshness +
-    score.popularity * TREND_SCORE_WEIGHTS.popularity;
+    score.brandRelevance * OPPORTUNITY_SCORE_WEIGHTS.brandRelevance +
+    score.productRelevance * OPPORTUNITY_SCORE_WEIGHTS.productRelevance +
+    score.audienceRelevance * OPPORTUNITY_SCORE_WEIGHTS.audienceRelevance +
+    score.urgency * OPPORTUNITY_SCORE_WEIGHTS.urgency +
+    score.marketingPotential * OPPORTUNITY_SCORE_WEIGHTS.marketingPotential +
+    score.trendScore * OPPORTUNITY_SCORE_WEIGHTS.trendScore;
 
   return Math.round(overall);
 }
@@ -184,6 +236,38 @@ export const trendSuggestedRequestSchema = z.object({
   extraInstructions: z.string().max(500).nullable(),
 });
 export type TrendSuggestedRequest = z.infer<typeof trendSuggestedRequestSchema>;
+
+/**
+ * One of the 3 content concepts the auto-trigger "Content Strategy Agent"
+ * produces for an `immediate_action` opportunity — see
+ * `opportunity-trigger.ts`. Each concept becomes exactly one real
+ * `CreativeRequest`/`generationJobs` row; there is no intermediate draft
+ * state, per the "fully automatic through to generated assets" design.
+ */
+export const contentConceptSchema = z.object({
+  /** Short human-readable name for this concept, e.g. "30-Day Running
+   *  Challenge Kickoff" — becomes the generation request's headline. */
+  label: z.string().min(1).max(80),
+  /** What the post actually shows/does — the creative direction in prose. */
+  postConcept: z.string().min(1).max(400),
+  captionText: z.string().min(1).max(300),
+  hashtags: z.array(z.string().min(1).max(40)).max(10),
+  ctaText: z.string().min(1).max(40),
+  /** Art-direction detail for composeBrief's free-text escape hatch —
+   *  composition, mood, what should be in frame. */
+  visualDirection: z.string().min(1).max(400),
+  outputFormat: outputFormatSchema,
+});
+export type ContentConcept = z.infer<typeof contentConceptSchema>;
+
+/** Exactly 3 concepts, each targeting a different output format — "Concept 1
+ *  → Poster, Concept 2 → Reel idea, Concept 3 → Story" from the product
+ *  brief, left to the model to assign since it knows which format best fits
+ *  each concept's angle. */
+export const contentConceptSynthesisSchema = z.object({
+  concepts: z.array(contentConceptSchema).length(3),
+});
+export type ContentConceptSynthesis = z.infer<typeof contentConceptSynthesisSchema>;
 
 /** What the synthesis call produces for one cluster, before a database id, a
  *  computed `overall` score, and the linked signal ids are attached. */
@@ -226,12 +310,37 @@ export type TrendOpportunitySynthesis = z.infer<typeof trendOpportunitySynthesis
 export const trendOpportunityStatusSchema = z.enum(['new', 'saved', 'ignored', 'working_on']);
 export type TrendOpportunityStatus = z.infer<typeof trendOpportunityStatusSchema>;
 
+/** One creative asset the auto-trigger pipeline generated from an
+ *  opportunity — see `opportunity-trigger.ts`. Enough for the UI to link to
+ *  and poll `GET /generations/:jobId` without a separate lookup. */
+export const autoTriggeredJobRefSchema = z.object({
+  jobId: entityIdSchema,
+  label: z.string(),
+  outputFormat: outputFormatSchema,
+});
+export type AutoTriggeredJobRef = z.infer<typeof autoTriggeredJobRefSchema>;
+
 export const trendOpportunitySchema = trendOpportunityDraftSchema
   .omit({ score: true, signalIndexes: true })
   .extend({
     id: entityIdSchema,
     runId: entityIdSchema,
     score: trendScoreSchema,
+    /** The single product (of the brand's own catalog) this opportunity was
+     *  judged to fit best, or null if none genuinely fit — see
+     *  `productIndex` on the relevance draft. Required for auto-trigger,
+     *  since a generation request always needs a product. */
+    productId: entityIdSchema.nullable(),
+    /** Bucketed from `score.overall` by `computeActionTier` at write time —
+     *  stored rather than recomputed on read so a later change to the
+     *  thresholds doesn't retroactively relabel old opportunities. */
+    actionTier: trendActionTierSchema,
+    /** Whether the auto-trigger pipeline already generated content for this
+     *  opportunity — see `opportunity-trigger.ts`. Guards against
+     *  re-triggering the same opportunity on a rerun. */
+    autoTriggered: z.boolean(),
+    autoTriggeredAt: z.coerce.date().nullable(),
+    generationJobIds: z.array(autoTriggeredJobRefSchema).default([]),
     /** How many signals were clustered into this opportunity — "5 signals"
      *  is what makes an opportunity legible as a conclusion rather than a
      *  single API's opinion. */

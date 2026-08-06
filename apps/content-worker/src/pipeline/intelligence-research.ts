@@ -8,117 +8,54 @@ import {
   schema,
   sql,
   type Brand,
+  type PoolIntelligenceItemRow,
   type TrendTaskContext,
 } from '@bmas/db';
 import {
   computeIntelligenceScore,
-  intelligenceSynthesisSchema,
+  intelligenceItemDraftSchema,
+  intelligenceRelevanceSynthesisSchema,
   type CostEvent,
-  type IntelligenceCategory,
   type IntelligenceItemDraft,
+  type IntelligenceModelScore,
+  type IntelligenceRelevanceDraft,
   type IntelligenceResearchJob,
   type TrendSource,
 } from '@bmas/shared';
+import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
+import { ensureBrandCategoryKey } from './category-classifier.js';
+import { ensureFreshIntelligencePool } from './pool-loader.js';
 
 /**
- * Leads / Business Intelligence Agent.
+ * Leads / Business Intelligence Agent — Layer B (brand relevance).
  *
- * The counterpart to Trend Research (trend-research.ts), sharing its whole
- * shape deliberately: real search first, one judgment call on top. What
- * differs is the question asked of the results. Trend research asks "can this
- * become a piece of content?"; this asks "should the brand owner know about
- * this?" — government policy, competitor moves, industry shifts, local
- * developments. Neither agent can answer the other's question well, which is
- * why they stay two pipelines rather than one with a mode flag: the search
- * queries are different, the scoring axes are different (business impact vs.
- * marketing potential), and mixing the outputs into one feed would bury a
- * regulatory change under festival post ideas.
+ * Same redesign as trend-research.ts, for the same reason: `government_
+ * policy`, `industry_news` and `local` are not actually brand-specific —
+ * only their relevance is — so those three now come from the shared pool
+ * (see intelligence-pool-refresh.ts) instead of a fresh per-brand search.
+ * `competitor` is the one category that genuinely cannot be pooled (named
+ * competitors differ per brand) and stays as a small, live, per-brand
+ * search here — now roughly a quarter the size of the old prompt, since it
+ * is the only category this file still searches for.
+ *
+ * `intelligence_runs` / `intelligence_items`, the job schema, the queue, the
+ * controller and the frontend all stay exactly as they were.
  */
 
 const SEARCH_TIMEOUT_MS = 15_000;
-// Five categories of real search results is a larger prompt than trend
-// research's three; sized with the same headroom logic as
-// SYNTHESIS_TIMEOUT_MS there.
-const SYNTHESIS_TIMEOUT_MS = 90_000;
-const MAX_SYNTHESIS_TOKENS = 14_000;
+// See trend-research.ts's own RELEVANCE_TIMEOUT_MS comment: confirmed live
+// that a smaller prompt does not mean proportionally faster local inference,
+// so this matches the same 300s headroom rather than the tighter ceiling a
+// smaller prompt might suggest.
+const RELEVANCE_TIMEOUT_MS = 300_000;
+const MAX_RELEVANCE_TOKENS = 4_000;
+// Roughly a quarter of the old MAX_SYNTHESIS_TOKENS (14_000) — competitor
+// news is the only category still searched here, one query instead of four.
+const COMPETITOR_SYNTHESIS_TIMEOUT_MS = 300_000;
+const MAX_COMPETITOR_SYNTHESIS_TOKENS = 6_000;
 const RESULTS_PER_QUERY = 6;
 const MAX_SNIPPET_CHARS = 500;
-
-interface CollectedSignal {
-  category: IntelligenceCategory;
-  request: WebSearchRequest;
-  results: WebSearchResult[];
-}
-
-/**
- * The five searches an intelligence run fans out. Pure and exported for the
- * same reason `buildTrendSearchQueries` is: testable query construction
- * without a network call.
- *
- * Every query is built from the Context Manager's reading of the brand, not
- * generic terms — "latest trends" would return nothing usably specific;
- * "latest sportswear trends India" or "government policies footwear India"
- * does. That's the whole point of running this per-brand instead of once
- * globally.
- */
-export function buildIntelligenceSearchQueries(input: {
-  industry: string | null;
-  location: string | null;
-  competitors: string[];
-}): Array<{ category: IntelligenceCategory; request: WebSearchRequest }> {
-  const industry = input.industry?.trim() || 'small business';
-  const location = input.location?.trim() || null;
-  const locality = location ? ` in ${location}` : ' in India';
-  const competitorNames = input.competitors.slice(0, 3);
-
-  const queries: Array<{ category: IntelligenceCategory; request: WebSearchRequest }> = [
-    {
-      category: 'government_policy',
-      request: {
-        query: `new government policy regulation tax changes affecting ${industry} businesses${locality}`,
-        topic: 'news',
-        recencyDays: 30,
-        maxResults: RESULTS_PER_QUERY,
-      },
-    },
-    {
-      category: 'industry_news',
-      request: {
-        query: `${industry} industry news market developments trends this month${locality}`,
-        topic: 'news',
-        recencyDays: 21,
-        maxResults: RESULTS_PER_QUERY,
-      },
-    },
-    {
-      category: 'local',
-      request: {
-        query: `local business news economic developments opportunities${locality}`,
-        topic: 'news',
-        recencyDays: 21,
-        maxResults: RESULTS_PER_QUERY,
-      },
-    },
-  ];
-
-  // Only searched when the brand has actually named competitors — an empty
-  // "competitor news" query against no names returns generic noise, worse
-  // than not asking at all.
-  if (competitorNames.length > 0) {
-    queries.push({
-      category: 'competitor',
-      request: {
-        query: `recent news announcements launches: ${competitorNames.join(', ')}`,
-        topic: 'news',
-        recencyDays: 30,
-        maxResults: RESULTS_PER_QUERY,
-      },
-    });
-  }
-
-  return queries;
-}
 
 async function recordCost(
   ctx: WorkerContext,
@@ -142,74 +79,233 @@ async function recordCost(
   });
 }
 
-/** Same "one category failing doesn't sink the run, all of them failing does"
- *  logic as collectTrendSignals — see that function's comment. */
-async function collectIntelligenceSignals(
-  ctx: WorkerContext,
-  runId: string,
-  brand: Brand,
-  queries: Array<{ category: IntelligenceCategory; request: WebSearchRequest }>,
-): Promise<CollectedSignal[]> {
-  const collected: CollectedSignal[] = [];
+// ---------------------------------------------------------------------------
+// Pool relevance scoring — government_policy / industry_news / local
+// ---------------------------------------------------------------------------
 
-  for (const { category, request } of queries) {
-    try {
-      const { value: results, cost } = await withRetry(() =>
-        withTimeout(
-          ctx.ai.webSearch().search(request, { brandId: brand.id, referenceId: runId }),
-          SEARCH_TIMEOUT_MS,
-          `intelligence search (${category})`,
-        ),
-      );
-      await recordCost(ctx, brand.id, runId, cost);
-      collected.push({ category, request, results });
-    } catch (error) {
-      console.warn(
-        `[intelligence-research] ${category} search failed for run ${runId}: ${describeError(error)}`,
-      );
-    }
-  }
-
-  if (collected.every((signal) => signal.results.length === 0)) {
-    throw new Error(
-      'No search results were available to research intelligence from — every search failed or returned nothing.',
-    );
-  }
-
-  return collected;
-}
-
-const CATEGORY_LABEL: Record<IntelligenceCategory, string> = {
-  government_policy: 'GOVERNMENT & POLICY',
-  industry_news: 'INDUSTRY NEWS',
-  local: 'LOCAL DEVELOPMENTS',
-  competitor: 'COMPETITOR NEWS',
-  brand_news: 'BRAND NEWS',
-};
-
-function describeSignalsForPrompt(signals: CollectedSignal[]): string {
-  return signals
-    .map(({ category, results }) => {
-      if (results.length === 0) return `## ${CATEGORY_LABEL[category]}\n(search returned nothing)`;
-
-      const rows = results
-        .map((result, i) => {
-          const date = result.publishedAt ? ` (${result.publishedAt})` : '';
-          const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
-          return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
-        })
-        .join('\n');
-
-      return `## ${CATEGORY_LABEL[category]}\n${rows}`;
-    })
+function describePoolItemsForPrompt(poolItems: PoolIntelligenceItemRow[]): string {
+  return poolItems
+    .map(
+      (item, index) =>
+        `[${index}] (${item.category}) ${item.title}\n` +
+        `   ${item.summary}\n` +
+        `   Urgency: ${item.urgency}, Business impact: ${item.score.businessImpact}, ` +
+        `Recency: ${item.score.recency}`,
+    )
     .join('\n\n');
 }
 
-/** Clips array lengths before zod validation — same reasoning as
- *  clipSynthesisCounts in trend-research.ts: an "up to 10" instruction
- *  overshooting by one or two is a cosmetic overage, not a malformed
- *  response, and should be trimmed rather than thrown on. */
-export function clipIntelligenceCounts(raw: unknown): unknown {
+/** Same "clip rather than reject an overshoot" reasoning as
+ *  trend-research.ts's `clipRelevanceCounts`. */
+export function clipIntelligenceRelevanceCounts(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || !('items' in raw)) return raw;
+  const items = (raw as { items: unknown }).items;
+  if (!Array.isArray(items)) return raw;
+
+  return { ...raw, items: items.slice(0, 10) };
+}
+
+const RELEVANCE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['items'],
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['poolItemIndex', 'brandRelevance', 'industryRelevance', 'geographicRelevance', 'whyItMatters'],
+        properties: {
+          poolItemIndex: {
+            type: 'integer',
+            description: 'The [N] number of the development this score is for.',
+          },
+          brandRelevance: {
+            type: 'number',
+            description: '0-100. How directly this affects this brand\'s business, not its content.',
+          },
+          industryRelevance: {
+            type: 'number',
+            description: '0-100. How much this matters to this brand\'s specific industry.',
+          },
+          geographicRelevance: {
+            type: 'number',
+            description: '0-100. How much this matters given where the brand trades.',
+          },
+          whyItMatters: {
+            type: 'string',
+            description:
+              'The answer to "so what?" for THIS brand specifically — not the industry in general. ' +
+              'Name the concrete effect: a cost, a risk, an opportunity, a decision to make.',
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+const GEMINI_STRUCTURED_OUTPUT_REJECTION = /INVALID_ARGUMENT/;
+
+async function scoreIntelligenceRelevance(
+  ctx: WorkerContext,
+  runId: string,
+  brand: Brand,
+  brandContext: TrendTaskContext,
+  poolItems: PoolIntelligenceItemRow[],
+): Promise<{ items: IntelligenceRelevanceDraft[]; cost: CostEvent }> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await scoreIntelligenceRelevanceOnce(ctx, runId, brand, brandContext, poolItems);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt === 2 || !GEMINI_STRUCTURED_OUTPUT_REJECTION.test(message)) throw error;
+      console.warn(
+        `[intelligence-research] relevance scoring rejected by the provider's structured-output validator for run ${runId}, retrying once: ${message}`,
+      );
+    }
+  }
+  throw lastError;
+}
+
+async function scoreIntelligenceRelevanceOnce(
+  ctx: WorkerContext,
+  runId: string,
+  brand: Brand,
+  brandContext: TrendTaskContext,
+  poolItems: PoolIntelligenceItemRow[],
+): Promise<{ items: IntelligenceRelevanceDraft[]; cost: CostEvent }> {
+  const { value, cost } = await withRetry(
+    () =>
+      withTimeout(
+        ctx.ai.llm().generateJson<{ items: IntelligenceRelevanceDraft[] }>(
+          {
+            role: 'orchestrator',
+            system:
+              'You are a business intelligence analyst judging how relevant a set of ' +
+              'already-identified developments are for ONE SPECIFIC small business. The ' +
+              'developments below were identified generically for the whole category/country, not ' +
+              'for this brand — your job is to judge how much each one actually affects this ' +
+              'business, and to say why.\n\n' +
+              'This is NOT a content-ideas feed — judge business consequence, not marketing angle. ' +
+              'Score honestly: a huge industry story that does not actually touch this brand should ' +
+              'score low on brandRelevance even if it is significant industry-wide. Omit anything ' +
+              'genuinely irrelevant rather than including it with a low score to fill a quota.',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  '**The brand:**',
+                  ...renderBrandContextLines(brandContext),
+                  '',
+                  '**Developments to judge, numbered — reference the [N] number in `poolItemIndex`:**',
+                  describePoolItemsForPrompt(poolItems),
+                  '',
+                  'Return up to 10, ranked by how much they matter to this brand.',
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+              },
+            ],
+            maxTokens: MAX_RELEVANCE_TOKENS,
+            schema: RELEVANCE_SCHEMA as unknown as Record<string, unknown>,
+            parse: (raw) =>
+              intelligenceRelevanceSynthesisSchema.parse(clipIntelligenceRelevanceCounts(raw)),
+          },
+          { brandId: brand.id, referenceId: runId },
+        ),
+        RELEVANCE_TIMEOUT_MS,
+        'intelligence relevance scoring',
+      ),
+    {
+      onRetry: ({ attempt, error }) =>
+        console.warn(
+          `[intelligence-research] relevance scoring attempt ${attempt} failed for run ${runId}, retrying:`,
+          describeError(error),
+        ),
+    },
+  );
+
+  return { items: value.items, cost };
+}
+
+/** Same index-resolution posture as trend-research.ts's
+ *  `resolveRelevanceDrafts`. */
+export function resolveIntelligenceRelevanceDrafts(
+  drafts: IntelligenceRelevanceDraft[],
+  poolItems: PoolIntelligenceItemRow[],
+): Array<{ poolItem: PoolIntelligenceItemRow; draft: IntelligenceRelevanceDraft }> {
+  const seen = new Set<number>();
+  return drafts
+    .filter((draft) => {
+      const index = draft.poolItemIndex;
+      if (index < 0 || index >= poolItems.length || seen.has(index)) return false;
+      seen.add(index);
+      return true;
+    })
+    .map((draft) => ({ poolItem: poolItems[draft.poolItemIndex]!, draft }));
+}
+
+// ---------------------------------------------------------------------------
+// Competitor search — the one category that cannot be pooled
+// ---------------------------------------------------------------------------
+
+interface CollectedSignal {
+  results: WebSearchResult[];
+}
+
+/** Only searched when the brand has actually named competitors — an empty
+ *  "competitor news" query against no names returns generic noise, worse
+ *  than not asking at all. Same guard the old `buildIntelligenceSearchQueries`
+ *  applied to its competitor branch. */
+function buildCompetitorQuery(competitors: string[]): WebSearchRequest | null {
+  const names = competitors.slice(0, 3);
+  if (names.length === 0) return null;
+
+  return {
+    query: `recent news announcements launches: ${names.join(', ')}`,
+    topic: 'news',
+    recencyDays: 30,
+    maxResults: RESULTS_PER_QUERY,
+  };
+}
+
+async function collectCompetitorSignal(
+  ctx: WorkerContext,
+  runId: string,
+  brand: Brand,
+  request: WebSearchRequest,
+): Promise<CollectedSignal> {
+  const { value: results, cost } = await withRetry(() =>
+    withTimeout(
+      ctx.ai.webSearch().search(request, { brandId: brand.id, referenceId: runId }),
+      SEARCH_TIMEOUT_MS,
+      'intelligence competitor search',
+    ),
+  );
+  await recordCost(ctx, brand.id, runId, cost);
+  return { results };
+}
+
+function describeCompetitorSignalForPrompt(signal: CollectedSignal): string {
+  if (signal.results.length === 0) return '## COMPETITOR NEWS\n(search returned nothing)';
+
+  const rows = signal.results
+    .map((result, i) => {
+      const date = result.publishedAt ? ` (${result.publishedAt})` : '';
+      const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
+      return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
+    })
+    .join('\n');
+
+  return `## COMPETITOR NEWS\n${rows}`;
+}
+
+/** Same clip reasoning as the pool relevance schemas above, scoped to the
+ *  old full 5-axis intelligence item shape competitor items still use. */
+export function clipCompetitorItemCounts(raw: unknown): unknown {
   if (typeof raw !== 'object' || raw === null || !('items' in raw)) return raw;
   const items = (raw as { items: unknown }).items;
   if (!Array.isArray(items)) return raw;
@@ -224,7 +320,7 @@ export function clipIntelligenceCounts(raw: unknown): unknown {
   };
 }
 
-const SYNTHESIS_SCHEMA = {
+const COMPETITOR_SYNTHESIS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['items'],
@@ -234,11 +330,8 @@ const SYNTHESIS_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['category', 'title', 'summary', 'whyItMatters', 'urgency', 'score', 'sources'],
+        required: ['title', 'summary', 'whyItMatters', 'urgency', 'score', 'sources'],
         properties: {
-          category: {
-            enum: ['government_policy', 'brand_news', 'industry_news', 'competitor', 'local'],
-          },
           title: { type: 'string', description: 'Short, specific — names what actually happened.' },
           summary: {
             type: 'string',
@@ -247,8 +340,8 @@ const SYNTHESIS_SCHEMA = {
           whyItMatters: {
             type: 'string',
             description:
-              'The answer to "so what?" for THIS brand specifically — not the industry in general. ' +
-              'Name the concrete effect: a cost, a risk, an opportunity, a decision to make.',
+              'The answer to "so what?" for THIS brand specifically. Name the concrete effect: a ' +
+              'cost, a risk, an opportunity, a decision to make.',
           },
           urgency: { enum: ['low', 'medium', 'high'] },
           score: {
@@ -297,58 +390,58 @@ const SYNTHESIS_SCHEMA = {
   },
 } as const;
 
-/** Same schema-rejection retry as trend-research.ts's synthesizeTrendIdeas —
- *  see that function's comment for the full reasoning. Kept as a narrow,
- *  message-matched retry rather than a general one. */
-const GEMINI_STRUCTURED_OUTPUT_REJECTION = /INVALID_ARGUMENT/;
-
-async function synthesizeIntelligenceItems(
+async function synthesizeCompetitorItems(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
-  signals: CollectedSignal[],
+  signal: CollectedSignal,
 ): Promise<{ items: IntelligenceItemDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await synthesizeIntelligenceItemsOnce(ctx, runId, brand, brandContext, signals);
+      return await synthesizeCompetitorItemsOnce(ctx, runId, brand, brandContext, signal);
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       if (attempt === 2 || !GEMINI_STRUCTURED_OUTPUT_REJECTION.test(message)) throw error;
       console.warn(
-        `[intelligence-research] synthesis rejected by the provider's structured-output validator for run ${runId}, retrying once: ${message}`,
+        `[intelligence-research] competitor synthesis rejected by the provider's structured-output validator for run ${runId}, retrying once: ${message}`,
       );
     }
   }
   throw lastError;
 }
 
-async function synthesizeIntelligenceItemsOnce(
+/** The model never emits `category` here — every item in this file's
+ *  synthesis is a competitor item by construction, since the search feeding
+ *  it is competitor-only. Validated against the full item schema minus that
+ *  one field, then `category: 'competitor'` is attached mechanically rather
+ *  than trusted from the model. */
+const competitorItemDraftSchema = intelligenceItemDraftSchema.omit({ category: true });
+const competitorSynthesisSchema = z.object({ items: z.array(competitorItemDraftSchema).max(10) });
+
+async function synthesizeCompetitorItemsOnce(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
-  signals: CollectedSignal[],
+  signal: CollectedSignal,
 ): Promise<{ items: IntelligenceItemDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
     () =>
       withTimeout(
-        ctx.ai.llm().generateJson<{ items: IntelligenceItemDraft[] }>(
+        ctx.ai.llm().generateJson<z.infer<typeof competitorSynthesisSchema>>(
           {
             role: 'orchestrator',
             system:
-              'You are a business intelligence analyst keeping one small business owner informed. ' +
-              'You work ONLY from the search results you are given — never invent a policy, a news ' +
-              'item, a fact, or a date that is not actually present in the results.\n\n' +
-              'This is NOT a content-ideas feed. Do not suggest marketing angles or campaigns. The ' +
-              'question for every item is: does the brand owner need to know this to run their ' +
-              'business well — a cost, a risk, a regulatory obligation, a competitive threat, an ' +
-              'opportunity? If a search result is only interesting as a marketing trend and carries no ' +
-              'business-decision weight, leave it out — that is what the separate trend agent is for.\n\n' +
-              'If nothing in a category is genuinely relevant to this brand, return fewer items — or ' +
-              'none from that category — rather than manufacturing a weak one to fill a quota.',
+              'You are a business intelligence analyst keeping one small business owner informed ' +
+              'about their named competitors. You work ONLY from the search results you are given ' +
+              '— never invent a fact or a date that is not actually present in the results.\n\n' +
+              'This is NOT a content-ideas feed. The question for every item is: does the brand ' +
+              'owner need to know this competitor development to run their business well? If ' +
+              'nothing genuinely relevant surfaced, return fewer items — or none — rather than ' +
+              'manufacturing a weak one to fill a quota.',
             messages: [
               {
                 role: 'user',
@@ -356,50 +449,52 @@ async function synthesizeIntelligenceItemsOnce(
                   '**The brand:**',
                   ...renderBrandContextLines(brandContext),
                   '',
-                  '**Live search results, grouped by what was searched for:**',
-                  describeSignalsForPrompt(signals),
+                  '**Live search results:**',
+                  describeCompetitorSignalForPrompt(signal),
                   '',
-                  'Produce up to 10 ranked items. `whyItMatters` must name the concrete effect on THIS ' +
-                    'brand, not restate the industry-wide news. Score honestly — a huge industry story ' +
-                    'that does not actually touch this brand should score low on brandRelevance even if ' +
-                    'recency and industryRelevance are high.',
-                  'Every `sources` entry must be a URL that literally appears above, and there must be ' +
-                    'no more than 5 per item. Do not cite anything else, and do not paraphrase a URL ' +
-                    'from memory.',
-                ]
-                  .filter(Boolean)
-                  .join('\n'),
+                  'Produce up to 10 ranked items. `whyItMatters` must name the concrete effect on ' +
+                    'THIS brand.',
+                  'Every `sources` entry must be a URL that literally appears above, and there must ' +
+                    'be no more than 5 per item. Do not cite anything else, and do not paraphrase a ' +
+                    'URL from memory.',
+                ].join('\n'),
               },
             ],
-            maxTokens: MAX_SYNTHESIS_TOKENS,
-            schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
-            parse: (raw) => intelligenceSynthesisSchema.parse(clipIntelligenceCounts(raw)),
+            maxTokens: MAX_COMPETITOR_SYNTHESIS_TOKENS,
+            schema: COMPETITOR_SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
+            parse: (raw) => competitorSynthesisSchema.parse(clipCompetitorItemCounts(raw)),
           },
           { brandId: brand.id, referenceId: runId },
         ),
-        SYNTHESIS_TIMEOUT_MS,
-        'intelligence synthesis',
+        COMPETITOR_SYNTHESIS_TIMEOUT_MS,
+        'competitor intelligence synthesis',
       ),
     {
       onRetry: ({ attempt, error }) =>
         console.warn(
-          `[intelligence-research] synthesis attempt ${attempt} failed for run ${runId}, retrying:`,
+          `[intelligence-research] competitor synthesis attempt ${attempt} failed for run ${runId}, retrying:`,
           describeError(error),
         ),
     },
   );
 
-  return { items: value.items, cost };
+  const items: IntelligenceItemDraft[] = value.items.map((item) => ({
+    ...item,
+    category: 'competitor' as const,
+  }));
+
+  return { items, cost };
 }
 
-/** Same fabrication guard as trend-research.ts's verifySources. */
-export function verifyIntelligenceSources(
-  sources: TrendSource[],
-  signals: CollectedSignal[],
-): TrendSource[] {
-  const known = new Set(signals.flatMap((signal) => signal.results.map((r) => r.url)));
+/** Same fabrication guard as the old `verifyIntelligenceSources`. */
+export function verifyCompetitorSources(sources: TrendSource[], signal: CollectedSignal): TrendSource[] {
+  const known = new Set(signal.results.map((r) => r.url));
   return sources.filter((source) => known.has(source.url));
 }
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
 
 export async function runIntelligenceResearch(
   ctx: WorkerContext,
@@ -424,40 +519,106 @@ export async function runIntelligenceResearch(
     .set({ status: 'running', startedAt: sql`coalesce(${schema.intelligenceRuns.startedAt}, now())` })
     .where(eq(schema.intelligenceRuns.id, run.id));
 
+  console.warn(`[intelligence-research] starting run ${run.id} for brand ${brand.id} ("${brand.name}")`);
+
   try {
     const brandContext = await getTrendContext(ctx.db, brand.id);
+    const categoryKey = await ensureBrandCategoryKey(ctx, brand);
+    console.warn(`[intelligence-research] run ${run.id}: brand category resolved to '${categoryKey}'`);
 
-    const queries = buildIntelligenceSearchQueries({
-      industry: brandContext.identity.industry ?? brand.category,
-      location: brandContext.identity.location ?? brand.location,
-      competitors: brandContext.competitors.map((c) => c.name),
-    });
+    const [categoryPool, nationalPool] = await Promise.all([
+      ensureFreshIntelligencePool(ctx, { scope: 'category', category: categoryKey }),
+      ensureFreshIntelligencePool(ctx, { scope: 'national' }),
+    ]);
+    const poolItems = [...categoryPool.items, ...nationalPool.items];
+    console.warn(
+      `[intelligence-research] run ${run.id}: pool loaded — ${categoryPool.items.length} category items + ${nationalPool.items.length} national items = ${poolItems.length} total`,
+    );
+
+    const competitorQuery = buildCompetitorQuery(brandContext.competitors.map((c) => c.name));
+    console.warn(
+      `[intelligence-research] run ${run.id}: competitor search ${competitorQuery ? 'will run (named competitors present)' : 'skipped (no named competitors)'}`,
+    );
 
     await recordContextSnapshot(ctx.db, {
       brandId: brand.id,
       agentType: 'intelligence',
-      snapshot: { ...brandContext, queries: queries.map((query) => query.request.query) },
+      snapshot: {
+        ...brandContext,
+        categoryKey,
+        poolRunIds: [categoryPool.runId, nationalPool.runId],
+        poolItemCount: poolItems.length,
+        competitorQuery: competitorQuery?.query ?? null,
+      },
     });
 
-    const signals = await collectIntelligenceSignals(ctx, run.id, brand, queries);
+    const pooledRows =
+      poolItems.length === 0
+        ? []
+        : await (async () => {
+            const { items: drafts, cost } = await scoreIntelligenceRelevance(
+              ctx,
+              run.id,
+              brand,
+              brandContext,
+              poolItems,
+            );
+            await recordCost(ctx, brand.id, run.id, cost);
 
-    const { items, cost } = await synthesizeIntelligenceItems(ctx, run.id, brand, brandContext, signals);
-    await recordCost(ctx, brand.id, run.id, cost);
+            return resolveIntelligenceRelevanceDrafts(drafts, poolItems).map(({ poolItem, draft }) => {
+              const modelScore: IntelligenceModelScore = {
+                brandRelevance: draft.brandRelevance,
+                industryRelevance: draft.industryRelevance,
+                geographicRelevance: draft.geographicRelevance,
+                recency: poolItem.score.recency,
+                businessImpact: poolItem.score.businessImpact,
+              };
+              return {
+                runId: run.id,
+                poolItemId: poolItem.id,
+                category: poolItem.category,
+                title: poolItem.title,
+                summary: poolItem.summary,
+                whyItMatters: draft.whyItMatters,
+                urgency: poolItem.urgency,
+                score: { ...modelScore, overall: computeIntelligenceScore(modelScore) },
+                sources: poolItem.sources,
+              };
+            });
+          })();
 
-    const rows = items.map((item) => ({
-      runId: run.id,
-      category: item.category,
-      title: item.title,
-      summary: item.summary,
-      whyItMatters: item.whyItMatters,
-      urgency: item.urgency,
-      score: { ...item.score, overall: computeIntelligenceScore(item.score) },
-      sources: verifyIntelligenceSources(item.sources, signals),
-    }));
+    const competitorRows = competitorQuery
+      ? await (async () => {
+          const signal = await collectCompetitorSignal(ctx, run.id, brand, competitorQuery);
+          if (signal.results.length === 0) return [];
+
+          const { items, cost } = await synthesizeCompetitorItems(
+            ctx,
+            run.id,
+            brand,
+            brandContext,
+            signal,
+          );
+          await recordCost(ctx, brand.id, run.id, cost);
+
+          return items.map((item) => ({
+            runId: run.id,
+            poolItemId: null,
+            category: item.category,
+            title: item.title,
+            summary: item.summary,
+            whyItMatters: item.whyItMatters,
+            urgency: item.urgency,
+            score: { ...item.score, overall: computeIntelligenceScore(item.score) },
+            sources: verifyCompetitorSources(item.sources, signal),
+          }));
+        })()
+      : [];
+
+    const rows = [...pooledRows, ...competitorRows];
 
     // Replace rather than append — same BullMQ-redelivery reasoning as
-    // runTrendResearch: a retried run must not duplicate items from the
-    // partial attempt before it.
+    // trend-research.ts.
     await ctx.db.transaction(async (tx) => {
       await tx.delete(schema.intelligenceItems).where(eq(schema.intelligenceItems.runId, run.id));
       if (rows.length) await tx.insert(schema.intelligenceItems).values(rows);
@@ -466,6 +627,9 @@ export async function runIntelligenceResearch(
         .set({ status: 'succeeded', finishedAt: new Date(), error: null })
         .where(eq(schema.intelligenceRuns.id, run.id));
     });
+    console.warn(
+      `[intelligence-research] run ${run.id} succeeded: ${rows.length} items (${pooledRows.length} pooled + ${competitorRows.length} competitor) for ${brand.name}`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[intelligence-research] run ${run.id} failed: ${message}`);

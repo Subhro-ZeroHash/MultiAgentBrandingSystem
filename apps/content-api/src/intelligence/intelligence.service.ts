@@ -1,6 +1,11 @@
 import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, recordFeedbackSignal, schema, type Database } from '@bmas/db';
-import { QUEUES, type UpdateIntelligenceItemStatusInput } from '@bmas/shared';
+import {
+  INTELLIGENCE_STALE_AFTER_HOURS,
+  QUEUES,
+  type IntelligenceStatus,
+  type UpdateIntelligenceItemStatusInput,
+} from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import { DATABASE, INTELLIGENCE_RESEARCH_QUEUE } from '../core/core.module.js';
 
@@ -121,6 +126,40 @@ export class IntelligenceService {
 
     const filtered = category ? rows.filter((row) => row.category === category) : rows;
     return [...filtered].sort((a, b) => b.score.overall - a.score.overall);
+  }
+
+  /**
+   * Whether the feed is worth refreshing right now — what replaces the old
+   * "run research on every screen focus" behavior on the client. Cheap by
+   * design: one indexed lookup, no queue interaction. Layer B made an actual
+   * research run cheap enough that `INTELLIGENCE_STALE_AFTER_HOURS` can be a
+   * few hours rather than the old per-brand `trendFrequency` cadence, which
+   * existed specifically to ration expensive full searches.
+   */
+  async getStatus(brandId: string, ownerId: string): Promise<IntelligenceStatus> {
+    await this.assertBrandOwned(brandId, ownerId);
+
+    const [latest] = await this.db
+      .select({ createdAt: schema.intelligenceRuns.createdAt })
+      .from(schema.intelligenceRuns)
+      .where(
+        and(
+          eq(schema.intelligenceRuns.brandId, brandId),
+          eq(schema.intelligenceRuns.status, 'succeeded'),
+        ),
+      )
+      .orderBy(desc(schema.intelligenceRuns.createdAt))
+      .limit(1);
+
+    const isStale =
+      !latest ||
+      Date.now() - latest.createdAt.getTime() > INTELLIGENCE_STALE_AFTER_HOURS * 3_600_000;
+
+    return {
+      latestSucceededRunAt: latest?.createdAt ?? null,
+      staleAfterHours: INTELLIGENCE_STALE_AFTER_HOURS,
+      isStale,
+    };
   }
 
   /**

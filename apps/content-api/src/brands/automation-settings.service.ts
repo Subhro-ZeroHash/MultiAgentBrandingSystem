@@ -106,6 +106,8 @@ export class AutomationSettingsService {
     const enabled = input.contentAutomationEnabled ?? current.contentAutomationEnabled;
     const policy = input.approvalPolicy ?? current.approvalPolicy;
     const autoPublish = input.autoPublishEnabled ?? current.autoPublishEnabled;
+    const autoTriggerOpportunities =
+      input.autoTriggerHighScoreOpportunities ?? current.autoTriggerHighScoreOpportunities;
 
     // Publishing is the one step in the loop with no undo — a bad creative on a
     // live account cannot be recalled, only deleted after the fact. Refusing the
@@ -128,6 +130,7 @@ export class AutomationSettingsService {
         contentAutomationEnabled: enabled,
         autoPublishEnabled: autoPublish,
         approvalPolicy: policy,
+        autoTriggerHighScoreOpportunities: autoTriggerOpportunities,
         ...(scheduleChanged
           ? { nextResearchAt: nextResearchAt(frequency, current.lastResearchAt) }
           : {}),

@@ -5,3 +5,5 @@ export * from './copy.js';
 export * from './scheduling.js';
 export * from './trends.js';
 export * from './intelligence.js';
+export * from './category.js';
+export * from './research-pool.js';

@@ -9,7 +9,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "tunnel": "cloudflared tunnel --url http://localhost:3000",
+    "tunnel": "node scripts/tunnel.mjs",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",

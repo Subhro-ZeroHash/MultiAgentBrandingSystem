@@ -139,6 +139,27 @@ export type UpdateIntelligenceItemStatusInput = z.infer<
   typeof updateIntelligenceItemStatusSchema
 >;
 
+/**
+ * How long a brand's Intelligence feed stays "fresh" before the client
+ * should trigger a new run rather than just reading the cached feed.
+ *
+ * Layer B (see @bmas/shared/content/research-pool.ts) made a research run
+ * cheap by construction — no live search for the three pooled categories,
+ * at most one small competitor search — so this can be much shorter than the
+ * old per-brand `TREND_FREQUENCY_HOURS` cadence, which existed specifically
+ * to ration expensive full searches. This is what replaces the frontend's
+ * old "run research on every screen focus" behavior: check staleness first
+ * (GET .../intelligence/status), only run if actually stale.
+ */
+export const INTELLIGENCE_STALE_AFTER_HOURS = 6;
+
+export const intelligenceStatusSchema = z.object({
+  latestSucceededRunAt: z.coerce.date().nullable(),
+  staleAfterHours: z.number(),
+  isStale: z.boolean(),
+});
+export type IntelligenceStatus = z.infer<typeof intelligenceStatusSchema>;
+
 // Trend opportunity status/action types (the "Work On This" / "Save" /
 // "Ignore" vocabulary) now live in trends.ts, next to TrendOpportunity
 // itself — see trendOpportunityStatusSchema and

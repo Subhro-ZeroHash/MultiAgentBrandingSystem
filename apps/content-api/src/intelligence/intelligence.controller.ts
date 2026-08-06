@@ -50,6 +50,17 @@ export class IntelligenceController {
     return this.intelligence.getFeed(brandId, getUserIdFromHeader(userIdHeader), category);
   }
 
+  /** Whether the feed is stale enough to be worth a fresh run — see
+   *  IntelligenceService.getStatus. What the client checks on screen focus
+   *  instead of always kicking off a new run. */
+  @Get('status')
+  getStatus(
+    @Param('brandId') brandId: string,
+    @Headers('x-user-id') userIdHeader: string | undefined,
+  ) {
+    return this.intelligence.getStatus(brandId, getUserIdFromHeader(userIdHeader));
+  }
+
   @Patch('items/:itemId')
   updateItemStatus(
     @Param('itemId') itemId: string,
