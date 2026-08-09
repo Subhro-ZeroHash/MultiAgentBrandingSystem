@@ -40,9 +40,11 @@ const envSchema = z.object({
    *  `/social/post` endpoint rather than duplicating the Instagram Graph API
    *  logic that already lives there. */
   CONTENT_API_URL: z.string().url().default('http://localhost:4000/api'),
-  /** Mirrors DEV_OWNER_ID on content-api — the header a scheduled publish
-   *  call sends until real auth exists. */
-  DEV_OWNER_ID: z.string().default('dev-user'),
+  /** Same secret content-api's AuthModule signs and verifies JWTs with. The
+   *  scheduled-post publish job mints a short-lived token for the post's real
+   *  owner (not a fixed dev id) so the call passes content-api's JwtAuthGuard
+   *  as that user, matching whatever brand/post it is publishing. */
+  AUTH_SECRET: z.string().min(32, 'AUTH_SECRET must be at least 32 characters'),
 });
 
 export interface WorkerContext {
@@ -53,7 +55,7 @@ export interface WorkerContext {
   concurrency: number;
   qaRegenerationRounds: number;
   contentApiUrl: string;
-  devOwnerId: string;
+  authSecret: string;
 }
 
 export function createContext(): WorkerContext {
@@ -88,6 +90,6 @@ export function createContext(): WorkerContext {
     concurrency: env.CONTENT_WORKER_CONCURRENCY,
     qaRegenerationRounds: env.QA_REGENERATION_ROUNDS,
     contentApiUrl: env.CONTENT_API_URL,
-    devOwnerId: env.DEV_OWNER_ID,
+    authSecret: env.AUTH_SECRET,
   };
 }

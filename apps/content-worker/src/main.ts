@@ -93,9 +93,26 @@ scheduledPostPublishWorker.on('failed', (job, error) => {
 // the same way GenerationsService.enqueue does from content-api.
 const contentGenerationProducer = new Queue(QUEUES.contentGeneration, { connection: ctx.redis });
 
+// Auto-triggered opportunities now wrap their generation jobs in a real
+// scheduled_campaign/scheduled_posts pair (see opportunity-trigger.ts) so
+// they surface in the same approval queue as manually scheduled campaigns.
+// That needs a publish-side producer here too — content-api's
+// SchedulingService is the usual producer, but this queue is added from
+// inside the worker's own trend-research run, same reasoning as
+// contentGenerationProducer above.
+const scheduledPostPublishProducer = new Queue(QUEUES.scheduledPostPublish, {
+  connection: ctx.redis,
+});
+
 const trendResearchWorker = new Worker(
   QUEUES.trendResearch,
-  async (job) => runTrendResearch(ctx, trendResearchJobSchema.parse(job.data), contentGenerationProducer),
+  async (job) =>
+    runTrendResearch(
+      ctx,
+      trendResearchJobSchema.parse(job.data),
+      contentGenerationProducer,
+      scheduledPostPublishProducer,
+    ),
   { connection: ctx.redis, concurrency: 2 },
 );
 

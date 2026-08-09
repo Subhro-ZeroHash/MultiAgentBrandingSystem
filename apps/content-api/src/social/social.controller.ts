@@ -1,16 +1,18 @@
-import { Controller, Get, Post, Delete, Body, Param, Headers, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Request, UseGuards } from '@nestjs/common';
 import { SocialService } from './social.service.js';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 
+@UseGuards(JwtAuthGuard)
 @Controller('social')
 export class SocialController {
   constructor(private readonly social: SocialService) {}
 
   @Get('auth/instagram/url')
-  getInstagramAuthUrl(@Headers('x-user-id') userId?: string) {
+  getInstagramAuthUrl(@Request() req: AuthenticatedRequest) {
     // `state` is issued here, not accepted from the caller: it has to identify
     // the request that started the login for the callback to trust it.
-    return this.social.getOAuthUrl(getUserIdFromHeader(userId));
+    return this.social.getOAuthUrl(req.user.id);
   }
 
   @Post('auth/instagram/callback')
@@ -30,8 +32,8 @@ export class SocialController {
   }
 
   @Get('accounts')
-  async getUserAccounts(@Headers('x-user-id') userId?: string) {
-    const resolvedUserId = getUserIdFromHeader(userId);
+  async getUserAccounts(@Request() req: AuthenticatedRequest) {
+    const resolvedUserId = req.user.id;
     const accounts = await this.social.getUserAccounts(resolvedUserId);
     return accounts.map((a) => ({
       id: a.id,
@@ -45,9 +47,9 @@ export class SocialController {
   @Delete('accounts/:id')
   async disconnectAccount(
     @Param('id') accountId: string,
-    @Headers('x-user-id') userId?: string,
+    @Request() req: AuthenticatedRequest,
   ) {
-    const resolvedUserId = getUserIdFromHeader(userId);
+    const resolvedUserId = req.user.id;
     await this.social.disconnectAccount(accountId, resolvedUserId);
     return { success: true };
   }
@@ -55,7 +57,7 @@ export class SocialController {
   @Post('post')
   async postToInstagram(
     @Body() body: { accountId: string; assetId?: string; imageUrl?: string; caption: string },
-    @Headers('x-user-id') userId?: string,
+    @Request() req: AuthenticatedRequest,
   ) {
     if (!body.accountId || !body.caption) {
       throw new BadRequestException('accountId and caption are required');
@@ -63,7 +65,7 @@ export class SocialController {
     if (!body.assetId && !body.imageUrl) {
       throw new BadRequestException('assetId (preferred) or imageUrl is required');
     }
-    const resolvedUserId = getUserIdFromHeader(userId);
+    const resolvedUserId = req.user.id;
     return this.social.postToInstagram(
       body.accountId,
       resolvedUserId,

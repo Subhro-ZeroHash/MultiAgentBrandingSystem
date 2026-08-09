@@ -1,15 +1,7 @@
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  Headers,
-  Param,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { creativeEditRequestSchema, creativeRequestSchema, type CreativeRequest } from '@bmas/shared';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { GenerationsService } from './generations.service.js';
 
@@ -30,15 +22,16 @@ function parseLimit(raw: string | undefined): number {
   return Math.min(100, Math.max(1, Math.floor(value)));
 }
 
+@UseGuards(JwtAuthGuard)
 @Controller('generations')
 export class GenerationsController {
   constructor(private readonly generations: GenerationsService) {}
 
   @Post()
   create(
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(creativeRequestSchema)) body: unknown,
     @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('x-user-id') userIdHeader?: string,
   ) {
     if (!idempotencyKey || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
       throw new BadRequestException(
@@ -48,32 +41,32 @@ export class GenerationsController {
     return this.generations.enqueue(
       body as CreativeRequest,
       idempotencyKey,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
     );
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.generations.findOne(id, getUserIdFromHeader(userIdHeader));
+  findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.generations.findOne(id, req.user.id);
   }
 
   /** Stops a queued or running generation. POST rather than DELETE: the row is
    *  kept and marked `cancelled` so it still shows in history. */
   @Post(':id/cancel')
-  cancel(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.generations.cancel(id, getUserIdFromHeader(userIdHeader));
+  cancel(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.generations.cancel(id, req.user.id);
   }
 
   @Get()
   list(
     @Query('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Query('limit') limit?: string,
   ) {
     // Without a brand the query becomes `WHERE brand_id = undefined`, which
     // Drizzle rejects at runtime — surface it as a 400 instead of a 500.
     if (!brandId) throw new BadRequestException('brandId query parameter is required');
-    return this.generations.listByBrand(brandId, getUserIdFromHeader(userIdHeader), parseLimit(limit));
+    return this.generations.listByBrand(brandId, req.user.id, parseLimit(limit));
   }
 
   /** FR-3.3: "Regenerate" on one image. Queued, not synchronous — the client
@@ -84,10 +77,10 @@ export class GenerationsController {
   regenerateAsset(
     @Param('id') id: string,
     @Param('assetId') assetId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(creativeEditRequestSchema)) body: unknown,
   ) {
     const { instruction } = body as { assetId: string; instruction: string };
-    return this.generations.regenerateAsset(id, assetId, getUserIdFromHeader(userIdHeader), instruction);
+    return this.generations.regenerateAsset(id, assetId, req.user.id, instruction);
   }
 }

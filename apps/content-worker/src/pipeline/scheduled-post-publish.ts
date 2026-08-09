@@ -8,8 +8,17 @@ import {
   type Database,
 } from '@bmas/db';
 import type { ScheduledPostPublishJob } from '@bmas/shared';
+import jwt from 'jsonwebtoken';
 import type { WorkerContext } from '../context.js';
 import { sendExpoPush } from './scheduled-post-hooks.js';
+
+/** Mints a token for the post's actual owner rather than a fixed dev id, so
+ *  the call passes content-api's JwtAuthGuard as whichever user owns this
+ *  brand — required now that `/social/post` is authenticated per-user. Short
+ *  TTL: this token only needs to survive the one fetch below. */
+function mintServiceToken(ctx: WorkerContext, ownerId: string): string {
+  return jwt.sign({ sub: ownerId }, ctx.authSecret, { expiresIn: '5m' });
+}
 
 async function notifyOwner(
   db: Database,
@@ -142,9 +151,19 @@ export async function runScheduledPostPublish(
   // resolve, which is at least honest about not knowing.
   let igMediaId: string;
   try {
+    const [owner] = await ctx.db
+      .select({ ownerId: schema.brands.ownerId })
+      .from(schema.brands)
+      .where(eq(schema.brands.id, post.brandId))
+      .limit(1);
+    if (!owner) throw new Error(`Brand ${post.brandId} not found`);
+
     const response = await fetch(`${ctx.contentApiUrl}/social/post`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-user-id': ctx.devOwnerId },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${mintServiceToken(ctx, owner.ownerId)}`,
+      },
       body: JSON.stringify({
         accountId: post.accountId,
         assetId: post.selectedAssetId,

@@ -20,11 +20,13 @@
     "bullmq": "^5.80.9",
     "dotenv": "^17.4.2",
     "ioredis": "^5.11.1",
+    "jsonwebtoken": "^9.0.3",
     "sharp": "^0.35.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@bmas/config": "workspace:*",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.10.5",
     "eslint": "^9.18.0",
     "rimraf": "^6.1.3",

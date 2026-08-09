@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import {
   createBrandKitSchema,
   createProductSchema,
@@ -12,7 +12,8 @@ import {
   type UpdateBrandKitInput,
 } from '@bmas/shared';
 import { z } from 'zod';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { AutomationSettingsService } from './automation-settings.service.js';
 import { BrandContextService } from './brand-context.service.js';
@@ -31,6 +32,7 @@ const productImageUploadSchema = z.object({
 });
 type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 
+@UseGuards(JwtAuthGuard)
 @Controller('brands')
 export class BrandsController {
   constructor(
@@ -41,8 +43,8 @@ export class BrandsController {
   ) {}
 
   @Get()
-  list(@Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.brands.listForOwner(getUserIdFromHeader(userIdHeader));
+  list(@Request() req: AuthenticatedRequest) {
+    return this.brands.listForOwner(req.user.id);
   }
 
   /**
@@ -54,38 +56,38 @@ export class BrandsController {
    * one and try to load a brand whose id is the literal string "context".
    */
   @Get('context')
-  listContexts(@Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.context.listContextSummaries(getUserIdFromHeader(userIdHeader));
+  listContexts(@Request() req: AuthenticatedRequest) {
+    return this.context.listContextSummaries(req.user.id);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.brands.findOne(id, getUserIdFromHeader(userIdHeader));
+  findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.brands.findOne(id, req.user.id);
   }
 
   @Patch(':id')
   update(
     @Param('id') id: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateBrandKitSchema)) body: unknown,
   ) {
-    return this.brands.update(id, getUserIdFromHeader(userIdHeader), body as UpdateBrandKitInput);
+    return this.brands.update(id, req.user.id, body as UpdateBrandKitInput);
   }
 
   @Post()
   create(
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(createBrandKitSchema)) body: unknown,
   ) {
     return this.brands.create(
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as Parameters<BrandsService['create']>[1],
     );
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.brands.remove(id, getUserIdFromHeader(userIdHeader));
+  remove(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.brands.remove(id, req.user.id);
   }
 
   // -------------------------------------------------------------------------
@@ -99,8 +101,8 @@ export class BrandsController {
    *  renders. Creates the context and settings rows on first read, so a brand
    *  made before this feature existed answers like any other. */
   @Get(':id/context')
-  getContext(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.context.buildFullBrandContext(id, getUserIdFromHeader(userIdHeader));
+  getContext(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.context.buildFullBrandContext(id, req.user.id);
   }
 
   /** User edits from the review screen. Field-by-field: omitting a field leaves
@@ -109,12 +111,12 @@ export class BrandsController {
   @Patch(':id/context')
   updateContext(
     @Param('id') id: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateBrandContextSchema)) body: unknown,
   ) {
     return this.context.updateContext(
       id,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as UpdateBrandContextInput,
     );
   }
@@ -124,15 +126,15 @@ export class BrandsController {
    *  reading already stored, so re-running it costs nothing and hits nobody's
    *  server a second time. */
   @Post(':id/context/refresh')
-  refreshContext(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.context.refreshFromSiteProfile(id, getUserIdFromHeader(userIdHeader));
+  refreshContext(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.context.refreshFromSiteProfile(id, req.user.id);
   }
 
   /** What an agent was actually told, newest first. Forensics for a run that
    *  produced something off-brand. */
   @Get(':id/context/snapshots')
-  listSnapshots(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.context.listSnapshots(id, getUserIdFromHeader(userIdHeader));
+  listSnapshots(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.context.listSnapshots(id, req.user.id);
   }
 
   /** Current learned preferences — the newest observation per type, above the
@@ -141,10 +143,10 @@ export class BrandsController {
   @Get(':id/preferences')
   listPreferences(
     @Param('id') id: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Query('type') type?: string,
   ) {
-    const ownerId = getUserIdFromHeader(userIdHeader);
+    const ownerId = req.user.id;
     if (!type) return this.preferences.listForOwner(id, ownerId);
 
     // Through the pipe rather than a bare `.parse`, which throws a raw ZodError
@@ -167,42 +169,42 @@ export class BrandsController {
   preferenceHistory(
     @Param('id') id: string,
     @Param('type') type: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
     const parsed = new ZodValidationPipe(preferenceTypeSchema).transform(type) as PreferenceType;
-    return this.preferences.historyForOwner(id, getUserIdFromHeader(userIdHeader), parsed);
+    return this.preferences.historyForOwner(id, req.user.id, parsed);
   }
 
   @Get(':id/automation-settings')
   getAutomationSettings(
     @Param('id') id: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    return this.automation.getSettings(id, getUserIdFromHeader(userIdHeader));
+    return this.automation.getSettings(id, req.user.id);
   }
 
   @Patch(':id/automation-settings')
   updateAutomationSettings(
     @Param('id') id: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateAutomationSettingsSchema)) body: unknown,
   ) {
     return this.automation.updateSettings(
       id,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as UpdateAutomationSettingsInput,
     );
   }
 
   @Get(':id/products')
-  listProducts(@Param('id') id: string, @Headers('x-user-id') userIdHeader: string | undefined) {
-    return this.brands.listProducts(id, getUserIdFromHeader(userIdHeader));
+  listProducts(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.brands.listProducts(id, req.user.id);
   }
 
   @Post(':id/products')
   createProduct(
     @Param('id') id: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(createProductSchema.omit({ brandId: true }))) body: unknown,
   ) {
     return this.brands.createProduct(
@@ -210,7 +212,7 @@ export class BrandsController {
         ...(body as Omit<Parameters<BrandsService['createProduct']>[0], 'brandId'>),
         brandId: id,
       },
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
     );
   }
 
@@ -218,13 +220,13 @@ export class BrandsController {
   addProductImage(
     @Param('id') id: string,
     @Param('productId') productId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(productImageUploadSchema)) body: unknown,
   ) {
     return this.brands.addProductImage(
       id,
       productId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as ProductImageUploadInput,
     );
   }

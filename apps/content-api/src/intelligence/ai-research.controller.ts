@@ -1,9 +1,11 @@
-import { Controller, Body, Get, Headers, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { askBrandResearchSchema, type AskBrandResearchInput } from '@bmas/shared';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { AiResearchService } from './ai-research.service.js';
 
+@UseGuards(JwtAuthGuard)
 @Controller('brands/:brandId/ai-research')
 export class AiResearchController {
   constructor(private readonly aiResearch: AiResearchService) {}
@@ -13,21 +15,21 @@ export class AiResearchController {
   @Post()
   ask(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(askBrandResearchSchema)) body: AskBrandResearchInput,
   ) {
-    return this.aiResearch.ask(brandId, getUserIdFromHeader(userIdHeader), body.question);
+    return this.aiResearch.ask(brandId, req.user.id, body.question);
   }
 
   @Get()
   history(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Query('limit') limit?: string,
   ) {
     return this.aiResearch.listHistory(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       limit === undefined ? undefined : Number(limit),
     );
   }

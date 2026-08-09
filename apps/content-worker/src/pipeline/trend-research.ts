@@ -327,6 +327,7 @@ async function maybeAutoTriggerBestOpportunity(
   brand: Brand,
   opportunityRows: TriggerableOpportunity[],
   contentGenerationQueue: Queue,
+  scheduledPostPublishQueue: Queue,
 ): Promise<void> {
   const [settings] = await ctx.db
     .select({ autoTrigger: schema.automationSettings.autoTriggerHighScoreOpportunities })
@@ -339,13 +340,14 @@ async function maybeAutoTriggerBestOpportunity(
   if (candidates.length === 0) return;
 
   const best = candidates.reduce((top, row) => (row.score.overall > top.score.overall ? row : top));
-  await triggerAutoOpportunity(ctx, best, brand, contentGenerationQueue);
+  await triggerAutoOpportunity(ctx, best, brand, contentGenerationQueue, scheduledPostPublishQueue);
 }
 
 export async function runTrendResearch(
   ctx: WorkerContext,
   job: TrendResearchJob,
   contentGenerationQueue: Queue,
+  scheduledPostPublishQueue: Queue,
 ): Promise<void> {
   const [run] = await ctx.db
     .select()
@@ -485,7 +487,13 @@ export async function runTrendResearch(
     // every one a run returns — up to 8 opportunities each spawning 3 paid
     // generation jobs at once is a spend footgun nobody asked for.
     try {
-      await maybeAutoTriggerBestOpportunity(ctx, brand, opportunityRows, contentGenerationQueue);
+      await maybeAutoTriggerBestOpportunity(
+        ctx,
+        brand,
+        opportunityRows,
+        contentGenerationQueue,
+        scheduledPostPublishQueue,
+      );
     } catch (error) {
       console.error(
         `[trend-research] run ${run.id}: auto-trigger step failed (research run itself still succeeded): ${describeError(error)}`,

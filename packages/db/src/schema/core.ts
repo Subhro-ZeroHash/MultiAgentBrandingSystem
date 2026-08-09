@@ -28,6 +28,10 @@ export const users = core.table(
       .$defaultFn(() => crypto.randomUUID()),
     email: text('email').notNull(),
     name: text('name'),
+    /** bcrypt hash. Null for accounts created before auth existed (the seed's
+     *  `dev-user`) or via a future OAuth-only signup — never compared against
+     *  directly, only through AuthService.login's bcrypt.compare. */
+    passwordHash: text('password_hash'),
     emailVerified: boolean('email_verified').notNull().default(false),
     imageUrl: text('image_url'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

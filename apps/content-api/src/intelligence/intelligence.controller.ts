@@ -1,9 +1,11 @@
-import { Controller, Body, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { updateIntelligenceItemStatusSchema, type UpdateIntelligenceItemStatusInput } from '@bmas/shared';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { IntelligenceService } from './intelligence.service.js';
 
+@UseGuards(JwtAuthGuard)
 @Controller('brands/:brandId/intelligence')
 export class IntelligenceController {
   constructor(private readonly intelligence: IntelligenceService) {}
@@ -13,20 +15,20 @@ export class IntelligenceController {
   @Post('runs')
   start(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    return this.intelligence.startResearch(brandId, getUserIdFromHeader(userIdHeader));
+    return this.intelligence.startResearch(brandId, req.user.id);
   }
 
   @Get('runs')
   listRuns(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Query('limit') limit?: string,
   ) {
     return this.intelligence.listRuns(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       limit === undefined ? undefined : Number(limit),
     );
   }
@@ -34,9 +36,9 @@ export class IntelligenceController {
   @Get('runs/:runId')
   getRun(
     @Param('runId') runId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    return this.intelligence.getRun(runId, getUserIdFromHeader(userIdHeader));
+    return this.intelligence.getRun(runId, req.user.id);
   }
 
   /** The feed itself — the most recent successful run's items, optionally
@@ -44,10 +46,10 @@ export class IntelligenceController {
   @Get()
   getFeed(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Query('category') category?: string,
   ) {
-    return this.intelligence.getFeed(brandId, getUserIdFromHeader(userIdHeader), category);
+    return this.intelligence.getFeed(brandId, req.user.id, category);
   }
 
   /** Whether the feed is stale enough to be worth a fresh run — see
@@ -56,18 +58,18 @@ export class IntelligenceController {
   @Get('status')
   getStatus(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    return this.intelligence.getStatus(brandId, getUserIdFromHeader(userIdHeader));
+    return this.intelligence.getStatus(brandId, req.user.id);
   }
 
   @Patch('items/:itemId')
   updateItemStatus(
     @Param('itemId') itemId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateIntelligenceItemStatusSchema))
     body: UpdateIntelligenceItemStatusInput,
   ) {
-    return this.intelligence.updateItemStatus(itemId, getUserIdFromHeader(userIdHeader), body);
+    return this.intelligence.updateItemStatus(itemId, req.user.id, body);
   }
 }

@@ -198,11 +198,17 @@ export function buildCreativeRequest(
   });
 }
 
+/** Generation starts this long before the post's publish slot — mirrors
+ *  `GENERATION_LEAD_MS` in `scheduling.service.ts` so an auto-triggered post
+ *  gets the same review window as a manually scheduled one. */
+const GENERATION_LEAD_MS = 2 * 60 * 60 * 1000;
+
 export async function triggerAutoOpportunity(
   ctx: WorkerContext,
   opportunity: TriggerableOpportunity,
   brand: Brand,
   contentGenerationQueue: Queue,
+  scheduledPostPublishQueue: Queue,
 ): Promise<void> {
   if (opportunity.autoTriggered) return;
   if (!opportunity.productId) {
@@ -232,10 +238,40 @@ export async function triggerAutoOpportunity(
   const { concepts, cost } = await generateContentConcepts(ctx, opportunity, brand, product);
   await recordCost(ctx, brand.id, opportunity.id, cost);
 
+  // Each concept becomes its own single-post scheduled_campaign rather than a
+  // bare generation job. That's what puts it through the same
+  // pending_generation -> pending_approval -> approved -> posted pipeline (and
+  // the same approval-queue UI) that a manually created campaign gets — a
+  // bare generation job has no scheduled_posts row, so onGenerationSucceeded
+  // has nothing to flip to pending_approval and the creative never surfaces
+  // for review. The 3 concepts intentionally use 3 different output formats
+  // (see generateContentConcepts), and scheduled_campaigns has one
+  // outputFormat per row, so 3 concepts means 3 one-post campaigns, not one
+  // 3-post campaign.
+  const now = new Date();
+  const scheduledFor = new Date(now.getTime() + GENERATION_LEAD_MS);
+
   const jobRefs: AutoTriggeredJobRef[] = [];
   for (const [index, concept] of concepts.entries()) {
     const request = buildCreativeRequest(opportunity, brand.id, opportunity.productId, concept);
     const idempotencyKey = `auto-trend-${opportunity.id}-${index}`;
+
+    const [campaign] = await ctx.db
+      .insert(schema.scheduledCampaigns)
+      .values({
+        brandId: request.brandId,
+        productId: request.productId,
+        campaignType: request.campaignType,
+        styleTemplate: request.styleTemplate,
+        outputFormat: request.outputFormat,
+        totalDays: 1,
+        postsPerDay: 1,
+        startAt: scheduledFor,
+      })
+      .returning();
+    if (!campaign) {
+      throw new Error(`Failed to insert scheduled campaign for concept ${index} of opportunity ${opportunity.id}`);
+    }
 
     const [job] = await ctx.db
       .insert(schema.generationJobs)
@@ -249,7 +285,28 @@ export async function triggerAutoOpportunity(
         request,
       })
       .returning();
-    if (!job) throw new Error(`Failed to insert generation job for concept ${index} of opportunity ${opportunity.id}`);
+    if (!job) {
+      await ctx.db.delete(schema.scheduledCampaigns).where(eq(schema.scheduledCampaigns.id, campaign.id));
+      throw new Error(`Failed to insert generation job for concept ${index} of opportunity ${opportunity.id}`);
+    }
+
+    const [post] = await ctx.db
+      .insert(schema.scheduledPosts)
+      .values({
+        campaignId: campaign.id,
+        brandId: request.brandId,
+        productId: request.productId,
+        scheduledFor,
+        status: 'pending_generation',
+        generationJobId: job.id,
+        caption: concept.captionText,
+      })
+      .returning();
+    if (!post) {
+      await ctx.db.delete(schema.generationJobs).where(eq(schema.generationJobs.id, job.id));
+      await ctx.db.delete(schema.scheduledCampaigns).where(eq(schema.scheduledCampaigns.id, campaign.id));
+      throw new Error(`Failed to insert scheduled post for concept ${index} of opportunity ${opportunity.id}`);
+    }
 
     try {
       await contentGenerationQueue.add(
@@ -263,10 +320,24 @@ export async function triggerAutoOpportunity(
           removeOnFail: 5_000,
         },
       );
+      // Deterministic id matching SchedulingService.enqueuePublish, so
+      // cancellation elsewhere can find this job by scheduled-post id alone.
+      await scheduledPostPublishQueue.add(
+        QUEUES.scheduledPostPublish,
+        { scheduledPostId: post.id },
+        {
+          jobId: post.id,
+          delay: Math.max(0, scheduledFor.getTime() - now.getTime()),
+          removeOnComplete: 500,
+          removeOnFail: 500,
+        },
+      );
     } catch (error) {
       // Same reasoning as GenerationsService.enqueue: an uncommitted row with
       // no queued job would wedge the idempotency check forever.
+      await ctx.db.delete(schema.scheduledPosts).where(eq(schema.scheduledPosts.id, post.id));
       await ctx.db.delete(schema.generationJobs).where(eq(schema.generationJobs.id, job.id));
+      await ctx.db.delete(schema.scheduledCampaigns).where(eq(schema.scheduledCampaigns.id, campaign.id));
       throw error;
     }
 

@@ -72,6 +72,12 @@ const envSchema = z.object({
   PUBLIC_ASSET_BASE_URL: optionalUrl(),
 
   DEV_OWNER_ID: z.string().default('dev-user'),
+
+  /** Signs and verifies JWTs issued by AuthService. No default in production —
+   *  a guessable secret defeats every route the JWT guard protects. */
+  AUTH_SECRET: z.string().min(32, 'AUTH_SECRET must be at least 32 characters'),
+  /** How long an issued token stays valid, in `jsonwebtoken` expiresIn format. */
+  AUTH_TOKEN_TTL: z.string().default('30d'),
 });
 
 export type Env = z.infer<typeof envSchema>;

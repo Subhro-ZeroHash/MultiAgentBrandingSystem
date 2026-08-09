@@ -148,6 +148,13 @@
       "when": 1786000153034,
       "tag": "0020_clammy_pepper_potts",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1786109220247,
+      "tag": "0021_material_solo",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AssetsModule } from './assets/assets.module.js';
+import { AuthModule } from './auth/auth.module.js';
 import { BrandSiteModule } from './brand-site/brand-site.module.js';
 import { BrandsModule } from './brands/brands.module.js';
 import { CoreModule } from './core/core.module.js';
@@ -28,6 +29,7 @@ import { TrendsModule } from './trends/trends.module.js';
   imports: [
     CoreModule,
     HealthModule,
+    AuthModule,
     BrandsModule,
     BrandSiteModule,
     TrendsModule,

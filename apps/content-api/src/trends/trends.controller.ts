@@ -1,4 +1,4 @@
-import { Controller, Body, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import {
   requestTrendResearchSchema,
   scheduleTrendOpportunitySchema,
@@ -7,10 +7,12 @@ import {
   type ScheduleTrendOpportunityInput,
   type UpdateTrendOpportunityStatusInput,
 } from '@bmas/shared';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { TrendsService } from './trends.service.js';
 
+@UseGuards(JwtAuthGuard)
 @Controller('brands/:brandId/trend-research')
 export class TrendsController {
   constructor(private readonly trends: TrendsService) {}
@@ -20,12 +22,12 @@ export class TrendsController {
   @Post()
   start(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(requestTrendResearchSchema)) body: unknown,
   ) {
     return this.trends.startResearch(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as RequestTrendResearchInput,
     );
   }
@@ -33,12 +35,12 @@ export class TrendsController {
   @Get()
   list(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Query('limit') limit?: string,
   ) {
     return this.trends.listRuns(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       limit === undefined ? undefined : Number(limit),
     );
   }
@@ -46,9 +48,9 @@ export class TrendsController {
   @Get(':runId')
   getOne(
     @Param('runId') runId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    return this.trends.getRun(runId, getUserIdFromHeader(userIdHeader));
+    return this.trends.getRun(runId, req.user.id);
   }
 
   /** The raw evidence a run's opportunities were clustered from — see
@@ -58,9 +60,9 @@ export class TrendsController {
   @Get(':runId/signals')
   getSignals(
     @Param('runId') runId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    return this.trends.getSignals(runId, getUserIdFromHeader(userIdHeader));
+    return this.trends.getSignals(runId, req.user.id);
   }
 
   /** Work On This / Save / Ignore on one opportunity — see
@@ -69,11 +71,11 @@ export class TrendsController {
   @Patch(':runId/opportunities/:opportunityId')
   updateOpportunityStatus(
     @Param('opportunityId') opportunityId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateTrendOpportunityStatusSchema))
     body: UpdateTrendOpportunityStatusInput,
   ) {
-    return this.trends.updateOpportunityStatus(opportunityId, getUserIdFromHeader(userIdHeader), body);
+    return this.trends.updateOpportunityStatus(opportunityId, req.user.id, body);
   }
 
   /** "Schedule for Approval" — the alternative to /create for a high-
@@ -81,10 +83,10 @@ export class TrendsController {
   @Post(':runId/opportunities/:opportunityId/schedule')
   scheduleOpportunity(
     @Param('opportunityId') opportunityId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(scheduleTrendOpportunitySchema))
     body: ScheduleTrendOpportunityInput,
   ) {
-    return this.trends.scheduleOpportunity(opportunityId, getUserIdFromHeader(userIdHeader), body);
+    return this.trends.scheduleOpportunity(opportunityId, req.user.id, body);
   }
 }

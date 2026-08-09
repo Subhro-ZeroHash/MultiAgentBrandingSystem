@@ -1,14 +1,16 @@
-import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Request, UseGuards } from '@nestjs/common';
 import {
   applyBrandSiteSchema,
   importBrandSiteSchema,
   type ApplyBrandSiteInput,
   type ImportBrandSiteInput,
 } from '@bmas/shared';
-import { getUserIdFromHeader } from '../common/user-id.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { BrandSiteService } from './brand-site.service.js';
 
+@UseGuards(JwtAuthGuard)
 @Controller('brands/:brandId/site-profile')
 export class BrandSiteController {
   constructor(private readonly siteProfiles: BrandSiteService) {}
@@ -22,12 +24,12 @@ export class BrandSiteController {
   @Post('import')
   async import(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(importBrandSiteSchema)) body: unknown,
   ) {
     const profile = await this.siteProfiles.importFromWebsite(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as ImportBrandSiteInput,
     );
 
@@ -39,11 +41,11 @@ export class BrandSiteController {
   @Get()
   async get(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
     const profile = await this.siteProfiles.getProfile(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
     );
 
     if (!profile) return { profile: null, suggestedColors: [] };
@@ -53,12 +55,12 @@ export class BrandSiteController {
   @Post('apply')
   apply(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(applyBrandSiteSchema)) body: unknown,
   ) {
     return this.siteProfiles.apply(
       brandId,
-      getUserIdFromHeader(userIdHeader),
+      req.user.id,
       body as ApplyBrandSiteInput,
     );
   }
@@ -67,8 +69,8 @@ export class BrandSiteController {
   @HttpCode(204)
   async remove(
     @Param('brandId') brandId: string,
-    @Headers('x-user-id') userIdHeader: string | undefined,
+    @Request() req: AuthenticatedRequest,
   ) {
-    await this.siteProfiles.remove(brandId, getUserIdFromHeader(userIdHeader));
+    await this.siteProfiles.remove(brandId, req.user.id);
   }
 }
