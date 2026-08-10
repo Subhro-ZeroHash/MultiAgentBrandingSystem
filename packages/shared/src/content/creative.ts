@@ -70,7 +70,11 @@ export const creativeRequestSchema = z.object({
   ctaText: z.string().max(40).optional(),
   /** FR-2.4: escape hatch, not the primary path. */
   extraInstructions: z.string().max(500).optional(),
-  variantCount: z.number().int().min(1).max(4).default(3),
+  // Lowered from 3: image generation is the dominant cost, and every variant
+  // is a separate provider call. Uniform mode is the only path that still
+  // reads this field — diverse mode's image count is fixed by
+  // DIVERSE_VARIANT_KINDS in the worker instead (also trimmed to 2).
+  variantCount: z.number().int().min(1).max(4).default(2),
   /**
    * 'diverse': each variant draws on a different knowledge source (current
    * trends, the brand's website, or the client's brief alone) — the manual

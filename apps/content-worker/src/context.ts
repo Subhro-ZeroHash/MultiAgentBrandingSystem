@@ -19,8 +19,10 @@ const envSchema = z.object({
   CONTENT_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(2),
   /** Extra rounds of image generation allowed when the QA readback fails
    *  (FR-3.5). This is the cost ceiling: worst-case spend per job is
-   *  variantCount x (1 + this). 0 disables regeneration entirely. */
-  QA_REGENERATION_ROUNDS: z.coerce.number().int().min(0).max(3).default(1),
+   *  variantCount x (1 + this). 0 disables regeneration entirely — the
+   *  default while there is no working provider key and every image counts;
+   *  raise it back to 1 once cost is no longer the binding constraint. */
+  QA_REGENERATION_ROUNDS: z.coerce.number().int().min(0).max(3).default(0),
 
   // Object storage for generated creatives. Defaults match the MinIO container
   // in docker-compose.yml so a local checkout works without extra setup.

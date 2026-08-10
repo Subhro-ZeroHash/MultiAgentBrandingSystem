@@ -24,8 +24,19 @@ import {
   type VariantKind,
 } from './stages.js';
 
-/** The three knowledge sources a diverse-mode generation fans out across. */
-const DIVERSE_VARIANT_KINDS: readonly VariantKind[] = ['trend', 'website', 'clean'];
+/**
+ * The knowledge sources a diverse-mode generation fans out across — one image
+ * per entry, so this list's length is the actual per-job image count
+ * regardless of `request.variantCount` (diverse mode never reads that field).
+ *
+ * Trimmed from three to two ('trend', 'website', 'clean') to cut image-gen
+ * spend by a third while there is no working provider key. 'clean' (no extra
+ * source beyond the brief) was dropped as the least differentiated of the
+ * three — 'website' still grounds a variant in the brand's own site, 'trend'
+ * still keeps one timely. Restore 'clean' here once a provider key is live
+ * and cost is no longer the binding constraint.
+ */
+const DIVERSE_VARIANT_KINDS: readonly VariantKind[] = ['trend', 'website'];
 
 /**
  * The user cancelled while this job was mid-pipeline.
