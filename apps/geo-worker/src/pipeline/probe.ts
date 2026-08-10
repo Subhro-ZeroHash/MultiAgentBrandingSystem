@@ -56,7 +56,7 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
     cost: answer.cost,
   });
 
-  const { analysis, costMicroUsd } = await analyzeAnswer(ctx.ai, {
+  const { analysis, cost: analysisCost } = await analyzeAnswer(ctx.ai, {
     answerText: answer.value.text,
     citations: answer.value.citations,
     brandName: brand.name,
@@ -65,7 +65,16 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
   });
 
   if (analysis.mentions.length > 0) {
-    const byName = new Map(competitors.map((c) => [c.name.toLowerCase(), c.id]));
+    // The analysis prompt offers aliases as valid ways to name a competitor
+    // (see analyze.ts), so the lookup has to accept them too — indexing only
+    // `name` sent every alias-named mention to entityId 'unknown'.
+    const byName = new Map<string, string>();
+    for (const competitor of competitors) {
+      byName.set(competitor.name.toLowerCase(), competitor.id);
+      for (const alias of competitor.aliases) {
+        byName.set(alias.toLowerCase(), competitor.id);
+      }
+    }
 
     await ctx.db.insert(schema.mentions).values(
       analysis.mentions.map((mention) => ({
@@ -85,14 +94,14 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
     );
   }
 
-  await ctx.db.insert(schema.costEvents).values({
+  // Real provider/model/tokens from the call that was actually made — not
+  // hardcoded, since LLM_PROVIDER can be anthropic or gemini. `operation` is
+  // overridden to a stage-specific label so this is distinguishable in the
+  // ledger from other orchestrator-role JSON calls.
+  await recordCost(ctx, {
     brandId: brand.id,
-    system: 'geo',
     referenceId: run.id,
-    provider: 'anthropic',
-    model: 'analysis',
-    operation: 'geo:analyze',
-    costMicroUsd,
+    cost: { ...analysisCost, operation: 'geo:analyze' },
   });
 }
 

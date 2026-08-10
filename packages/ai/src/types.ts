@@ -18,4 +18,4 @@ export interface ProviderContext {
   signal?: AbortSignal;
 }
 
-export type ProviderName = 'anthropic' | 'google' | 'fal' | 'openai' | 'perplexity';
+export type ProviderName = 'anthropic' | 'google' | 'fal' | 'openai' | 'perplexity' | 'tavily';

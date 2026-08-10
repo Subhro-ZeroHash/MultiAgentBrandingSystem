@@ -1,0 +1,1 @@
+CREATE INDEX "brand_preferences_learned_from_idx" ON "content"."brand_preferences" USING btree ("learned_from");

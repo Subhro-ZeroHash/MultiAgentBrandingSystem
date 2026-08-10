@@ -74,7 +74,7 @@ export class PerplexityAnswerEngine implements AnswerEngineClient {
       value: {
         engine: this.engine,
         model: this.model,
-        text: body.choices[0]?.message.content ?? '',
+        text: body.choices?.[0]?.message.content ?? '',
         citations: toCitations(body),
         latencyMs,
       },
@@ -85,9 +85,12 @@ export class PerplexityAnswerEngine implements AnswerEngineClient {
         inputTokens: body.usage?.prompt_tokens,
         outputTokens: body.usage?.completion_tokens,
         latencyMs,
-        // No rate table for Perplexity yet — fill in TOKEN_RATES when pricing
-        // is confirmed, or this row lands as 0 and understates spend.
-        costMicroUsd: 0,
+        // No rate table entry for `sonar` in TOKEN_RATES yet (pricing needs to
+        // be confirmed against the live API, not guessed — see CLAUDE.md), so
+        // this understates spend at 0 until one is added. Left unset rather
+        // than pinned to a hardcoded `costMicroUsd: 0`: pinning it silently
+        // keeps this row at 0 forever even after a real rate is added, since
+        // buildCostEvent prefers an explicit costMicroUsd over computing one.
       }),
     };
   }

@@ -27,6 +27,15 @@ const db = drizzle(client, { schema });
 
 const DEV_USER_ID = 'dev-user';
 const DEV_BRAND_ID = 'dev-brand';
+// Explicit ids for every row below, not just user/brand: `onConflictDoNothing`
+// only catches a conflict on the primary key, and these tables have no other
+// unique constraint. Without a fixed id each re-run generated a fresh random
+// UUID, so nothing ever conflicted and every `pnpm db:seed` duplicated them.
+const DEV_PRODUCT_ID = 'dev-product-saree';
+const DEV_COMPETITOR_NALLI_ID = 'dev-competitor-nalli';
+const DEV_COMPETITOR_KALANIKETAN_ID = 'dev-competitor-kalaniketan';
+const DEV_PROMPT_DISCOVERY_ID = 'dev-prompt-discovery';
+const DEV_PROMPT_WEDDING_ID = 'dev-prompt-wedding';
 
 try {
   await db
@@ -39,32 +48,50 @@ try {
     .values({
       id: DEV_BRAND_ID,
       ownerId: DEV_USER_ID,
-      name: 'Priya Sarees',
+      name: 'My Brand',
       colors: ['#7C2D12', '#F59E0B'],
-      toneOfVoice: 'traditional',
-      category: 'Apparel / Saree boutique',
-      audience: 'Women 25-45 in Jaipur shopping for festival and wedding wear',
+      tone: ['elegant', 'traditional', 'premium'],
+      category: 'General Retail',
+      audience: 'Quality conscious customers',
+      location: 'Jaipur',
+      languages: ['Hindi', 'English'],
+      platforms: ['Instagram', 'Facebook'],
+      bannedTopics: [],
       websiteUrl: 'https://example.com',
-      socialHandles: { instagram: '@priyasarees' },
+      socialHandles: { instagram: '@mybrand' },
     })
     .onConflictDoNothing();
 
   await db
     .insert(schema.products)
     .values({
+      id: DEV_PRODUCT_ID,
       brandId: DEV_BRAND_ID,
       name: 'Banarasi Silk Saree',
       description: 'Handwoven Banarasi silk saree with gold zari border.',
       priceMinor: 649_00,
       currency: 'INR',
+      sellingPoints: ['Pure silk', 'Handwoven', 'Traditional Banarasi design'],
     })
     .onConflictDoNothing();
 
   await db
     .insert(schema.competitors)
     .values([
-      { brandId: DEV_BRAND_ID, name: 'Nalli Silks', domain: 'nalli.com', aliases: ['Nalli'] },
-      { brandId: DEV_BRAND_ID, name: 'Kalaniketan', domain: null, aliases: [] },
+      {
+        id: DEV_COMPETITOR_NALLI_ID,
+        brandId: DEV_BRAND_ID,
+        name: 'Nalli Silks',
+        domain: 'nalli.com',
+        aliases: ['Nalli'],
+      },
+      {
+        id: DEV_COMPETITOR_KALANIKETAN_ID,
+        brandId: DEV_BRAND_ID,
+        name: 'Kalaniketan',
+        domain: null,
+        aliases: [],
+      },
     ])
     .onConflictDoNothing();
 
@@ -72,6 +99,7 @@ try {
     .insert(schema.trackedPrompts)
     .values([
       {
+        id: DEV_PROMPT_DISCOVERY_ID,
         brandId: DEV_BRAND_ID,
         text: 'Where can I buy a good Banarasi silk saree in Jaipur?',
         intent: 'discovery',
@@ -79,6 +107,7 @@ try {
         engines: ['claude', 'perplexity'],
       },
       {
+        id: DEV_PROMPT_WEDDING_ID,
         brandId: DEV_BRAND_ID,
         text: 'Best saree boutiques for wedding shopping in Rajasthan',
         intent: 'discovery',

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "social_accounts_owner_platform_account_idx" ON "content"."social_accounts" USING btree ("owner_id","platform","ig_business_id");
