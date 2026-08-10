@@ -25,6 +25,16 @@ async function bootstrap(): Promise<void> {
   // per-image cap the upload route enforces, allowing for base64 overhead.
   app.useBodyParser('json', { limit: '20mb' });
 
+  // NOTE: rate limiting (ThrottlerModule in AppModule) buckets by `req.ip`.
+  // Express reports the socket's peer address unless `trust proxy` is set, so
+  // this is correct only while clients reach the API directly — which is the
+  // case today: the app talks to the LAN address, and cloudflared fronts the
+  // web port rather than this one. If the API is ever put behind a proxy or
+  // tunnel, set `trust proxy` to the exact hop count here, or every request
+  // will arrive wearing the proxy's IP and the whole user base will share one
+  // rate-limit bucket. Do not set it to `true` on a directly-reachable
+  // deployment: that trusts a client-supplied X-Forwarded-For and hands
+  // anyone a way around the limit.
   app.setGlobalPrefix('api');
   // No global ValidationPipe: request validation goes through ZodValidationPipe
   // per route, so the shared @bmas/shared schemas are the single source of

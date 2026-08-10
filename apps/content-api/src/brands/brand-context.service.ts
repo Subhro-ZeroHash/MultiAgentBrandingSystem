@@ -342,11 +342,18 @@ export class BrandContextService {
    *
    * `bannedTopics` is in every projection on purpose. It is the one field where
    * omitting it does active harm rather than merely losing quality.
+   *
+   * Takes `ownerId` and checks it here rather than trusting the caller to have
+   * done so. This has no HTTP callers yet, and a projection builder that
+   * happens to be safe only because nothing calls it is a trap for whoever
+   * wires up the first route.
    */
   async getContextForAgent(
     brandId: string,
+    ownerId: string,
     agentType: AgentType,
   ): Promise<Record<string, unknown>> {
+    await this.assertBrandOwned(brandId, ownerId);
     await this.ensureContext(brandId);
 
     switch (agentType) {

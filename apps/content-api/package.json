@@ -24,6 +24,7 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.1.28",
+    "@nestjs/throttler": "^6.5.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.80.9",
     "dotenv": "^17.4.2",

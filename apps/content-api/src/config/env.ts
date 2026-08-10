@@ -12,6 +12,9 @@ const blankAsUnset = <T extends z.ZodTypeAny>(schema: T) =>
 const optionalUrl = () => blankAsUnset(z.string().url());
 const optionalText = () => blankAsUnset(z.string());
 
+/** Kept byte-for-byte in step with `.env.example`. See AUTH_SECRET below. */
+const PLACEHOLDER_AUTH_SECRET = 'replace-me-with-32-bytes-of-random';
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   CONTENT_API_PORT: z.coerce.number().int().positive().default(4000),
@@ -74,8 +77,22 @@ const envSchema = z.object({
   DEV_OWNER_ID: z.string().default('dev-user'),
 
   /** Signs and verifies JWTs issued by AuthService. No default in production —
-   *  a guessable secret defeats every route the JWT guard protects. */
-  AUTH_SECRET: z.string().min(32, 'AUTH_SECRET must be at least 32 characters'),
+   *  a guessable secret defeats every route the JWT guard protects.
+   *
+   *  The length floor alone was not enough: the placeholder shipped in
+   *  `.env.example` is 34 characters, so a `.env` copied from it and never
+   *  edited passed validation and signed real sessions with a value published
+   *  in the repository. Anyone able to read it could mint a token for any user
+   *  id. Refusing the known placeholder by name turns that from a silent hole
+   *  into a startup failure that says what to do about it. */
+  AUTH_SECRET: z
+    .string()
+    .min(32, 'AUTH_SECRET must be at least 32 characters')
+    .refine((secret) => secret !== PLACEHOLDER_AUTH_SECRET, {
+      message:
+        'AUTH_SECRET is still the placeholder from .env.example, which is public. ' +
+        'Generate a real one: openssl rand -hex 32',
+    }),
   /** How long an issued token stays valid, in `jsonwebtoken` expiresIn format. */
   AUTH_TOKEN_TTL: z.string().default('30d'),
 });

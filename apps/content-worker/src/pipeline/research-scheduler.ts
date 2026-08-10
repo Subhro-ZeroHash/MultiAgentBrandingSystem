@@ -1,5 +1,5 @@
 import { describeError } from '@bmas/ai';
-import { and, eq, lte, schema } from '@bmas/db';
+import { and, asc, eq, lte, schema } from '@bmas/db';
 import { nextResearchAt, QUEUES, RESEARCH_SCHEDULER_INTERVAL_HOURS } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
@@ -37,6 +37,22 @@ interface DueBrand {
   lastResearchAt: Date | null;
 }
 
+/**
+ * Most brands one tick will start research for.
+ *
+ * Every brand taken here costs two provider-backed jobs (a web search plus a
+ * synthesis pass, twice over), and brands become due in clusters rather than
+ * evenly — a cohort that signs up together and enables automation together
+ * stays synchronised for as long as they share a cadence. Without a ceiling,
+ * one tick of a hundred such brands is two hundred billable jobs enqueued in a
+ * burst, against provider quotas that are the scarcest thing this system has.
+ *
+ * Overflow is not dropped: it stays due (its `nextResearchAt` is only advanced
+ * once it has actually been enqueued) and is picked up by the following tick,
+ * oldest-due first.
+ */
+const MAX_BRANDS_PER_TICK = 25;
+
 async function getDueBrands(ctx: WorkerContext, now: Date): Promise<DueBrand[]> {
   return ctx.db
     .select({
@@ -50,7 +66,12 @@ async function getDueBrands(ctx: WorkerContext, now: Date): Promise<DueBrand[]> 
         eq(schema.automationSettings.contentAutomationEnabled, true),
         lte(schema.automationSettings.nextResearchAt, now),
       ),
-    );
+    )
+    // Longest-overdue first, so a brand that loses one tick to the cap is at
+    // the front of the next one. Without the ordering the cap could starve the
+    // same brands indefinitely, since the unordered scan tends to be stable.
+    .orderBy(asc(schema.automationSettings.nextResearchAt))
+    .limit(MAX_BRANDS_PER_TICK);
 }
 
 /**
