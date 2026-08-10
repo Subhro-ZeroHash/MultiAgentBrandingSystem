@@ -114,7 +114,14 @@ function isBlockedV6(address: string): boolean {
   if (!groups) return true; // unparseable — refuse rather than guess
 
   const [g0, g1, g2, g3, g4, g5, g6, g7] = groups as [
-    number, number, number, number, number, number, number, number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
   ];
 
   // ::ffff:0:0/96 (IPv4-mapped) and 64:ff9b::/96 (the well-known NAT64 prefix)

@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { eq, and, schema, type Database } from '@bmas/db';
 import { type SocialAccount } from '@bmas/db';
 import { DATABASE } from '../core/core.module.js';
@@ -58,9 +64,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  *  status ("Bad Request") tells the user nothing about what to fix. */
 function graphErrorMessage(body: unknown, fallback: string): string {
   const error = body as ErrorResponse | null;
-  return (
-    error?.error?.message ?? error?.error_message ?? error?.error_description ?? fallback
-  );
+  return error?.error?.message ?? error?.error_message ?? error?.error_description ?? fallback;
 }
 
 /** True when the payload reports a failure, whatever the HTTP status says. */
@@ -222,7 +226,10 @@ export class SocialService {
 
     // Caught here rather than at the first failed post: by then the account is
     // stored, looks connected, and the failure reads as a bug in the app.
-    if (profile.account_type && !PUBLISHABLE_ACCOUNT_TYPES.has(profile.account_type.toUpperCase())) {
+    if (
+      profile.account_type &&
+      !PUBLISHABLE_ACCOUNT_TYPES.has(profile.account_type.toUpperCase())
+    ) {
       throw new BadRequestException(
         `"${profile.username ?? 'That account'}" is a ${profile.account_type.toLowerCase()} account. ` +
           'Instagram only allows posting through the API from a Business or Creator account — ' +
@@ -328,10 +335,7 @@ export class SocialService {
       .select()
       .from(schema.socialAccounts)
       .where(
-        and(
-          eq(schema.socialAccounts.id, accountId),
-          eq(schema.socialAccounts.ownerId, userId),
-        ),
+        and(eq(schema.socialAccounts.id, accountId), eq(schema.socialAccounts.ownerId, userId)),
       )
       .limit(1);
 
@@ -341,9 +345,7 @@ export class SocialService {
 
   async disconnectAccount(accountId: string, userId: string): Promise<void> {
     const account = await this.getAccount(accountId, userId);
-    await this.db
-      .delete(schema.socialAccounts)
-      .where(eq(schema.socialAccounts.id, account.id));
+    await this.db.delete(schema.socialAccounts).where(eq(schema.socialAccounts.id, account.id));
   }
 
   getDecryptedToken(account: SocialAccount): string {
@@ -529,7 +531,10 @@ export class SocialService {
 
     // Only reachable on the raw-imageUrl path; a link built from an asset id is
     // public by construction.
-    if (!/^https?:\/\//i.test(imageUrl) || /localhost|127\.0\.0\.1|192\.168\.|10\.\d/i.test(imageUrl)) {
+    if (
+      !/^https?:\/\//i.test(imageUrl) ||
+      /localhost|127\.0\.0\.1|192\.168\.|10\.\d/i.test(imageUrl)
+    ) {
       throw new BadRequestException(
         'Instagram downloads the image from this URL, so it must be publicly reachable. A localhost or LAN address will not work.',
       );

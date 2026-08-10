@@ -112,10 +112,7 @@ export class TrendsService {
     if (!run) throw new NotFoundException(`Trend research run ${runId} not found`);
     await this.assertBrandOwned(run.brandId, ownerId);
 
-    return this.db
-      .select()
-      .from(schema.trendSignals)
-      .where(eq(schema.trendSignals.runId, runId));
+    return this.db.select().from(schema.trendSignals).where(eq(schema.trendSignals.runId, runId));
   }
 
   /** Bounds the page size the same way GenerationsController does: an

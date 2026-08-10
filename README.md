@@ -2,11 +2,11 @@
 
 Two products, one Brand Kit, one repo. The Creative Content Agent now includes the **Brand Brain**—a persistent context and memory system that learns from user feedback and informs all future generations.
 
-| System                     | What it does                                                              | Apps                            |
-| -------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
-| **Creative Content Agent** | Product photos + a structured request → poster/ad image + matching copy, informed by accumulated brand memory   | `content-api`, `content-worker` |
-| **GEO**                    | Measures how ChatGPT / Perplexity / Gemini / Claude describe the business | `geo-api`, `geo-worker`         |
-| **Brand Brain** ✨         | Persistent context, learned preferences, feedback capture, and audit trail for every brand | Part of content-api/worker      |
+| System                     | What it does                                                                                                  | Apps                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| **Creative Content Agent** | Product photos + a structured request → poster/ad image + matching copy, informed by accumulated brand memory | `content-api`, `content-worker` |
+| **GEO**                    | Measures how ChatGPT / Perplexity / Gemini / Claude describe the business                                     | `geo-api`, `geo-worker`         |
+| **Brand Brain** ✨         | Persistent context, learned preferences, feedback capture, and audit trail for every brand                    | Part of content-api/worker      |
 
 Both products read the same `core.brands` Brand Kit and share the provider-abstraction
 layer, the database package, and the Zod contracts. The Brand Brain adds four new tables

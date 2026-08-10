@@ -229,9 +229,8 @@ export class GeminiImageAdapter implements ImageGenService {
     height: number,
   ): Promise<{ data: Buffer; width: number; height: number }> {
     const resized = sharp(data).resize(width, height, { fit: 'cover', position: 'centre' });
-    const out = await (mediaType === 'image/jpeg'
-      ? resized.jpeg({ quality: 92 })
-      : resized.png()
+    const out = await (
+      mediaType === 'image/jpeg' ? resized.jpeg({ quality: 92 }) : resized.png()
     ).toBuffer({ resolveWithObject: true });
 
     return { data: out.data, width: out.info.width, height: out.info.height };
@@ -290,7 +289,10 @@ export class GeminiImageAdapter implements ImageGenService {
     };
   }
 
-  async edit(req: ImageEditRequest, ctx?: ProviderContext): Promise<ProviderResult<GeneratedImage>> {
+  async edit(
+    req: ImageEditRequest,
+    ctx?: ProviderContext,
+  ): Promise<ProviderResult<GeneratedImage>> {
     const startedAt = Date.now();
 
     // Preserve the asset's dimensions: an edit is a targeted change to a

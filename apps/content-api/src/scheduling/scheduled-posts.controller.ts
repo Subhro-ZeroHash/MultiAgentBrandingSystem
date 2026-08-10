@@ -1,4 +1,15 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import {
   approveScheduledPostSchema,
   scheduledPostStatusSchema,
@@ -47,11 +58,7 @@ export class ScheduledPostsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateScheduledPostSchema)) body: unknown,
   ) {
-    return this.scheduling.updatePost(
-      id,
-      req.user.id,
-      body as UpdateScheduledPostInput,
-    );
+    return this.scheduling.updatePost(id, req.user.id, body as UpdateScheduledPostInput);
   }
 
   @Post(':id/approve')
@@ -60,11 +67,7 @@ export class ScheduledPostsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(approveScheduledPostSchema)) body: unknown,
   ) {
-    return this.scheduling.approvePost(
-      id,
-      req.user.id,
-      body as ApproveScheduledPostInput,
-    );
+    return this.scheduling.approvePost(id, req.user.id, body as ApproveScheduledPostInput);
   }
 
   @Post(':id/reject')

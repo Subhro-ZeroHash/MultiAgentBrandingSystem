@@ -1,11 +1,5 @@
 import { describeError, withRetry, withTimeout, type AiRegistry } from '@bmas/ai';
-import {
-  eq,
-  schema,
-  type Brand,
-  type ContentTaskContext,
-  type Database,
-} from '@bmas/db';
+import { eq, schema, type Brand, type ContentTaskContext, type Database } from '@bmas/db';
 import {
   OUTPUT_FORMAT_DIMENSIONS,
   copyPackSchema,
@@ -96,12 +90,36 @@ export interface TrendContext {
  * first clause, cuts on a word boundary, drops trailing punctuation.
  */
 const TRAILING_FILLER = new Set([
-  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'for', 'from',
-  'with', 'by', 'your', 'our', 'their', 'its', 'this', 'that', 'is', 'are', '&',
+  'a',
+  'an',
+  'the',
+  'and',
+  'or',
+  'of',
+  'to',
+  'in',
+  'on',
+  'at',
+  'for',
+  'from',
+  'with',
+  'by',
+  'your',
+  'our',
+  'their',
+  'its',
+  'this',
+  'that',
+  'is',
+  'are',
+  '&',
 ]);
 
 function posterPhrase(value: string | undefined, maxChars: number): string | undefined {
-  const first = value?.split(/[:—–|.!?\n]/)[0]?.trim().replace(/[,;\s]+$/, '');
+  const first = value
+    ?.split(/[:—–|.!?\n]/)[0]
+    ?.trim()
+    .replace(/[,;\s]+$/, '');
   if (!first) return undefined;
 
   let phrase = first;
@@ -123,7 +141,11 @@ function posterPhrase(value: string | undefined, maxChars: number): string | und
   // Truncation strands prepositions and articles ("...Serene Meadows of"),
   // which reads as a typo once it is set in 60pt on a finished advertisement.
   const words = phrase.split(/\s+/);
-  for (let last = words[words.length - 1]; words.length > 1 && last; last = words[words.length - 1]) {
+  for (
+    let last = words[words.length - 1];
+    words.length > 1 && last;
+    last = words[words.length - 1]
+  ) {
     if (!TRAILING_FILLER.has(last.toLowerCase())) break;
     words.pop();
   }
@@ -251,8 +273,8 @@ export async function composeBrief(
 
   // Ordered most- to least-important: the headline is read first, the CTA is
   // the smallest element. QA reads every one of these back off the image.
-  const requiredText = [headline, offer, wordmark, cta].filter(
-    (value): value is string => Boolean(value?.trim()),
+  const requiredText = [headline, offer, wordmark, cta].filter((value): value is string =>
+    Boolean(value?.trim()),
   );
 
   // Descriptions are free text and may or may not be punctuated; normalise so
@@ -297,7 +319,9 @@ export async function composeBrief(
     brand.category
       ? `The brand's usual trade is "${brand.category}". Use this only to judge tone. Do NOT place its merchandise, stock, or typical subject matter in this image unless ${product.name} genuinely is one of those things.`
       : null,
-    brand.audience ? `Who this is for: ${brand.audience}. Let this inform styling, not the subject.` : null,
+    brand.audience
+      ? `Who this is for: ${brand.audience}. Let this inform styling, not the subject.`
+      : null,
     `Brand voice: ${toneDirection(brand.tone)}.`,
     brand.colors.length
       ? `Work the brand colours (${brand.colors.join(', ')}) into the palette as accents. Do not let them dictate what appears in the scene.`
@@ -628,10 +652,7 @@ async function loadReferences(
   );
 
   const includeBrandReferences = !variantKind || variantKind === 'website';
-  return [
-    ...productReferences,
-    ...(includeBrandReferences ? await loadBrandReferences(ctx) : []),
-  ];
+  return [...productReferences, ...(includeBrandReferences ? await loadBrandReferences(ctx) : [])];
 }
 
 /**
@@ -904,7 +925,12 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
   const handle =
     brand.socialHandles[platform] ??
     brand.socialHandles.instagram ??
-    (brand.name ? `@${brand.name.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9_]/g, '')}` : undefined);
+    (brand.name
+      ? `@${brand.name
+          .toLowerCase()
+          .replace(/\s+/g, '')
+          .replace(/[^a-z0-9_]/g, '')}`
+      : undefined);
 
   // Platform-specific hashtag guidance. Deliberately free of worked examples:
   // an earlier version illustrated the rule with saree tags, and the model
@@ -946,7 +972,7 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
                   `Their character: ${ctx.siteIdentity.brandPersonality} ` +
                   'Match that register, sentence rhythm and vocabulary. This tells you HOW to write, ' +
                   'not what to write about — the subject is the product named above, which may be ' +
-                  "nothing like what their website discusses. " +
+                  'nothing like what their website discusses. ' +
                   // Unlike the image brief, copy *may* use what the brand sells:
                   // a caption that echoes the brand's real promises reads as
                   // theirs, and words carry none of the hijack risk a rendered
@@ -1053,7 +1079,6 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
 
   return [{ ...draft, platform, language: request.language }];
 }
-
 
 /**
  * Stage 3b — one bounded second chance for variants whose text came back wrong.

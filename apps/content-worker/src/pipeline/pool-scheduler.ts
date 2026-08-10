@@ -149,7 +149,11 @@ async function loadLatestIntelligenceRuns(
  *  this same tick's prior run, or a brand's own lazy backfill racing it —
  *  and is skipped rather than treated as an error, the same concurrency
  *  case the partial unique index exists for (see `pool-loader.ts`). */
-async function enqueueTrendBucket(ctx: WorkerContext, queue: Queue, bucket: PoolBucket): Promise<void> {
+async function enqueueTrendBucket(
+  ctx: WorkerContext,
+  queue: Queue,
+  bucket: PoolBucket,
+): Promise<void> {
   try {
     const [run] = await ctx.db
       .insert(schema.poolTrendRuns)
@@ -162,7 +166,9 @@ async function enqueueTrendBucket(ctx: WorkerContext, queue: Queue, bucket: Pool
       { runId: run.id, scope: bucket.scope, category: bucket.category },
       { jobId: run.id, attempts: 2, backoff: { type: 'exponential', delay: 5_000 } },
     );
-    console.warn(`[pool-scheduler] enqueued trend refresh for ${bucketKey(bucket.scope, bucket.category)} (run ${run.id})`);
+    console.warn(
+      `[pool-scheduler] enqueued trend refresh for ${bucketKey(bucket.scope, bucket.category)} (run ${run.id})`,
+    );
   } catch (error) {
     if (isUniqueViolation(error)) {
       console.warn(
@@ -193,7 +199,9 @@ async function enqueueIntelligenceBucket(
       { runId: run.id, scope: bucket.scope, category: bucket.category },
       { jobId: run.id, attempts: 2, backoff: { type: 'exponential', delay: 5_000 } },
     );
-    console.warn(`[pool-scheduler] enqueued intelligence refresh for ${bucketKey(bucket.scope, bucket.category)} (run ${run.id})`);
+    console.warn(
+      `[pool-scheduler] enqueued intelligence refresh for ${bucketKey(bucket.scope, bucket.category)} (run ${run.id})`,
+    );
   } catch (error) {
     if (isUniqueViolation(error)) {
       console.warn(
@@ -231,7 +239,8 @@ export async function runPoolSchedulerTick(
   );
 
   for (const bucket of dueTrend) await enqueueTrendBucket(ctx, trendPoolQueue, bucket);
-  for (const bucket of dueIntelligence) await enqueueIntelligenceBucket(ctx, intelligencePoolQueue, bucket);
+  for (const bucket of dueIntelligence)
+    await enqueueIntelligenceBucket(ctx, intelligencePoolQueue, bucket);
 }
 
 /** Registers the repeatable tick, idempotently — same reasoning as

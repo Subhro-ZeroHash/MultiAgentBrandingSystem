@@ -2,7 +2,12 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
 import type { Brand } from '@bmas/db';
 import type { CreativeRequest } from '@bmas/shared';
-import { regenerateFailures, type Brief, type CheckedVariant, type StageContext } from './stages.js';
+import {
+  regenerateFailures,
+  type Brief,
+  type CheckedVariant,
+  type StageContext,
+} from './stages.js';
 
 /**
  * Auto-regeneration is the one stage that can double a job's provider spend, so
@@ -63,7 +68,12 @@ function harness(options: { readback: string | (() => string); generate?: () => 
         height: 1080,
         model: 'gemini-3-pro-image',
       })),
-      cost: { provider: 'google', model: 'gemini-3-pro-image', operation: 'image', costMicroUsd: 1 },
+      cost: {
+        provider: 'google',
+        model: 'gemini-3-pro-image',
+        operation: 'image',
+        costMicroUsd: 1,
+      },
     };
   });
 

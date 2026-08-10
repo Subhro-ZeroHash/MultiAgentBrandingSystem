@@ -51,7 +51,12 @@ describe('mapSerpApiResponse', () => {
       ],
     });
     expect(results).toEqual([
-      { url: 'https://example.com/a', title: 'Diwali sale trends', snippet: 'spike', publishedAt: null },
+      {
+        url: 'https://example.com/a',
+        title: 'Diwali sale trends',
+        snippet: 'spike',
+        publishedAt: null,
+      },
     ]);
   });
 

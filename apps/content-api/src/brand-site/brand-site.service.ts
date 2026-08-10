@@ -256,10 +256,7 @@ export class BrandSiteService {
       updatedAt: new Date(),
     };
 
-    await this.db
-      .update(schema.brands)
-      .set(brandUpdate)
-      .where(eq(schema.brands.id, brandId));
+    await this.db.update(schema.brands).set(brandUpdate).where(eq(schema.brands.id, brandId));
 
     // Opting the logo in without one stored would leave the brief promising the
     // model an attachment that never arrives, which reads as a bug in the

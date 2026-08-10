@@ -60,26 +60,26 @@ const rejected = contentCtx.rejectedPatterns;
 
 ## Constants
 
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `FEEDBACK_CONFIDENCE.approved` | 0.25 | Stays below the prompt floor |
-| `FEEDBACK_CONFIDENCE.rejected` | 0.5 | Reaches prompts immediately |
-| `FEEDBACK_CONFIDENCE.variant_selected` | 0.4 | Reaches prompts |
-| `CONTEXT_LIMITS.MIN_PROMPT_CONFIDENCE` | 0.4 | Threshold for surfacing in briefs |
-| `CONTEXT_LIMITS.MAX_LEARNED` | 5 | Max rows returned per preference type |
+| Constant                               | Value | Purpose                               |
+| -------------------------------------- | ----- | ------------------------------------- |
+| `FEEDBACK_CONFIDENCE.approved`         | 0.25  | Stays below the prompt floor          |
+| `FEEDBACK_CONFIDENCE.rejected`         | 0.5   | Reaches prompts immediately           |
+| `FEEDBACK_CONFIDENCE.variant_selected` | 0.4   | Reaches prompts                       |
+| `CONTEXT_LIMITS.MIN_PROMPT_CONFIDENCE` | 0.4   | Threshold for surfacing in briefs     |
+| `CONTEXT_LIMITS.MAX_LEARNED`           | 5     | Max rows returned per preference type |
 
 Pinned by tests in `packages/db/src/context/context-manager.test.ts` — changing either constant without checking the test is how approvals silently start reaching prompts.
 
 ## Tables
 
-| Table | Written by |
-|-------|-----------|
-| `brand_context` | User edits, website re-import |
-| `brand_preferences` | `recordFeedbackSignal()` only — append-only |
-| `automation_settings` | Settings screen, the research scheduler tick |
-| `context_snapshots` | Every pipeline that calls `recordContextSnapshot()` |
-| `trend_signals` | The trend-research worker pipeline, raw evidence |
-| `trend_opportunities` | The trend-research worker pipeline, post-synthesis |
+| Table                 | Written by                                          |
+| --------------------- | --------------------------------------------------- |
+| `brand_context`       | User edits, website re-import                       |
+| `brand_preferences`   | `recordFeedbackSignal()` only — append-only         |
+| `automation_settings` | Settings screen, the research scheduler tick        |
+| `context_snapshots`   | Every pipeline that calls `recordContextSnapshot()` |
+| `trend_signals`       | The trend-research worker pipeline, raw evidence    |
+| `trend_opportunities` | The trend-research worker pipeline, post-synthesis  |
 
 ## Debugging checklist
 
@@ -87,4 +87,4 @@ Pinned by tests in `packages/db/src/context/context-manager.test.ts` — changin
 
 **Approval is polluting prompts** — check `FEEDBACK_CONFIDENCE.approved` is still `< MIN_PROMPT_CONFIDENCE`; if either changed, that's the bug.
 
-**Signals missing after a failed trend-research run** — should never happen post-fix: signals are persisted in their own transaction *before* synthesis runs, specifically so a synthesis failure (bad LLM quota, timeout, rejected schema) doesn't discard the evidence. If signals are missing, check the transaction ordering in `apps/content-worker/src/pipeline/trend-research.ts` hasn't regressed — see [phase1-signal-intelligence-report.md](phase1-signal-intelligence-report.md) §3.4 for the original bug.
+**Signals missing after a failed trend-research run** — should never happen post-fix: signals are persisted in their own transaction _before_ synthesis runs, specifically so a synthesis failure (bad LLM quota, timeout, rejected schema) doesn't discard the evidence. If signals are missing, check the transaction ordering in `apps/content-worker/src/pipeline/trend-research.ts` hasn't regressed — see [phase1-signal-intelligence-report.md](phase1-signal-intelligence-report.md) §3.4 for the original bug.

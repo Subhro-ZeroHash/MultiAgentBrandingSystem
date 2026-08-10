@@ -195,11 +195,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Note this bounds the caller's wait, not the provider's work: pass the job's
  * AbortSignal into the adapter as well so the request itself is cancelled.
  */
-export async function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  label: string,
-): Promise<T> {
+export async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([

@@ -115,7 +115,13 @@ const RELEVANCE_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['poolItemIndex', 'brandRelevance', 'industryRelevance', 'geographicRelevance', 'whyItMatters'],
+        required: [
+          'poolItemIndex',
+          'brandRelevance',
+          'industryRelevance',
+          'geographicRelevance',
+          'whyItMatters',
+        ],
         properties: {
           poolItemIndex: {
             type: 'integer',
@@ -123,11 +129,11 @@ const RELEVANCE_SCHEMA = {
           },
           brandRelevance: {
             type: 'number',
-            description: '0-100. How directly this affects this brand\'s business, not its content.',
+            description: "0-100. How directly this affects this brand's business, not its content.",
           },
           industryRelevance: {
             type: 'number',
-            description: '0-100. How much this matters to this brand\'s specific industry.',
+            description: "0-100. How much this matters to this brand's specific industry.",
           },
           geographicRelevance: {
             type: 'number',
@@ -335,7 +341,8 @@ const COMPETITOR_SYNTHESIS_SCHEMA = {
           title: { type: 'string', description: 'Short, specific — names what actually happened.' },
           summary: {
             type: 'string',
-            description: 'What actually happened, grounded in the search results above. 2-4 sentences.',
+            description:
+              'What actually happened, grounded in the search results above. 2-4 sentences.',
           },
           whyItMatters: {
             type: 'string',
@@ -357,11 +364,12 @@ const COMPETITOR_SYNTHESIS_SCHEMA = {
             properties: {
               brandRelevance: {
                 type: 'number',
-                description: '0-100. How directly this affects this brand\'s business, not its content.',
+                description:
+                  "0-100. How directly this affects this brand's business, not its content.",
               },
               industryRelevance: {
                 type: 'number',
-                description: '0-100. How much this matters to this brand\'s specific industry.',
+                description: "0-100. How much this matters to this brand's specific industry.",
               },
               geographicRelevance: {
                 type: 'number',
@@ -382,7 +390,8 @@ const COMPETITOR_SYNTHESIS_SCHEMA = {
               required: ['url', 'title'],
               properties: { url: { type: 'string' }, title: { type: ['string', 'null'] } },
             },
-            description: 'Only URLs that actually appear in the search results above. Never invent one.',
+            description:
+              'Only URLs that actually appear in the search results above. Never invent one.',
           },
         },
       },
@@ -487,7 +496,10 @@ async function synthesizeCompetitorItemsOnce(
 }
 
 /** Same fabrication guard as the old `verifyIntelligenceSources`. */
-export function verifyCompetitorSources(sources: TrendSource[], signal: CollectedSignal): TrendSource[] {
+export function verifyCompetitorSources(
+  sources: TrendSource[],
+  signal: CollectedSignal,
+): TrendSource[] {
   const known = new Set(signal.results.map((r) => r.url));
   return sources.filter((source) => known.has(source.url));
 }
@@ -516,15 +528,22 @@ export async function runIntelligenceResearch(
 
   await ctx.db
     .update(schema.intelligenceRuns)
-    .set({ status: 'running', startedAt: sql`coalesce(${schema.intelligenceRuns.startedAt}, now())` })
+    .set({
+      status: 'running',
+      startedAt: sql`coalesce(${schema.intelligenceRuns.startedAt}, now())`,
+    })
     .where(eq(schema.intelligenceRuns.id, run.id));
 
-  console.warn(`[intelligence-research] starting run ${run.id} for brand ${brand.id} ("${brand.name}")`);
+  console.warn(
+    `[intelligence-research] starting run ${run.id} for brand ${brand.id} ("${brand.name}")`,
+  );
 
   try {
     const brandContext = await getTrendContext(ctx.db, brand.id);
     const categoryKey = await ensureBrandCategoryKey(ctx, brand);
-    console.warn(`[intelligence-research] run ${run.id}: brand category resolved to '${categoryKey}'`);
+    console.warn(
+      `[intelligence-research] run ${run.id}: brand category resolved to '${categoryKey}'`,
+    );
 
     const [categoryPool, nationalPool] = await Promise.all([
       ensureFreshIntelligencePool(ctx, { scope: 'category', category: categoryKey }),
@@ -565,26 +584,28 @@ export async function runIntelligenceResearch(
             );
             await recordCost(ctx, brand.id, run.id, cost);
 
-            return resolveIntelligenceRelevanceDrafts(drafts, poolItems).map(({ poolItem, draft }) => {
-              const modelScore: IntelligenceModelScore = {
-                brandRelevance: draft.brandRelevance,
-                industryRelevance: draft.industryRelevance,
-                geographicRelevance: draft.geographicRelevance,
-                recency: poolItem.score.recency,
-                businessImpact: poolItem.score.businessImpact,
-              };
-              return {
-                runId: run.id,
-                poolItemId: poolItem.id,
-                category: poolItem.category,
-                title: poolItem.title,
-                summary: poolItem.summary,
-                whyItMatters: draft.whyItMatters,
-                urgency: poolItem.urgency,
-                score: { ...modelScore, overall: computeIntelligenceScore(modelScore) },
-                sources: poolItem.sources,
-              };
-            });
+            return resolveIntelligenceRelevanceDrafts(drafts, poolItems).map(
+              ({ poolItem, draft }) => {
+                const modelScore: IntelligenceModelScore = {
+                  brandRelevance: draft.brandRelevance,
+                  industryRelevance: draft.industryRelevance,
+                  geographicRelevance: draft.geographicRelevance,
+                  recency: poolItem.score.recency,
+                  businessImpact: poolItem.score.businessImpact,
+                };
+                return {
+                  runId: run.id,
+                  poolItemId: poolItem.id,
+                  category: poolItem.category,
+                  title: poolItem.title,
+                  summary: poolItem.summary,
+                  whyItMatters: draft.whyItMatters,
+                  urgency: poolItem.urgency,
+                  score: { ...modelScore, overall: computeIntelligenceScore(modelScore) },
+                  sources: poolItem.sources,
+                };
+              },
+            );
           })();
 
     const competitorRows = competitorQuery

@@ -7,7 +7,13 @@ import { entityIdSchema, partialForUpdate } from './common.js';
  * both workstream owners' review.
  */
 
-export const toneOfVoiceSchema = z.enum(['friendly', 'premium', 'playful', 'traditional', 'elegant']);
+export const toneOfVoiceSchema = z.enum([
+  'friendly',
+  'premium',
+  'playful',
+  'traditional',
+  'elegant',
+]);
 export type ToneOfVoice = z.infer<typeof toneOfVoiceSchema>;
 
 export const hexColorSchema = z

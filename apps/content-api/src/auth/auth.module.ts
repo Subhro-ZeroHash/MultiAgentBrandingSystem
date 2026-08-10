@@ -17,7 +17,9 @@ import { JwtStrategy } from './jwt.strategy.js';
         // than plain `string`, which zod has no equivalent for — narrowed
         // here rather than loosening the env schema's type for everyone.
         const signOptions: JwtModuleOptions['signOptions'] = {
-          expiresIn: env.AUTH_TOKEN_TTL as NonNullable<JwtModuleOptions['signOptions']>['expiresIn'],
+          expiresIn: env.AUTH_TOKEN_TTL as NonNullable<
+            JwtModuleOptions['signOptions']
+          >['expiresIn'],
         };
         return { secret: env.AUTH_SECRET, signOptions };
       },

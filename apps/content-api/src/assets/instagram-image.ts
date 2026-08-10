@@ -34,9 +34,7 @@ export interface InstagramCanvas {
 /** True when Instagram would reject or resample the image as-is. */
 export function needsInstagramFit(width: number, height: number): boolean {
   const ratio = width / height;
-  return (
-    ratio < INSTAGRAM_MIN_RATIO || ratio > INSTAGRAM_MAX_RATIO || width > INSTAGRAM_MAX_WIDTH
-  );
+  return ratio < INSTAGRAM_MIN_RATIO || ratio > INSTAGRAM_MAX_RATIO || width > INSTAGRAM_MAX_WIDTH;
 }
 
 /**

@@ -254,15 +254,17 @@ export function extractColors(html: string, stylesheets: readonly string[]): Sit
     if (hex) add(hex, 'primary', 150);
   }
 
-  return [...totals.entries()]
-    .map(([hex, { weight, role }]) => ({ hex, weight, role }))
-    // Chromatic colours first, then by weight: a brand's palette is what the
-    // brief wants, and neutrals would otherwise take every slot.
-    .sort((a, b) => {
-      const neutrality = Number(isNeutral(a.hex)) - Number(isNeutral(b.hex));
-      return neutrality !== 0 ? neutrality : b.weight - a.weight;
-    })
-    .slice(0, 12);
+  return (
+    [...totals.entries()]
+      .map(([hex, { weight, role }]) => ({ hex, weight, role }))
+      // Chromatic colours first, then by weight: a brand's palette is what the
+      // brief wants, and neutrals would otherwise take every slot.
+      .sort((a, b) => {
+        const neutrality = Number(isNeutral(a.hex)) - Number(isNeutral(b.hex));
+        return neutrality !== 0 ? neutrality : b.weight - a.weight;
+      })
+      .slice(0, 12)
+  );
 }
 
 /** The chromatic colours, in rank order — what actually reaches the Brand Kit's
@@ -593,29 +595,33 @@ function decodeEntities(value: string): string {
  *  style bodies must go first — a minified bundle is mostly punctuation and
  *  would swamp the excerpt with noise the analyser then tries to read. */
 export function visibleText(html: string): string {
-  return decodeEntities(
-    html
-      .replace(/<(script|style|noscript|template|svg|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<br\b[^>]*>/gi, '\n')
-      .replace(/<\/(p|div|section|li|h[1-6]|tr)>/gi, '\n')
-      .replace(/<[^>]+>/g, ' '),
-  )
-    // The class holds a non-breaking space, written as an escape rather than the
-    // literal character: a decoded &nbsp; is invisible in source and trips
-    // no-irregular-whitespace, but it is exactly what needs collapsing here.
-    .replace(/[ \t\u00a0]+/g, ' ')
-    .replace(/\n\s*\n\s*\n+/g, '\n\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .join('\n')
-    .trim();
+  return (
+    decodeEntities(
+      html
+        .replace(/<(script|style|noscript|template|svg|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+        .replace(/<!--[\s\S]*?-->/g, ' ')
+        .replace(/<br\b[^>]*>/gi, '\n')
+        .replace(/<\/(p|div|section|li|h[1-6]|tr)>/gi, '\n')
+        .replace(/<[^>]+>/g, ' '),
+    )
+      // The class holds a non-breaking space, written as an escape rather than the
+      // literal character: a decoded &nbsp; is invisible in source and trips
+      // no-irregular-whitespace, but it is exactly what needs collapsing here.
+      .replace(/[ \t\u00a0]+/g, ' ')
+      .replace(/\n\s*\n\s*\n+/g, '\n\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .join('\n')
+      .trim()
+  );
 }
 
 export function extractHeadings(html: string): string[] {
   const headings: string[] = [];
   for (const [, , inner] of html.matchAll(/<(h[1-3])\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
-    const text = visibleText(inner ?? '').replace(/\s+/g, ' ').trim();
+    const text = visibleText(inner ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (text && text.length <= 300 && !headings.includes(text)) headings.push(text);
     if (headings.length >= MAX_HEADINGS) break;
   }

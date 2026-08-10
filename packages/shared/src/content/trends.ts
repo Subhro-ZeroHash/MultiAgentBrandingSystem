@@ -354,9 +354,7 @@ export type TrendOpportunity = z.infer<typeof trendOpportunitySchema>;
 export const updateTrendOpportunityStatusSchema = z.object({
   status: z.enum(['saved', 'ignored', 'working_on']),
 });
-export type UpdateTrendOpportunityStatusInput = z.infer<
-  typeof updateTrendOpportunityStatusSchema
->;
+export type UpdateTrendOpportunityStatusInput = z.infer<typeof updateTrendOpportunityStatusSchema>;
 
 // ---------------------------------------------------------------------------
 // Trend Research Runs

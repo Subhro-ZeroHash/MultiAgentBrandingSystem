@@ -224,9 +224,7 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     },
     geminiImageModel: env.IMAGE_MODEL_GEMINI,
     falEditModel: env.IMAGE_MODEL_FAL_EDIT,
-    ...(env.IMAGE_STUB_LATENCY_MS
-      ? { stubImageLatencyMs: Number(env.IMAGE_STUB_LATENCY_MS) }
-      : {}),
+    ...(env.IMAGE_STUB_LATENCY_MS ? { stubImageLatencyMs: Number(env.IMAGE_STUB_LATENCY_MS) } : {}),
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
     imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,
     llmProvider: env.LLM_PROVIDER as LlmProviderName | undefined,

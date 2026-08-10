@@ -333,10 +333,7 @@ export const assetEditsRelations = relations(assetEdits, ({ one }) => ({
   }),
 }));
 
-export const socialPlatform = content.enum('social_platform', [
-  'instagram',
-  'facebook',
-]);
+export const socialPlatform = content.enum('social_platform', ['instagram', 'facebook']);
 
 export const socialAccountStatus = content.enum('social_account_status', [
   'active',
@@ -733,7 +730,10 @@ export const trendOpportunities = content.table(
     autoTriggeredAt: timestamp('auto_triggered_at', { withTimezone: true }),
     /** The 3 generation jobs auto-trigger created, for the UI's "Recommended
      *  Content" section to link to and poll without a separate lookup. */
-    generationJobIds: jsonb('generation_job_ids').$type<AutoTriggeredJobRef[]>().notNull().default([]),
+    generationJobIds: jsonb('generation_job_ids')
+      .$type<AutoTriggeredJobRef[]>()
+      .notNull()
+      .default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('trend_opportunities_run_idx').on(t.runId)],
@@ -1018,11 +1018,7 @@ export const intelligenceCategory = content.enum('intelligence_category', [
   'local',
 ]);
 
-export const intelligenceUrgency = content.enum('intelligence_urgency', [
-  'low',
-  'medium',
-  'high',
-]);
+export const intelligenceUrgency = content.enum('intelligence_urgency', ['low', 'medium', 'high']);
 
 export const intelligenceItemStatus = content.enum('intelligence_item_status', [
   'new',
@@ -1107,7 +1103,10 @@ export const intelligenceRunsRelations = relations(intelligenceRuns, ({ one, man
 }));
 
 export const intelligenceItemsRelations = relations(intelligenceItems, ({ one }) => ({
-  run: one(intelligenceRuns, { fields: [intelligenceItems.runId], references: [intelligenceRuns.id] }),
+  run: one(intelligenceRuns, {
+    fields: [intelligenceItems.runId],
+    references: [intelligenceRuns.id],
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -1267,11 +1266,7 @@ export const poolIntelligenceRuns = content.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('pool_intelligence_runs_scope_category_created_idx').on(
-      t.scope,
-      t.category,
-      t.createdAt,
-    ),
+    index('pool_intelligence_runs_scope_category_created_idx').on(t.scope, t.category, t.createdAt),
     index('pool_intelligence_runs_expires_idx').on(t.expiresAt),
     uniqueIndex('pool_intelligence_runs_one_active_per_bucket_idx')
       .on(t.scope, t.category)

@@ -340,7 +340,12 @@ export class GenerationsService {
         thumbnailStorageKey: schema.creativeAssets.thumbnailStorageKey,
       })
       .from(schema.creativeAssets)
-      .where(inArray(schema.creativeAssets.jobId, jobs.map((job) => job.id)))
+      .where(
+        inArray(
+          schema.creativeAssets.jobId,
+          jobs.map((job) => job.id),
+        ),
+      )
       .orderBy(schema.creativeAssets.createdAt);
 
     const thumbnailByJob = new Map<string, string>();

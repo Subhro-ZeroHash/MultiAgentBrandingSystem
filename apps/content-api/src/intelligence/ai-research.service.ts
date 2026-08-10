@@ -132,7 +132,8 @@ export class AiResearchService {
             // into one query keeps this to the single search a chat-style
             // answer can afford — unlike trend/intelligence research, there
             // is no multi-category fan-out here.
-            query: `${question} ${brandContext.identity.industry ?? ''} ${brandContext.identity.location ?? ''}`.trim(),
+            query:
+              `${question} ${brandContext.identity.industry ?? ''} ${brandContext.identity.location ?? ''}`.trim(),
             topic: 'general',
             recencyDays: 30,
             maxResults: RESULTS_PER_SEARCH,

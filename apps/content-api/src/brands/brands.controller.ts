@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import {
   createBrandKitSchema,
   createProductSchema,
@@ -79,10 +90,7 @@ export class BrandsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(createBrandKitSchema)) body: unknown,
   ) {
-    return this.brands.create(
-      req.user.id,
-      body as Parameters<BrandsService['create']>[1],
-    );
+    return this.brands.create(req.user.id, body as Parameters<BrandsService['create']>[1]);
   }
 
   @Delete(':id')
@@ -114,11 +122,7 @@ export class BrandsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateBrandContextSchema)) body: unknown,
   ) {
-    return this.context.updateContext(
-      id,
-      req.user.id,
-      body as UpdateBrandContextInput,
-    );
+    return this.context.updateContext(id, req.user.id, body as UpdateBrandContextInput);
   }
 
   /** Re-derives context from the applied website import. Named `refresh`
@@ -176,10 +180,7 @@ export class BrandsController {
   }
 
   @Get(':id/automation-settings')
-  getAutomationSettings(
-    @Param('id') id: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  getAutomationSettings(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.automation.getSettings(id, req.user.id);
   }
 
@@ -189,11 +190,7 @@ export class BrandsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateAutomationSettingsSchema)) body: unknown,
   ) {
-    return this.automation.updateSettings(
-      id,
-      req.user.id,
-      body as UpdateAutomationSettingsInput,
-    );
+    return this.automation.updateSettings(id, req.user.id, body as UpdateAutomationSettingsInput);
   }
 
   @Get(':id/products')
@@ -223,11 +220,6 @@ export class BrandsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(productImageUploadSchema)) body: unknown,
   ) {
-    return this.brands.addProductImage(
-      id,
-      productId,
-      req.user.id,
-      body as ProductImageUploadInput,
-    );
+    return this.brands.addProductImage(id, productId, req.user.id, body as ProductImageUploadInput);
   }
 }

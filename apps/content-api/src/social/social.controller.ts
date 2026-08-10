@@ -1,4 +1,14 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Request, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { SocialService } from './social.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
@@ -45,10 +55,7 @@ export class SocialController {
   }
 
   @Delete('accounts/:id')
-  async disconnectAccount(
-    @Param('id') accountId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  async disconnectAccount(@Param('id') accountId: string, @Request() req: AuthenticatedRequest) {
     const resolvedUserId = req.user.id;
     await this.social.disconnectAccount(accountId, resolvedUserId);
     return { success: true };
@@ -71,7 +78,10 @@ export class SocialController {
       resolvedUserId,
       // An asset id lets the server build a URL Meta can reach; a raw imageUrl
       // has to already be public.
-      { ...(body.assetId ? { assetId: body.assetId } : {}), ...(body.imageUrl ? { imageUrl: body.imageUrl } : {}) },
+      {
+        ...(body.assetId ? { assetId: body.assetId } : {}),
+        ...(body.imageUrl ? { imageUrl: body.imageUrl } : {}),
+      },
       body.caption,
     );
   }

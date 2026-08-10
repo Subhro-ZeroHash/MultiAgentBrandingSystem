@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildTrendPoolQueries, clipPoolItemCounts, resolvePoolItemSignals } from './trend-pool-refresh.js';
+import {
+  buildTrendPoolQueries,
+  clipPoolItemCounts,
+  resolvePoolItemSignals,
+} from './trend-pool-refresh.js';
 
 describe('buildTrendPoolQueries', () => {
   it('builds two category-scoped queries for a category bucket', () => {

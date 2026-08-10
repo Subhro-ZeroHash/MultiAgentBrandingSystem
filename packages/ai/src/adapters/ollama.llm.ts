@@ -197,10 +197,7 @@ export class OllamaLlmAdapter implements LlmService {
    * Ollama doesn't support JSON schema validation, so the prompt must
    * explicitly ask for valid JSON and the caller must parse it.
    */
-  async generateJson<T>(
-    req: LlmJsonRequest<T>,
-    ctx?: ProviderContext,
-  ): Promise<ProviderResult<T>> {
+  async generateJson<T>(req: LlmJsonRequest<T>, ctx?: ProviderContext): Promise<ProviderResult<T>> {
     this.require();
 
     // The schema still goes in the prompt so the model knows which fields to

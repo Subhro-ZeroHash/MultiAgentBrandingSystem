@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import {
   requestTrendResearchSchema,
   scheduleTrendOpportunitySchema,
@@ -25,11 +35,7 @@ export class TrendsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(requestTrendResearchSchema)) body: unknown,
   ) {
-    return this.trends.startResearch(
-      brandId,
-      req.user.id,
-      body as RequestTrendResearchInput,
-    );
+    return this.trends.startResearch(brandId, req.user.id, body as RequestTrendResearchInput);
   }
 
   @Get()
@@ -46,10 +52,7 @@ export class TrendsController {
   }
 
   @Get(':runId')
-  getOne(
-    @Param('runId') runId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  getOne(@Param('runId') runId: string, @Request() req: AuthenticatedRequest) {
     return this.trends.getRun(runId, req.user.id);
   }
 
@@ -58,10 +61,7 @@ export class TrendsController {
    *  transparency/debugging surface for "why did the platform think this
    *  mattered". */
   @Get(':runId/signals')
-  getSignals(
-    @Param('runId') runId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  getSignals(@Param('runId') runId: string, @Request() req: AuthenticatedRequest) {
     return this.trends.getSignals(runId, req.user.id);
   }
 

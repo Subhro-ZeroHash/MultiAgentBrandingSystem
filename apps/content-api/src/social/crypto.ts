@@ -19,7 +19,7 @@ export class TokenEncryption {
     if (keyHex.length !== KEY_HEX || !/^[0-9a-fA-F]+$/.test(keyHex)) {
       throw new Error(
         `ENCRYPTION_KEY must be ${KEY_HEX} hex characters (32 bytes). ` +
-          'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+          "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
       );
     }
     this.key = Buffer.from(keyHex, 'hex');

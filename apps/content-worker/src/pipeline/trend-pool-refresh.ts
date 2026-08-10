@@ -255,7 +255,8 @@ const SYNTHESIS_SCHEMA = {
           title: { type: 'string', description: 'Short, specific — names the actual opportunity.' },
           summary: {
             type: 'string',
-            description: 'What this opportunity actually is, grounded in the clustered signals. 2-4 sentences.',
+            description:
+              'What this opportunity actually is, grounded in the clustered signals. 2-4 sentences.',
           },
           recommendation: {
             type: 'string',
@@ -275,11 +276,12 @@ const SYNTHESIS_SCHEMA = {
                 type: 'number',
                 description:
                   '0-100. How much genuine attention this has right now — weigh how many signals ' +
-                  'support it and from how many different providers, not just one result\'s wording.',
+                  "support it and from how many different providers, not just one result's wording.",
               },
               freshness: {
                 type: 'number',
-                description: '0-100. How current it is — days-old scores far higher than evergreen.',
+                description:
+                  '0-100. How current it is — days-old scores far higher than evergreen.',
               },
               marketingPotential: {
                 type: 'number',
@@ -325,7 +327,8 @@ const SYNTHESIS_SCHEMA = {
               offerText: { type: ['string', 'null'], description: 'Max 40 characters.' },
               extraInstructions: {
                 type: ['string', 'null'],
-                description: 'The opportunity\'s real context, written as direction to a designer. Max 500 characters.',
+                description:
+                  "The opportunity's real context, written as direction to a designer. Max 500 characters.",
               },
             },
           },
@@ -401,7 +404,7 @@ async function synthesizePoolItemsOnce(
                     'campaignType, styleTemplate and outputFormat that best fit each opportunity in ' +
                     'general — these prefill an actual generation request once a business picks this ' +
                     'up, so they must be genuinely apt for the opportunity, not a default. Put the ' +
-                    'opportunity\'s real context into `extraInstructions`, written as direction to a ' +
+                    "opportunity's real context into `extraInstructions`, written as direction to a " +
                     'designer who has not seen the signals: name the event/topic and why it matters.',
                 ].join('\n'),
               },
@@ -483,7 +486,9 @@ export async function runTrendPoolRefresh(
   if (!run) throw new Error(`Pool trend run ${job.runId} not found`);
 
   const bucket: TrendPoolBucket =
-    job.scope === 'national' ? { scope: 'national' } : { scope: 'category', category: job.category! };
+    job.scope === 'national'
+      ? { scope: 'national' }
+      : { scope: 'category', category: job.category! };
 
   await ctx.db
     .update(schema.poolTrendRuns)
@@ -495,7 +500,9 @@ export async function runTrendPoolRefresh(
 
   try {
     const queries = buildTrendPoolQueries(bucket);
-    console.warn(`[trend-pool-refresh] run ${run.id}: searching ${queries.length} quer${queries.length === 1 ? 'y' : 'ies'} across ${ctx.ai.configuredWebSearches().length} provider(s)...`);
+    console.warn(
+      `[trend-pool-refresh] run ${run.id}: searching ${queries.length} quer${queries.length === 1 ? 'y' : 'ies'} across ${ctx.ai.configuredWebSearches().length} provider(s)...`,
+    );
     const signals = await collectPoolSignals(ctx, run.id, queries);
     console.warn(`[trend-pool-refresh] run ${run.id}: collected ${signals.length} signals`);
 
@@ -521,7 +528,9 @@ export async function runTrendPoolRefresh(
       if (signalRows.length) await tx.insert(schema.poolTrendSignals).values(signalRows);
     });
 
-    console.warn(`[trend-pool-refresh] run ${run.id}: synthesizing opportunities from ${signals.length} signals...`);
+    console.warn(
+      `[trend-pool-refresh] run ${run.id}: synthesizing opportunities from ${signals.length} signals...`,
+    );
     const { items: drafts, cost } = await synthesizePoolItems(ctx, run.id, bucket, signals);
     await recordCost(ctx, run.id, cost);
 
@@ -564,7 +573,9 @@ export async function runTrendPoolRefresh(
         })
         .where(eq(schema.poolTrendRuns.id, run.id));
     });
-    console.warn(`[trend-pool-refresh] run ${run.id} succeeded: ${itemRows.length} pool items (${bucketLabel})`);
+    console.warn(
+      `[trend-pool-refresh] run ${run.id} succeeded: ${itemRows.length} pool items (${bucketLabel})`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[trend-pool-refresh] run ${run.id} failed: ${message}`);

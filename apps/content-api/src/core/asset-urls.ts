@@ -72,17 +72,18 @@ export function createAssetUrls(config: AssetUrlConfig): AssetUrls {
 
   // Signing targets the public host, but fetching bytes is this process talking
   // to storage directly, so it takes the internal route.
-  const readClient = config.endpoint === urlEndpoint
-    ? client
-    : new S3Client({
-        region: config.region,
-        forcePathStyle: config.forcePathStyle,
-        credentials: {
-          accessKeyId: config.accessKeyId,
-          secretAccessKey: config.secretAccessKey,
-        },
-        ...(config.endpoint ? { endpoint: config.endpoint } : {}),
-      });
+  const readClient =
+    config.endpoint === urlEndpoint
+      ? client
+      : new S3Client({
+          region: config.region,
+          forcePathStyle: config.forcePathStyle,
+          credentials: {
+            accessKeyId: config.accessKeyId,
+            secretAccessKey: config.secretAccessKey,
+          },
+          ...(config.endpoint ? { endpoint: config.endpoint } : {}),
+        });
 
   const sign = (storageKey: string): Promise<string> =>
     getSignedUrl(client, new GetObjectCommand({ Bucket: config.bucket, Key: storageKey }), {

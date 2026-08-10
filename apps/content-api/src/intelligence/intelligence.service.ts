@@ -37,10 +37,7 @@ export class IntelligenceService {
   async startResearch(brandId: string, ownerId: string) {
     await this.assertBrandOwned(brandId, ownerId);
 
-    const [run] = await this.db
-      .insert(schema.intelligenceRuns)
-      .values({ brandId })
-      .returning();
+    const [run] = await this.db.insert(schema.intelligenceRuns).values({ brandId }).returning();
     if (!run) throw new Error('Insert returned no row');
 
     try {

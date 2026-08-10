@@ -4,3 +4,13 @@ dist
 .turbo
 coverage
 pnpm-lock.yaml
+
+# Drizzle output. `pnpm db:generate` writes these and rewrites them on the next
+# schema change, so formatting them is churn that comes straight back — and
+# hand-editing anything under migrations/ is forbidden outright (CLAUDE.md).
+packages/db/migrations
+
+# Nested checkouts of this same repo, created by `git worktree`. Already
+# excluded from git, but Prettier walks the filesystem rather than the index
+# and would otherwise check every file in the tree a second time.
+.claude/worktrees

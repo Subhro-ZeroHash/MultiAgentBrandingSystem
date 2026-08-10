@@ -1,5 +1,20 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { creativeEditRequestSchema, creativeRequestSchema, type CreativeRequest } from '@bmas/shared';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  creativeEditRequestSchema,
+  creativeRequestSchema,
+  type CreativeRequest,
+} from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
@@ -38,11 +53,7 @@ export class GenerationsController {
         'Idempotency-Key header is required and must be 8–128 characters of [A-Za-z0-9._-]',
       );
     }
-    return this.generations.enqueue(
-      body as CreativeRequest,
-      idempotencyKey,
-      req.user.id,
-    );
+    return this.generations.enqueue(body as CreativeRequest, idempotencyKey, req.user.id);
   }
 
   @Get(':id')

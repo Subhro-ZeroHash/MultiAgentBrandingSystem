@@ -7,24 +7,24 @@
 
 ## 1. Audit summary — what was checked, and its state before this pass
 
-| Item | Before this pass |
-|---|---|
-| Brand Brain / Brand Memory | ✅ Implemented (prior session) |
-| Context Manager | ✅ Implemented (prior session) |
-| Active Brand Context | ✅ Implemented (prior session) |
-| Autonomous "set it and forget it" research | ✅ Implemented (prior session) — BullMQ repeatable, every 10h |
-| Existing Tavily integration | ✅ Implemented |
-| Separate Leads / Business Intelligence system | ✅ Implemented (prior session) |
-| AI research prompt box | ✅ Implemented (prior session) |
-| BullMQ + Redis autonomous scheduling | ✅ Implemented (prior session) |
-| Provider failure handling | ✅ `withRetry`/`withTimeout`/quota classification — solid, no circuit breaker |
-| **Signal-based trend intelligence** | ❌ Missing — stored one-shot "ideas," not evidentiary signals |
-| **SerpApi integration** | ❌ Missing entirely |
-| **Future TikTok/YouTube/IG/FB/Reddit providers** | ❌ No interface, no stubs |
-| **Signal normalization and aggregation** | ❌ Missing |
-| **Brand-aware opportunity scoring** | ⚠️ Partial — scored ideas, not aggregated cross-source signals |
-| Trend → Content → QA → Scheduling → Publishing | ⚠️ Partial — stopped at one-shot `/create`, never reached scheduling |
-| End-to-end acceptance tests | ❌ None existed anywhere in the repo |
+| Item                                             | Before this pass                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------------------- |
+| Brand Brain / Brand Memory                       | ✅ Implemented (prior session)                                                |
+| Context Manager                                  | ✅ Implemented (prior session)                                                |
+| Active Brand Context                             | ✅ Implemented (prior session)                                                |
+| Autonomous "set it and forget it" research       | ✅ Implemented (prior session) — BullMQ repeatable, every 10h                 |
+| Existing Tavily integration                      | ✅ Implemented                                                                |
+| Separate Leads / Business Intelligence system    | ✅ Implemented (prior session)                                                |
+| AI research prompt box                           | ✅ Implemented (prior session)                                                |
+| BullMQ + Redis autonomous scheduling             | ✅ Implemented (prior session)                                                |
+| Provider failure handling                        | ✅ `withRetry`/`withTimeout`/quota classification — solid, no circuit breaker |
+| **Signal-based trend intelligence**              | ❌ Missing — stored one-shot "ideas," not evidentiary signals                 |
+| **SerpApi integration**                          | ❌ Missing entirely                                                           |
+| **Future TikTok/YouTube/IG/FB/Reddit providers** | ❌ No interface, no stubs                                                     |
+| **Signal normalization and aggregation**         | ❌ Missing                                                                    |
+| **Brand-aware opportunity scoring**              | ⚠️ Partial — scored ideas, not aggregated cross-source signals                |
+| Trend → Content → QA → Scheduling → Publishing   | ⚠️ Partial — stopped at one-shot `/create`, never reached scheduling          |
+| End-to-end acceptance tests                      | ❌ None existed anywhere in the repo                                          |
 
 This pass closed every ❌ and ⚠️ except the deliberately-deferred social provider stubs (see §9).
 
@@ -90,6 +90,7 @@ Storing only the conclusion means every past judgment is an unauditable black bo
 Two new tables replace `trend_ideas` (dropped, not migrated — this was a clean create/drop, confirmed via drizzle-kit's interactive resolver, not a lossy rename):
 
 **`trend_signals`** — raw evidence, one row per search result, before any AI judgment:
+
 ```
 id, run_id, source (text: 'tavily' | 'serpapi' | future),
 signal_type (text: 'news_mention' | 'event_proximity' | 'social_trend_mention'),
@@ -101,6 +102,7 @@ created_at
 `source` and `signal_type` are `text`, not database enums — deliberately. Adding a provider later (Bing, Reddit, a paid social-listening contract) is new rows under this same shape, not a migration. The vocabulary lives in `SignalSource`/`SignalType` in `@bmas/shared`, which is where it should grow.
 
 **`trend_opportunities`** — the AI's conclusion after clustering:
+
 ```
 id, run_id, topic, category, title, summary, recommendation, content_type,
 score (jsonb: 5 axes + computed overall), signal_count, sources (derived,
@@ -111,7 +113,7 @@ not model-generated), suggested_request, status, created_at
 
 ### 3.3 Pipeline (`apps/content-worker/src/pipeline/trend-research.ts`, 736 lines)
 
-1. **Collect** — the same three category queries as before (industry/news, events/festivals, social-trend-approximation), now fanned out across *every configured search provider* via `ai.configuredWebSearches()`. With only Tavily configured, behavior is unchanged; with SerpApi added, each query runs against both, and a topic both surface independently is treated as stronger evidence in the `popularity` scoring axis.
+1. **Collect** — the same three category queries as before (industry/news, events/festivals, social-trend-approximation), now fanned out across _every configured search provider_ via `ai.configuredWebSearches()`. With only Tavily configured, behavior is unchanged; with SerpApi added, each query runs against both, and a topic both surface independently is treated as stronger evidence in the `popularity` scoring axis.
 2. **Persist signals immediately** — in their own transaction, before synthesis runs. See §3.4 for why this specific ordering was a live bug fix, not a design choice made up front.
 3. **Cluster** — one LLM call (`orchestrator` role) given the full numbered signal list, asked to cluster related signals into up to 8 opportunities, each carrying `signalIndexes` referencing which signals back it.
 4. **Resolve** (`resolveOpportunitySignals`, pure and tested) — validates the model's `signalIndexes` against the real signal array: out-of-range or duplicate indexes are dropped, not trusted; an opportunity left with zero valid signals after filtering is dropped entirely, since an opportunity with no evidence is exactly the "manufactured to fill a quota" failure the prompt is told not to produce.
@@ -239,17 +241,20 @@ Live boot: `content-api` and `content-worker` both start with zero errors. Live-
 ## 12. Files changed
 
 **New files** (backend):
+
 - `packages/ai/src/adapters/serpapi.search.ts` + `.test.ts`
 - `packages/db/migrations/0018_smooth_lockjaw.sql` (+ meta snapshot)
 - `e2e/acceptance.mts`, `e2e/README.md`, `e2e/package.json`
 - `docs/phase1-signal-intelligence-report.md` (this file)
 
 **Rewritten**:
+
 - `apps/content-worker/src/pipeline/trend-research.ts` (736 lines — signal collect + cluster pipeline)
 - `apps/content-worker/src/pipeline/trend-research.test.ts` (new pure-function coverage: `resolveOpportunitySignals`, `clipOpportunityCounts`)
 - `packages/shared/src/content/trends.ts` (signal/opportunity contracts)
 
 **Modified**:
+
 - `packages/db/src/schema/content.ts` (`trend_signals` + `trend_opportunities` replace `trend_ideas`)
 - `packages/db/src/context/context-manager.ts` (`loadRecentTopics`/`loadCurrentTrend` read opportunities)
 - `packages/ai/src/registry.ts`, `packages/ai/src/pricing.ts` (SerpApi wiring, `configuredWebSearches()`)

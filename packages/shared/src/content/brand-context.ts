@@ -93,12 +93,11 @@ export const updateBrandContextSchema = partialForUpdate(
     createdAt: true,
     updatedAt: true,
   }),
-)
-  .extend({
-    /** Sent by the review screen's confirm action. Marks the context as
-     *  human-owned, which locks the website importer out of it. */
-    confirm: z.boolean().optional(),
-  });
+).extend({
+  /** Sent by the review screen's confirm action. Marks the context as
+   *  human-owned, which locks the website importer out of it. */
+  confirm: z.boolean().optional(),
+});
 export type UpdateBrandContextInput = z.infer<typeof updateBrandContextSchema>;
 
 // ---------------------------------------------------------------------------
@@ -250,7 +249,13 @@ export function nextResearchAt(
 // Context snapshots (what an agent was told)
 // ---------------------------------------------------------------------------
 
-export const agentTypeSchema = z.enum(['trend', 'intelligence', 'strategy', 'content', 'performance']);
+export const agentTypeSchema = z.enum([
+  'trend',
+  'intelligence',
+  'strategy',
+  'content',
+  'performance',
+]);
 export type AgentType = z.infer<typeof agentTypeSchema>;
 
 export const contextSnapshotSchema = z.object({

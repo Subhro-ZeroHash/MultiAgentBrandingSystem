@@ -18,13 +18,7 @@ import { entityIdSchema } from './common.js';
  * the brief wants two or three accent colours, not a full design system, and a
  * background misread as an accent produces a poster washed in off-white.
  */
-export const siteColorRoleSchema = z.enum([
-  'primary',
-  'secondary',
-  'accent',
-  'background',
-  'text',
-]);
+export const siteColorRoleSchema = z.enum(['primary', 'secondary', 'accent', 'background', 'text']);
 export type SiteColorRole = z.infer<typeof siteColorRoleSchema>;
 
 export const siteColorSchema = z.object({

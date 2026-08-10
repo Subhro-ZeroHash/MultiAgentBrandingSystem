@@ -42,8 +42,5 @@ export interface WebSearchService {
    *  spending a round trip on a request that will only fail. */
   isConfigured(): boolean;
 
-  search(
-    req: WebSearchRequest,
-    ctx?: ProviderContext,
-  ): Promise<ProviderResult<WebSearchResult[]>>;
+  search(req: WebSearchRequest, ctx?: ProviderContext): Promise<ProviderResult<WebSearchResult[]>>;
 }

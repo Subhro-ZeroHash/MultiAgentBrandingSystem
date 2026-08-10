@@ -181,9 +181,9 @@ describe('retryAfterMs', () => {
   });
 
   it('reads a Retry-After header in seconds', () => {
-    expect(retryAfterMs(Object.assign(new Error('slow down'), { headers: { 'retry-after': '5' } }))).toBe(
-      5_000,
-    );
+    expect(
+      retryAfterMs(Object.assign(new Error('slow down'), { headers: { 'retry-after': '5' } })),
+    ).toBe(5_000);
   });
 
   it('returns undefined when the provider gives no guidance', () => {

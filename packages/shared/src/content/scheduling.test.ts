@@ -83,9 +83,10 @@ describe('computeScheduleSlots', () => {
     expect(slots).toHaveLength(10);
     for (let i = 1; i < slots.length; i++) {
       const gapMinutes = (slots[i]!.getTime() - slots[i - 1]!.getTime()) / 60_000;
-      expect(gapMinutes, `slots ${i - 1}->${i} are only ${gapMinutes}m apart`).toBeGreaterThanOrEqual(
-        180,
-      );
+      expect(
+        gapMinutes,
+        `slots ${i - 1}->${i} are only ${gapMinutes}m apart`,
+      ).toBeGreaterThanOrEqual(180);
     }
   });
 

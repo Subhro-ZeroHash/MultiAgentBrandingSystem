@@ -385,7 +385,10 @@ export class SchedulingService {
       .from(schema.scheduledPosts)
       .where(
         status
-          ? and(eq(schema.scheduledPosts.brandId, brandId), eq(schema.scheduledPosts.status, status))
+          ? and(
+              eq(schema.scheduledPosts.brandId, brandId),
+              eq(schema.scheduledPosts.status, status),
+            )
           : eq(schema.scheduledPosts.brandId, brandId),
       )
       .orderBy(schema.scheduledPosts.scheduledFor);
@@ -490,7 +493,9 @@ export class SchedulingService {
   async pauseCampaign(campaignId: string, ownerId: string) {
     const campaign = await this.loadOwnedCampaign(campaignId, ownerId);
     if (campaign.status !== 'active') {
-      throw new BadRequestException(`Only an active campaign can be paused (this one is ${campaign.status}).`);
+      throw new BadRequestException(
+        `Only an active campaign can be paused (this one is ${campaign.status}).`,
+      );
     }
 
     const posts = await this.db
@@ -521,7 +526,9 @@ export class SchedulingService {
   async resumeCampaign(campaignId: string, ownerId: string) {
     const campaign = await this.loadOwnedCampaign(campaignId, ownerId);
     if (campaign.status !== 'paused') {
-      throw new BadRequestException(`Only a paused campaign can be resumed (this one is ${campaign.status}).`);
+      throw new BadRequestException(
+        `Only a paused campaign can be resumed (this one is ${campaign.status}).`,
+      );
     }
 
     const now = new Date();
@@ -564,10 +571,7 @@ export class SchedulingService {
           `sched-${campaign.id}-resume-${post.id}-${now.getTime()}`,
           ownerId,
           {
-            delayMs: Math.max(
-              0,
-              post.scheduledFor.getTime() - GENERATION_LEAD_MS - now.getTime(),
-            ),
+            delayMs: Math.max(0, post.scheduledFor.getTime() - GENERATION_LEAD_MS - now.getTime()),
           },
         );
 

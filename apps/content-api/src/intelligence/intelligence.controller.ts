@@ -1,5 +1,18 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { updateIntelligenceItemStatusSchema, type UpdateIntelligenceItemStatusInput } from '@bmas/shared';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  updateIntelligenceItemStatusSchema,
+  type UpdateIntelligenceItemStatusInput,
+} from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
@@ -13,10 +26,7 @@ export class IntelligenceController {
   /** "Refresh My Intelligence Feed." Returns immediately with the queued run;
    *  the client polls GET /runs/:runId the same way it polls trend research. */
   @Post('runs')
-  start(
-    @Param('brandId') brandId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  start(@Param('brandId') brandId: string, @Request() req: AuthenticatedRequest) {
     return this.intelligence.startResearch(brandId, req.user.id);
   }
 
@@ -34,10 +44,7 @@ export class IntelligenceController {
   }
 
   @Get('runs/:runId')
-  getRun(
-    @Param('runId') runId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  getRun(@Param('runId') runId: string, @Request() req: AuthenticatedRequest) {
     return this.intelligence.getRun(runId, req.user.id);
   }
 
@@ -56,10 +63,7 @@ export class IntelligenceController {
    *  IntelligenceService.getStatus. What the client checks on screen focus
    *  instead of always kicking off a new run. */
   @Get('status')
-  getStatus(
-    @Param('brandId') brandId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  getStatus(@Param('brandId') brandId: string, @Request() req: AuthenticatedRequest) {
     return this.intelligence.getStatus(brandId, req.user.id);
   }
 

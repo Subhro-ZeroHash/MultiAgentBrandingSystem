@@ -16,11 +16,6 @@ import { BrandsService } from './brands.service.js';
   // Exported because the Brand Brain is read from outside this module: the
   // website importer refreshes context after an apply, and the trend and
   // scheduling flows will read projections rather than reassembling them.
-  exports: [
-    BrandsService,
-    BrandContextService,
-    BrandPreferencesService,
-    AutomationSettingsService,
-  ],
+  exports: [BrandsService, BrandContextService, BrandPreferencesService, AutomationSettingsService],
 })
 export class BrandsModule {}

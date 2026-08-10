@@ -75,9 +75,7 @@ export function createStorage(config: StorageConfig): Storage {
     },
 
     async get(key) {
-      const result = await client.send(
-        new GetObjectCommand({ Bucket: config.bucket, Key: key }),
-      );
+      const result = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }));
       if (!result.Body) throw new Error(`Object ${key} has no body`);
       return Buffer.from(await result.Body.transformToByteArray());
     },

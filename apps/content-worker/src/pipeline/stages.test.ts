@@ -14,9 +14,7 @@ import { composeBrief, type StageContext } from './stages.js';
  */
 
 interface FakeRows {
-  product?:
-    | { name: string; description: string | null; sellingPoints?: string[] }
-    | undefined;
+  product?: { name: string; description: string | null; sellingPoints?: string[] } | undefined;
   /** Whether the product has at least one reference photo on file. */
   hasImage?: boolean;
 }
@@ -101,7 +99,8 @@ const siteIdentity = {
     'A vibrant, eclectic palette contrasting sunny yellow and bold red against deep navy. ' +
     'Rounded humanist sans-serifs for body, stylised display letterforms for headings.',
   colorUsage: 'Deep navy carries most of the page, with sunny yellow reserved for calls to action.',
-  typography: 'A rounded humanist sans with wide apertures, set at 400 for body and 700 for headings.',
+  typography:
+    'A rounded humanist sans with wide apertures, set at 400 for body and 700 for headings.',
   imageryStyle: 'Bright, even, punchy lighting with vivid saturation and shallow depth.',
   brandPersonality: 'Cheerful and irreverent, a little maximalist, never precious about itself.',
   voiceSummary: 'Upbeat and conversational, short punchy sentences, playful puns.',
@@ -363,7 +362,9 @@ describe('composeBrief', () => {
     it('says nothing about a logo when none is applied', async () => {
       const brief = await composeBrief(context({}));
       expect(brief.prompt).not.toMatch(/logo is attached/i);
-      expect(brief.prompt).toContain('Do not invent logo marks, emblems, packaging labels, or shop signage.');
+      expect(brief.prompt).toContain(
+        'Do not invent logo marks, emblems, packaging labels, or shop signage.',
+      );
     });
 
     it('instructs placement and reproduction when a logo is applied', async () => {
@@ -420,7 +421,12 @@ describe('composeBrief', () => {
       contentPillars: ['behind the scenes', 'customer stories'],
       rejectedPatterns: ['make the background lighter', 'remove the extra text'],
       learnings: [
-        { type: 'visual_style', summary: 'Product-focused creatives outperform lifestyle ones.', value: null, confidence: 0.7 },
+        {
+          type: 'visual_style',
+          summary: 'Product-focused creatives outperform lifestyle ones.',
+          value: null,
+          confidence: 0.7,
+        },
       ],
     } as unknown as StageContext['brandMemory'];
 
@@ -439,7 +445,7 @@ describe('composeBrief', () => {
       expect(brief.prompt).toMatch(/not as things to depict/);
     });
 
-    it("carries forward corrections the user already asked for", async () => {
+    it('carries forward corrections the user already asked for', async () => {
       const brief = await composeBrief(context({ brandMemory: memory }));
       expect(brief.prompt).toContain('make the background lighter');
       expect(brief.prompt).toContain('remove the extra text');

@@ -95,10 +95,12 @@ export async function runAssetEdit(ctx: WorkerContext, job: ContentEditJob): Pro
 
     const { value: result, cost } = await withRetry(() =>
       withTimeout(
-        ctx.ai.imageGenerator().edit(
-          { image, mediaType, instruction: edit.instruction },
-          { referenceId: source.jobId, brandId: genJob.brandId },
-        ),
+        ctx.ai
+          .imageGenerator()
+          .edit(
+            { image, mediaType, instruction: edit.instruction },
+            { referenceId: source.jobId, brandId: genJob.brandId },
+          ),
         EDIT_TIMEOUT_MS,
         'image:edit',
       ),

@@ -173,9 +173,7 @@ export async function runScheduledPostPublish(
     const body: unknown = await response.json().catch(() => null);
 
     if (!response.ok) {
-      throw new Error(
-        (body as { message?: string } | null)?.message ?? `HTTP ${response.status}`,
-      );
+      throw new Error((body as { message?: string } | null)?.message ?? `HTTP ${response.status}`);
     }
 
     const postId = (body as { postId?: unknown } | null)?.postId;

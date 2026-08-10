@@ -54,7 +54,10 @@ function sleep(ms: number): Promise<void> {
 
 export type PoolBucketInput = { scope: 'category'; category: CategoryKey } | { scope: 'national' };
 
-function bucketColumns(bucket: PoolBucketInput): { scope: PoolRunScope; category: CategoryKey | null } {
+function bucketColumns(bucket: PoolBucketInput): {
+  scope: PoolRunScope;
+  category: CategoryKey | null;
+} {
   return bucket.scope === 'national'
     ? { scope: 'national', category: null }
     : { scope: 'category', category: bucket.category };
@@ -84,7 +87,9 @@ async function findFreshTrendRun(
     .where(
       and(
         eq(schema.poolTrendRuns.scope, scope),
-        category === null ? isNull(schema.poolTrendRuns.category) : eq(schema.poolTrendRuns.category, category),
+        category === null
+          ? isNull(schema.poolTrendRuns.category)
+          : eq(schema.poolTrendRuns.category, category),
         eq(schema.poolTrendRuns.status, 'succeeded'),
         gte(schema.poolTrendRuns.expiresAt, new Date()),
       ),
@@ -113,18 +118,26 @@ async function reapStalledTrendRun(
   const cutoff = new Date(Date.now() - STALLED_RUN_TIMEOUT_MS);
   const reaped = await ctx.db
     .update(schema.poolTrendRuns)
-    .set({ status: 'failed', error: 'stalled: exceeded run timeout, presumed crashed', finishedAt: new Date() })
+    .set({
+      status: 'failed',
+      error: 'stalled: exceeded run timeout, presumed crashed',
+      finishedAt: new Date(),
+    })
     .where(
       and(
         eq(schema.poolTrendRuns.scope, scope),
-        category === null ? isNull(schema.poolTrendRuns.category) : eq(schema.poolTrendRuns.category, category),
+        category === null
+          ? isNull(schema.poolTrendRuns.category)
+          : eq(schema.poolTrendRuns.category, category),
         or(eq(schema.poolTrendRuns.status, 'queued'), eq(schema.poolTrendRuns.status, 'running')),
         lt(schema.poolTrendRuns.createdAt, cutoff),
       ),
     )
     .returning({ id: schema.poolTrendRuns.id });
   if (reaped[0]) {
-    console.warn(`[pool-loader] trend pool '${label}' had a stalled run (${reaped[0].id}), marking it failed`);
+    console.warn(
+      `[pool-loader] trend pool '${label}' had a stalled run (${reaped[0].id}), marking it failed`,
+    );
     return true;
   }
   return false;
@@ -158,11 +171,15 @@ export async function ensureFreshTrendPool(
     if (await reapStalledTrendRun(ctx, scope, category, label)) {
       return ensureFreshTrendPool(ctx, bucket);
     }
-    console.warn(`[pool-loader] trend pool '${label}' is already being refreshed elsewhere — waiting...`);
+    console.warn(
+      `[pool-loader] trend pool '${label}' is already being refreshed elsewhere — waiting...`,
+    );
     return pollForFreshTrendRun(ctx, scope, category);
   }
 
-  console.warn(`[pool-loader] trend pool '${label}' is stale/missing — running inline refresh (run ${runId})`);
+  console.warn(
+    `[pool-loader] trend pool '${label}' is stale/missing — running inline refresh (run ${runId})`,
+  );
   // Propagates on failure — Layer B should fail loudly rather than proceed
   // with no data when its bucket's refresh genuinely fails.
   await runTrendPoolRefresh(ctx, { runId, scope, category });
@@ -188,7 +205,9 @@ async function pollForFreshTrendRun(
       .where(
         and(
           eq(schema.poolTrendRuns.scope, scope),
-          category === null ? isNull(schema.poolTrendRuns.category) : eq(schema.poolTrendRuns.category, category),
+          category === null
+            ? isNull(schema.poolTrendRuns.category)
+            : eq(schema.poolTrendRuns.category, category),
         ),
       )
       .orderBy(desc(schema.poolTrendRuns.createdAt))
@@ -255,20 +274,29 @@ async function reapStalledIntelligenceRun(
   const cutoff = new Date(Date.now() - STALLED_RUN_TIMEOUT_MS);
   const reaped = await ctx.db
     .update(schema.poolIntelligenceRuns)
-    .set({ status: 'failed', error: 'stalled: exceeded run timeout, presumed crashed', finishedAt: new Date() })
+    .set({
+      status: 'failed',
+      error: 'stalled: exceeded run timeout, presumed crashed',
+      finishedAt: new Date(),
+    })
     .where(
       and(
         eq(schema.poolIntelligenceRuns.scope, scope),
         category === null
           ? isNull(schema.poolIntelligenceRuns.category)
           : eq(schema.poolIntelligenceRuns.category, category),
-        or(eq(schema.poolIntelligenceRuns.status, 'queued'), eq(schema.poolIntelligenceRuns.status, 'running')),
+        or(
+          eq(schema.poolIntelligenceRuns.status, 'queued'),
+          eq(schema.poolIntelligenceRuns.status, 'running'),
+        ),
         lt(schema.poolIntelligenceRuns.createdAt, cutoff),
       ),
     )
     .returning({ id: schema.poolIntelligenceRuns.id });
   if (reaped[0]) {
-    console.warn(`[pool-loader] intelligence pool '${label}' had a stalled run (${reaped[0].id}), marking it failed`);
+    console.warn(
+      `[pool-loader] intelligence pool '${label}' had a stalled run (${reaped[0].id}), marking it failed`,
+    );
     return true;
   }
   return false;

@@ -1,4 +1,13 @@
-import { Controller, Get, Param, Query, Res, NotFoundException, ForbiddenException, GoneException } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Query,
+  Res,
+  NotFoundException,
+  ForbiddenException,
+  GoneException,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { eq, schema, type Database } from '@bmas/db';
 import { Inject } from '@nestjs/common';
@@ -34,7 +43,9 @@ export class AssetsController {
   ): Promise<void> {
     const { ENCRYPTION_KEY } = loadEnv();
     if (!ENCRYPTION_KEY) {
-      throw new ForbiddenException('Asset links are unavailable: ENCRYPTION_KEY is not configured.');
+      throw new ForbiddenException(
+        'Asset links are unavailable: ENCRYPTION_KEY is not configured.',
+      );
     }
 
     const variant: AssetVariant = v === 'ig' ? 'ig' : 'raw';

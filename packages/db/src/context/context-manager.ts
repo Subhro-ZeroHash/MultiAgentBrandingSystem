@@ -1,10 +1,5 @@
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
-import type {
-  ApprovalPolicy,
-  BrandCompetitor,
-  SiteAnalysis,
-  TrendFrequency,
-} from '@bmas/shared';
+import type { ApprovalPolicy, BrandCompetitor, SiteAnalysis, TrendFrequency } from '@bmas/shared';
 import type { Database } from '../client.js';
 import * as schema from '../schema/index.js';
 
@@ -319,12 +314,7 @@ async function loadRejectedPatterns(db: Database, brandId: string): Promise<stri
     .from(schema.assetEdits)
     .innerJoin(schema.creativeAssets, eq(schema.assetEdits.rootAssetId, schema.creativeAssets.id))
     .innerJoin(schema.generationJobs, eq(schema.creativeAssets.jobId, schema.generationJobs.id))
-    .where(
-      and(
-        eq(schema.generationJobs.brandId, brandId),
-        gte(schema.assetEdits.createdAt, since),
-      ),
-    )
+    .where(and(eq(schema.generationJobs.brandId, brandId), gte(schema.assetEdits.createdAt, since)))
     .orderBy(desc(schema.assetEdits.createdAt))
     .limit(MAX_REJECTED_PATTERNS);
 
@@ -356,10 +346,7 @@ export interface TrendTaskContext {
  * Everything about *what business this is and what it wants*; nothing about how
  * it looks. A trend query cares about the market, not the palette.
  */
-export async function getTrendContext(
-  db: Database,
-  brandId: string,
-): Promise<TrendTaskContext> {
+export async function getTrendContext(db: Database, brandId: string): Promise<TrendTaskContext> {
   const [brand, stated, products, recentTopics, learnings] = await Promise.all([
     loadBrandRow(db, brandId),
     loadStatedContext(db, brandId),
@@ -708,12 +695,7 @@ export async function recordContextSnapshot(
 // ---------------------------------------------------------------------------
 
 /** What the user did. Each maps to a different confidence, below. */
-export type FeedbackKind =
-  | 'approved'
-  | 'rejected'
-  | 'regenerated'
-  | 'edited'
-  | 'variant_selected';
+export type FeedbackKind = 'approved' | 'rejected' | 'regenerated' | 'edited' | 'variant_selected';
 
 /**
  * How much one action of each kind is worth, 0-1.
@@ -820,9 +802,7 @@ export async function recordFeedbackSignal(
  * as "unspecified" — a labelled blank still spends tokens and still invites the
  * model to fill it in.
  */
-export function renderBrandContextLines(
-  context: TrendTaskContext | ContentTaskContext,
-): string[] {
+export function renderBrandContextLines(context: TrendTaskContext | ContentTaskContext): string[] {
   const lines: string[] = [];
   const { identity } = context;
 
@@ -842,7 +822,9 @@ export function renderBrandContextLines(
   if ('competitors' in context && context.competitors.length) {
     lines.push(
       `Competitors: ${context.competitors
-        .map((competitor) => (competitor.note ? `${competitor.name} (${competitor.note})` : competitor.name))
+        .map((competitor) =>
+          competitor.note ? `${competitor.name} (${competitor.note})` : competitor.name,
+        )
         .join(', ')}.`,
     );
   }

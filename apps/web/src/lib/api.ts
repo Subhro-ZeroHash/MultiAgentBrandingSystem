@@ -36,7 +36,10 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
       .clone()
       .json()
       .then((body: unknown) =>
-        typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string'
+        typeof body === 'object' &&
+        body !== null &&
+        'message' in body &&
+        typeof body.message === 'string'
           ? body.message
           : null,
       )
@@ -48,7 +51,8 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
 }
 
 export const contentApi = {
-  get: <T>(path: string, headers?: Record<string, string>) => request<T>(CONTENT_API, path, { headers }),
+  get: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>(CONTENT_API, path, { headers }),
   post: <T>(path: string, body: unknown, headers?: Record<string, string>) =>
     request<T>(CONTENT_API, path, { method: 'POST', body: JSON.stringify(body), headers }),
   patch: <T>(path: string, body: unknown, headers?: Record<string, string>) =>

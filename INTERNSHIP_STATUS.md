@@ -5,6 +5,7 @@
 ## Project Overview
 
 Multi-Agent Brand System: a TypeScript + Node.js monorepo holding two products that share a Brand Kit:
+
 - **Creative Content Agent** (content-api + content-worker) — generates social media creatives
 - **GEO visibility tracker** (geo-api + geo-worker) — measures brand perception
 - **Brand Brain** ✨ (new) — persistent context and learning system
@@ -26,12 +27,14 @@ Multi-Agent Brand System: a TypeScript + Node.js monorepo holding two products t
 #### Deliverables
 
 **Schema & Database**
+
 - 4 new tables: `brand_context`, `brand_preferences`, `automation_settings`, `context_snapshots`
 - 2 migrations: `0015_awesome_firebrand.sql`, `0016_red_ender_wiggin.sql`
 - 6 strategic indexes (on type, kind, learned_from, created_at)
 - Zero orphan data, zero unindexed foreign keys
 
 **Code**
+
 - Context Manager (400+ lines): 4 retrieval functions + 2 recording functions
 - BrandContextService, BrandPreferencesService, AutomationSettingsService
 - 9 new REST endpoints for brand context management
@@ -39,6 +42,7 @@ Multi-Agent Brand System: a TypeScript + Node.js monorepo holding two products t
 - 284 total passing tests (275 pre-existing + 9 new)
 
 **Integration**
+
 - Trend research: calls getTrendContext(), filters repeat suggestions
 - Content generation: calls getContentContext(), threads through all stages
 - Feedback capture: records approvals/rejections/regenerations/edits
@@ -46,11 +50,13 @@ Multi-Agent Brand System: a TypeScript + Node.js monorepo holding two products t
 - Snapshots: correlates context to jobs for auditing
 
 **UI**
+
 - Brand Brain screen: context completeness, learned preferences, activity timeline
 - Automation settings: posting times, account connections, research cadence
 - Snapshot audit log: full chain of reasoning for any generation
 
 **Testing & Verification**
+
 - Full monorepo passes: typecheck, lint, build, test
 - 4 tests pin feedback confidence invariants
 - 5 tests verify brand memory reaches briefs
@@ -135,15 +141,19 @@ Multi-Agent Brand System: a TypeScript + Node.js monorepo holding two products t
 ## What This Enables
 
 ### Phase 2: Quality Metrics
+
 Measure how brand memory influenced outcomes — do generations using learned preferences pass QA more often?
 
 ### Phase 3: Automated Style Discovery
+
 Analyze preference logs to extract patterns: "This brand prefers 3:1 aspect ratios" (from variant selections).
 
 ### Phase 4: Brand Analyzer
+
 Periodic summaries: "Your brand seems to prefer these posting times" / "You've rejected educational content 7 times".
 
 ### Phase 5: Cross-Brand Synthesis
+
 Find patterns across all brands — which visual styles are common in luxury? What tone do tech brands prefer?
 
 ## Known Limitations & Open Questions
@@ -174,15 +184,15 @@ Find patterns across all brands — which visual styles are common in luxury? Wh
 
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `docs/brand-brain-system.md` | Full technical documentation |
-| `docs/Brand-Brain-Report.docx` | Executive summary (DOCX format) |
-| `packages/db/src/context/context-manager.ts` | Core system |
-| `packages/db/src/context/context-manager.test.ts` | Invariant tests |
-| `apps/content-api/src/brands/*.service.ts` | API services |
-| `apps/content-worker/src/pipeline/*.ts` | Worker pipeline integration |
-| `packages/db/migrations/001*.sql` | Schema (migrations 15–16) |
+| File                                              | Purpose                         |
+| ------------------------------------------------- | ------------------------------- |
+| `docs/brand-brain-system.md`                      | Full technical documentation    |
+| `docs/Brand-Brain-Report.docx`                    | Executive summary (DOCX format) |
+| `packages/db/src/context/context-manager.ts`      | Core system                     |
+| `packages/db/src/context/context-manager.test.ts` | Invariant tests                 |
+| `apps/content-api/src/brands/*.service.ts`        | API services                    |
+| `apps/content-worker/src/pipeline/*.ts`           | Worker pipeline integration     |
+| `packages/db/migrations/001*.sql`                 | Schema (migrations 15–16)       |
 
 ## Team Notes
 

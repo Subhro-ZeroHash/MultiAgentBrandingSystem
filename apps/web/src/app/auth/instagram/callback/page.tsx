@@ -25,7 +25,10 @@ interface CallbackParams {
 
 async function connect(params: CallbackParams): Promise<{ ok: boolean; message: string }> {
   if (params.error || params.error_description) {
-    return { ok: false, message: params.error_description ?? params.error ?? 'Sign-in was cancelled.' };
+    return {
+      ok: false,
+      message: params.error_description ?? params.error ?? 'Sign-in was cancelled.',
+    };
   }
   if (!params.code || !params.state) {
     return { ok: false, message: 'Instagram did not return an authorization code.' };
@@ -52,7 +55,10 @@ async function connect(params: CallbackParams): Promise<{ ok: boolean; message: 
       message: `Connected ${body?.displayName ?? 'your account'}. You can close this tab and return to the app.`,
     };
   } catch {
-    return { ok: false, message: `Could not reach the API at ${CONTENT_API_URL}. Is content-api running?` };
+    return {
+      ok: false,
+      message: `Could not reach the API at ${CONTENT_API_URL}. Is content-api running?`,
+    };
   }
 }
 

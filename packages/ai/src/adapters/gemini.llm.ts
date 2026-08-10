@@ -238,7 +238,10 @@ export class GeminiLlmAdapter implements LlmService {
     };
   }
 
-  async analyzeImage(req: LlmVisionRequest, ctx?: ProviderContext): Promise<ProviderResult<string>> {
+  async analyzeImage(
+    req: LlmVisionRequest,
+    ctx?: ProviderContext,
+  ): Promise<ProviderResult<string>> {
     const model = this.modelFor(req.role);
     const startedAt = Date.now();
 

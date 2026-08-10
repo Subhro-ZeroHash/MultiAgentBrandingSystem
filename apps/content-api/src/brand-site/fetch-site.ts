@@ -24,8 +24,7 @@ const MAX_REDIRECTS = 4;
 
 /** Identifies the fetcher honestly. Some CDNs serve a challenge page to a
  *  blank or scripted UA, which reads back as an empty document. */
-const USER_AGENT =
-  'BMASBrandImporter/1.0 (+brand-kit import; contact your BMAS administrator)';
+const USER_AGENT = 'BMASBrandImporter/1.0 (+brand-kit import; contact your BMAS administrator)';
 
 export interface FetchedSite {
   /** After redirects — relative URLs resolve against this, not the input. */

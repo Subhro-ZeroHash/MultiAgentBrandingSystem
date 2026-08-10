@@ -42,7 +42,9 @@ describe('clipIntelligencePoolCounts', () => {
 
   it('clips each item to 5 sources', () => {
     const raw = {
-      items: [{ title: 'a', sources: Array.from({ length: 8 }, (_unused, i) => ({ url: `u${i}` })) }],
+      items: [
+        { title: 'a', sources: Array.from({ length: 8 }, (_unused, i) => ({ url: `u${i}` })) },
+      ],
     };
     const clipped = clipIntelligencePoolCounts(raw) as { items: Array<{ sources: unknown[] }> };
     expect(clipped.items[0]?.sources).toHaveLength(5);
@@ -50,14 +52,20 @@ describe('clipIntelligencePoolCounts', () => {
 
   it('passes through anything that is not the expected shape rather than throwing', () => {
     expect(clipIntelligencePoolCounts(null)).toBeNull();
-    expect(clipIntelligencePoolCounts({ items: 'not an array' })).toEqual({ items: 'not an array' });
+    expect(clipIntelligencePoolCounts({ items: 'not an array' })).toEqual({
+      items: 'not an array',
+    });
   });
 });
 
 describe('verifyPoolSources', () => {
-  const signals = [{ category: 'local' as const, request: { query: 'x' }, results: [
-    { url: 'https://real.example/a', title: 'A', snippet: '', publishedAt: null },
-  ] }];
+  const signals = [
+    {
+      category: 'local' as const,
+      request: { query: 'x' },
+      results: [{ url: 'https://real.example/a', title: 'A', snippet: '', publishedAt: null }],
+    },
+  ];
 
   it('keeps a source whose URL actually appears in the search results', () => {
     const kept = verifyPoolSources([{ url: 'https://real.example/a', title: 'A' }], signals);

@@ -290,10 +290,12 @@ export class BrandsService {
       .from(schema.products)
       .where(and(eq(schema.products.id, productId), eq(schema.products.brandId, brandId)))
       .limit(1);
-    if (!product) throw new NotFoundException(`Product ${productId} not found for brand ${brandId}`);
+    if (!product)
+      throw new NotFoundException(`Product ${productId} not found for brand ${brandId}`);
 
     const bytes = Buffer.from(input.base64, 'base64');
-    if (bytes.length === 0) throw new BadRequestException('Image data is empty or not valid base64.');
+    if (bytes.length === 0)
+      throw new BadRequestException('Image data is empty or not valid base64.');
     if (bytes.length > MAX_IMAGE_BYTES) {
       throw new BadRequestException('Image exceeds the maximum size (12 MB).');
     }

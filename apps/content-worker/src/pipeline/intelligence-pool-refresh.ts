@@ -33,8 +33,7 @@ const RESULTS_PER_QUERY = 6;
 const MAX_SNIPPET_CHARS = 500;
 
 export type IntelligencePoolBucket =
-  | { scope: 'category'; category: CategoryKey }
-  | { scope: 'national' };
+  { scope: 'category'; category: CategoryKey } | { scope: 'national' };
 
 interface CollectedSignal {
   category: PoolableIntelligenceCategory;
@@ -201,7 +200,8 @@ const SYNTHESIS_SCHEMA = {
           title: { type: 'string', description: 'Short, specific — names what actually happened.' },
           summary: {
             type: 'string',
-            description: 'What actually happened, grounded in the search results above. 2-4 sentences.',
+            description:
+              'What actually happened, grounded in the search results above. 2-4 sentences.',
           },
           urgency: { enum: ['low', 'medium', 'high'] },
           score: {
@@ -226,7 +226,8 @@ const SYNTHESIS_SCHEMA = {
               required: ['url', 'title'],
               properties: { url: { type: 'string' }, title: { type: ['string', 'null'] } },
             },
-            description: 'Only URLs that actually appear in the search results above. Never invent one.',
+            description:
+              'Only URLs that actually appear in the search results above. Never invent one.',
           },
         },
       },
@@ -326,7 +327,10 @@ async function synthesizePoolItemsOnce(
 
 /** Same fabrication guard as intelligence-research.ts's
  *  `verifyIntelligenceSources`. */
-export function verifyPoolSources(sources: TrendSource[], signals: CollectedSignal[]): TrendSource[] {
+export function verifyPoolSources(
+  sources: TrendSource[],
+  signals: CollectedSignal[],
+): TrendSource[] {
   const known = new Set(signals.flatMap((signal) => signal.results.map((r) => r.url)));
   return sources.filter((source) => known.has(source.url));
 }
@@ -343,7 +347,9 @@ export async function runIntelligencePoolRefresh(
   if (!run) throw new Error(`Pool intelligence run ${job.runId} not found`);
 
   const bucket: IntelligencePoolBucket =
-    job.scope === 'national' ? { scope: 'national' } : { scope: 'category', category: job.category! };
+    job.scope === 'national'
+      ? { scope: 'national' }
+      : { scope: 'category', category: job.category! };
 
   await ctx.db
     .update(schema.poolIntelligenceRuns)
@@ -358,9 +364,13 @@ export async function runIntelligencePoolRefresh(
 
   try {
     const queries = buildIntelligencePoolQueries(bucket);
-    console.warn(`[intelligence-pool-refresh] run ${run.id}: searching ${queries.length} categor${queries.length === 1 ? 'y' : 'ies'}...`);
+    console.warn(
+      `[intelligence-pool-refresh] run ${run.id}: searching ${queries.length} categor${queries.length === 1 ? 'y' : 'ies'}...`,
+    );
     const signals = await collectPoolSignals(ctx, run.id, queries);
-    console.warn(`[intelligence-pool-refresh] run ${run.id}: synthesizing items from search results...`);
+    console.warn(
+      `[intelligence-pool-refresh] run ${run.id}: synthesizing items from search results...`,
+    );
 
     const { items, cost } = await synthesizePoolItems(ctx, run.id, bucket, signals);
     await recordCost(ctx, run.id, cost);
@@ -394,7 +404,9 @@ export async function runIntelligencePoolRefresh(
         })
         .where(eq(schema.poolIntelligenceRuns.id, run.id));
     });
-    console.warn(`[intelligence-pool-refresh] run ${run.id} succeeded: ${rows.length} pool items (${bucketLabel})`);
+    console.warn(
+      `[intelligence-pool-refresh] run ${run.id} succeeded: ${rows.length} pool items (${bucketLabel})`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[intelligence-pool-refresh] run ${run.id} failed: ${message}`);

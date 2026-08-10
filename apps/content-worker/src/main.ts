@@ -33,7 +33,10 @@ await ctx.storage.ensureBucket();
 console.warn(`[content-worker] LLM provider: ${ctx.ai.llm().provider}`);
 console.warn(
   `[content-worker] web search providers configured: ${
-    ctx.ai.configuredWebSearches().map((s) => s.provider).join(', ') || '(none)'
+    ctx.ai
+      .configuredWebSearches()
+      .map((s) => s.provider)
+      .join(', ') || '(none)'
   }`,
 );
 
@@ -188,7 +191,8 @@ researchSchedulerWorker.on('failed', (job, error) => {
 
 const poolSchedulerWorker = new Worker(
   QUEUES.poolScheduler,
-  async () => runPoolSchedulerTick(ctx, trendPoolResearchProducer, intelligencePoolResearchProducer),
+  async () =>
+    runPoolSchedulerTick(ctx, trendPoolResearchProducer, intelligencePoolResearchProducer),
   { connection: ctx.redis, concurrency: 1 },
 );
 
@@ -224,9 +228,7 @@ async function shutdown(signal: string): Promise<void> {
   console.warn(`content-worker received ${signal}, draining...`);
 
   const forced = setTimeout(() => {
-    console.error(
-      `content-worker did not drain within ${SHUTDOWN_GRACE_MS}ms — exiting anyway`,
-    );
+    console.error(`content-worker did not drain within ${SHUTDOWN_GRACE_MS}ms — exiting anyway`);
     process.exit(1);
   }, SHUTDOWN_GRACE_MS);
   forced.unref();

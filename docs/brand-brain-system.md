@@ -12,13 +12,13 @@ signal-based trend intelligence rebuild that came after this, see
 
 The Brand Brain is a persistent context and memory system that transforms the Creative Content Agent from a stateless generator into a learning system. Instead of treating each generation as an isolated event, every brand now maintains an accumulated knowledge base — its identity, goals, positioning, learned preferences, and rejected patterns — that informs all future creative work.
 
-| Aspect | Before | After |
-|--------|--------|-------|
-| **Context** | Only website identity + latest trend | Full brand kit: goals, positioning, pillars, competitors, products, audience, learned preferences, rejected patterns |
-| **Memory** | None; every generation started fresh | Append-only preference log: rejections, regenerations, edits, approvals captured with confidence scoring |
-| **Prompts** | Generic, brand-agnostic | Personalized: every brief includes brand positioning, content pillars, learned patterns, and learned rejections |
-| **Feedback loop** | Closed; user corrections never informed future work | Open; approvals, rejections, and regenerations recorded and surfaced in the next generation's prompt |
-| **Data structure** | Transient | 4 tables: `brand_context`, `brand_preferences`, `automation_settings`, `context_snapshots` |
+| Aspect             | Before                                              | After                                                                                                                |
+| ------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Context**        | Only website identity + latest trend                | Full brand kit: goals, positioning, pillars, competitors, products, audience, learned preferences, rejected patterns |
+| **Memory**         | None; every generation started fresh                | Append-only preference log: rejections, regenerations, edits, approvals captured with confidence scoring             |
+| **Prompts**        | Generic, brand-agnostic                             | Personalized: every brief includes brand positioning, content pillars, learned patterns, and learned rejections      |
+| **Feedback loop**  | Closed; user corrections never informed future work | Open; approvals, rejections, and regenerations recorded and surfaced in the next generation's prompt                 |
+| **Data structure** | Transient                                           | 4 tables: `brand_context`, `brand_preferences`, `automation_settings`, `context_snapshots`                           |
 
 ## Three-layer memory model
 
@@ -27,6 +27,7 @@ The Brand Brain is a persistent context and memory system that transforms the Cr
 **2. Dynamic (recent activity)** — time-bounded, cleared by recency. Recent trends (30 days), recent publishing (7 days). Prevents prompt pollution and keeps briefs focused on now.
 
 **3. Learned (preferences)** — append-only feedback log with confidence scoring:
+
 - Rejected patterns (0.5) — what to stop doing
 - Regeneration summaries (0.5) — what to change
 - Edit notes (0.45) — specific corrections

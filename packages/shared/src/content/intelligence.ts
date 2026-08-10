@@ -135,9 +135,7 @@ export type RequestIntelligenceResearchInput = z.infer<typeof requestIntelligenc
 export const updateIntelligenceItemStatusSchema = z.object({
   status: z.enum(['read', 'saved', 'dismissed']),
 });
-export type UpdateIntelligenceItemStatusInput = z.infer<
-  typeof updateIntelligenceItemStatusSchema
->;
+export type UpdateIntelligenceItemStatusInput = z.infer<typeof updateIntelligenceItemStatusSchema>;
 
 /**
  * How long a brand's Intelligence feed stays "fresh" before the client

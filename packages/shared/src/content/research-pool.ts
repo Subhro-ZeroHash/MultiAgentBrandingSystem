@@ -201,9 +201,7 @@ export interface PoolBucket {
 
 export function allPoolBuckets(): PoolBucket[] {
   return [
-    ...categoryKeySchema.options.map(
-      (category): PoolBucket => ({ scope: 'category', category }),
-    ),
+    ...categoryKeySchema.options.map((category): PoolBucket => ({ scope: 'category', category })),
     { scope: 'national', category: null },
   ];
 }

@@ -25,7 +25,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/geo" className="text-[var(--color-muted)] hover:text-[var(--color-ink)]">
               GEO
             </Link>
-            <Link href="/trends" className="text-[var(--color-muted)] hover:text-[var(--color-ink)]">
+            <Link
+              href="/trends"
+              className="text-[var(--color-muted)] hover:text-[var(--color-ink)]"
+            >
               Trends
             </Link>
           </nav>

@@ -70,8 +70,7 @@ function redisConnection() {
     },
     {
       provide: SCHEDULED_POST_PUBLISH_QUEUE,
-      useFactory: () =>
-        new Queue(QUEUES.scheduledPostPublish, { connection: redisConnection() }),
+      useFactory: () => new Queue(QUEUES.scheduledPostPublish, { connection: redisConnection() }),
     },
     {
       provide: TREND_RESEARCH_QUEUE,

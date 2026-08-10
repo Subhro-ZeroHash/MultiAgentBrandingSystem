@@ -58,9 +58,10 @@ describe('composeCaption', () => {
       const result = composeCaption(
         copy({ caption: 'x'.repeat(size), hashtags: ['#tag'.repeat(size % 50)] }),
       );
-      expect(result.length, `caption body of ${size} produced ${result.length}`).toBeLessThanOrEqual(
-        LIMIT,
-      );
+      expect(
+        result.length,
+        `caption body of ${size} produced ${result.length}`,
+      ).toBeLessThanOrEqual(LIMIT);
     }
   });
 });

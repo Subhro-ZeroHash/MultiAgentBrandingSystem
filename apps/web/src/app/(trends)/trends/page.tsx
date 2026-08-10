@@ -14,7 +14,12 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import type { AutomationSettings, TrendActionTier, TrendOpportunity, TrendResearchRun } from '@bmas/shared';
+import type {
+  AutomationSettings,
+  TrendActionTier,
+  TrendOpportunity,
+  TrendResearchRun,
+} from '@bmas/shared';
 import { contentApi, ApiError } from '@/lib/api';
 
 const DEV_HEADERS = { 'x-user-id': 'dev-user' };
@@ -63,7 +68,10 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
     <div className="flex items-center gap-2 text-xs">
       <span className="w-32 shrink-0 text-[var(--color-muted)]">{label}</span>
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-line)]">
-        <div className="h-full rounded-full bg-[var(--color-accent)]" style={{ width: `${value}%` }} />
+        <div
+          className="h-full rounded-full bg-[var(--color-accent)]"
+          style={{ width: `${value}%` }}
+        />
       </div>
       <span className="w-8 shrink-0 text-right tabular-nums">{value}</span>
     </div>
@@ -78,7 +86,10 @@ function RecommendedContent({ jobRefs }: { jobRefs: TrendOpportunity['generation
     const poll = async () => {
       for (const ref of jobRefs) {
         try {
-          const job = await contentApi.get<GenerationJobStatus>(`/generations/${ref.jobId}`, DEV_HEADERS);
+          const job = await contentApi.get<GenerationJobStatus>(
+            `/generations/${ref.jobId}`,
+            DEV_HEADERS,
+          );
           if (!cancelled) setJobs((prev) => ({ ...prev, [ref.jobId]: job }));
         } catch {
           // A single job's poll failing shouldn't blank out the others.
@@ -108,11 +119,18 @@ function RecommendedContent({ jobRefs }: { jobRefs: TrendOpportunity['generation
           const job = jobs[ref.jobId];
           const thumbnail = job?.assets[0]?.thumbnailUrl ?? job?.assets[0]?.url;
           return (
-            <div key={ref.jobId} className="rounded-md border border-[var(--color-line)] p-2 text-xs">
+            <div
+              key={ref.jobId}
+              className="rounded-md border border-[var(--color-line)] p-2 text-xs"
+            >
               <p className="font-medium">{ref.label}</p>
               <p className="text-[var(--color-muted)]">{ref.outputFormat}</p>
               {thumbnail ? (
-                <img src={thumbnail} alt={ref.label} className="mt-2 aspect-square w-full rounded object-cover" />
+                <img
+                  src={thumbnail}
+                  alt={ref.label}
+                  className="mt-2 aspect-square w-full rounded object-cover"
+                />
               ) : (
                 <p className="mt-2 text-[var(--color-muted)]">{job?.status ?? 'queued'}…</p>
               )}
@@ -162,9 +180,9 @@ export default function TrendsPage() {
   const [brandId, setBrandId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AutomationSettings | null>(null);
   const [runs, setRuns] = useState<TrendResearchRun[]>([]);
-  const [activeRun, setActiveRun] = useState<(TrendResearchRun & { opportunities: TrendOpportunity[] }) | null>(
-    null,
-  );
+  const [activeRun, setActiveRun] = useState<
+    (TrendResearchRun & { opportunities: TrendOpportunity[] }) | null
+  >(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,7 +224,9 @@ export default function TrendsPage() {
           if (list[0]) void loadRun(id, list[0].id);
           else setActiveRun(null);
         })
-        .catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load trend research runs'));
+        .catch((err) =>
+          setError(err instanceof ApiError ? err.message : 'Failed to load trend research runs'),
+        );
     },
     [loadRun],
   );
@@ -261,15 +281,13 @@ export default function TrendsPage() {
       setSettings(updated);
     } catch (err) {
       setSettings({ ...settings, [field]: current });
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : `Failed to update automation settings`,
-      );
+      setError(err instanceof ApiError ? err.message : `Failed to update automation settings`);
     }
   };
 
-  const opportunities = [...(activeRun?.opportunities ?? [])].sort((a, b) => b.score.overall - a.score.overall);
+  const opportunities = [...(activeRun?.opportunities ?? [])].sort(
+    (a, b) => b.score.overall - a.score.overall,
+  );
 
   return (
     <div className="space-y-6">
@@ -349,7 +367,9 @@ export default function TrendsPage() {
                 disabled={!settings}
               />
               Auto-publish generated posts{' '}
-              <span className="text-[var(--color-muted)]">(requires Full Autopilot approval policy)</span>
+              <span className="text-[var(--color-muted)]">
+                (requires Full Autopilot approval policy)
+              </span>
             </label>
           </div>
         </div>

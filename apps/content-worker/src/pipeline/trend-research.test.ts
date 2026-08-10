@@ -58,10 +58,7 @@ describe('resolveRelevanceDrafts', () => {
   const poolItems = [poolItem(0), poolItem(1)];
 
   it('resolves a valid index to the matching pool item', () => {
-    const [resolved] = resolveRelevanceDrafts(
-      [{ ...baseDraft, poolItemIndex: 1 }],
-      poolItems,
-    );
+    const [resolved] = resolveRelevanceDrafts([{ ...baseDraft, poolItemIndex: 1 }], poolItems);
     expect(resolved?.poolItem.id).toBe('pool-item-1');
     expect(resolved?.draft.brandRelevance).toBe(90);
   });

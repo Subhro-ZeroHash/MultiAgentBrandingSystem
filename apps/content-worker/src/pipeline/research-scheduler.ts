@@ -54,24 +54,26 @@ interface DueBrand {
 const MAX_BRANDS_PER_TICK = 25;
 
 async function getDueBrands(ctx: WorkerContext, now: Date): Promise<DueBrand[]> {
-  return ctx.db
-    .select({
-      brandId: schema.automationSettings.brandId,
-      trendFrequency: schema.automationSettings.trendFrequency,
-      lastResearchAt: schema.automationSettings.lastResearchAt,
-    })
-    .from(schema.automationSettings)
-    .where(
-      and(
-        eq(schema.automationSettings.contentAutomationEnabled, true),
-        lte(schema.automationSettings.nextResearchAt, now),
-      ),
-    )
-    // Longest-overdue first, so a brand that loses one tick to the cap is at
-    // the front of the next one. Without the ordering the cap could starve the
-    // same brands indefinitely, since the unordered scan tends to be stable.
-    .orderBy(asc(schema.automationSettings.nextResearchAt))
-    .limit(MAX_BRANDS_PER_TICK);
+  return (
+    ctx.db
+      .select({
+        brandId: schema.automationSettings.brandId,
+        trendFrequency: schema.automationSettings.trendFrequency,
+        lastResearchAt: schema.automationSettings.lastResearchAt,
+      })
+      .from(schema.automationSettings)
+      .where(
+        and(
+          eq(schema.automationSettings.contentAutomationEnabled, true),
+          lte(schema.automationSettings.nextResearchAt, now),
+        ),
+      )
+      // Longest-overdue first, so a brand that loses one tick to the cap is at
+      // the front of the next one. Without the ordering the cap could starve the
+      // same brands indefinitely, since the unordered scan tends to be stable.
+      .orderBy(asc(schema.automationSettings.nextResearchAt))
+      .limit(MAX_BRANDS_PER_TICK)
+  );
 }
 
 /**

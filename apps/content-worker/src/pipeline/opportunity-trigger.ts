@@ -65,12 +65,22 @@ const CONTENT_CONCEPT_SCHEMA = {
           'outputFormat',
         ],
         properties: {
-          label: { type: 'string', description: 'Short name for this concept, e.g. "30-Day Running Challenge Kickoff".' },
+          label: {
+            type: 'string',
+            description: 'Short name for this concept, e.g. "30-Day Running Challenge Kickoff".',
+          },
           postConcept: { type: 'string', description: 'What the post actually shows or does.' },
           captionText: { type: 'string', description: 'The caption copy for this post.' },
-          hashtags: { type: 'array', items: { type: 'string' }, description: 'Relevant hashtags, without the # symbol.' },
+          hashtags: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Relevant hashtags, without the # symbol.',
+          },
           ctaText: { type: 'string', description: 'Short call to action, e.g. "Shop Now".' },
-          visualDirection: { type: 'string', description: 'Composition, mood, what should be in frame.' },
+          visualDirection: {
+            type: 'string',
+            description: 'Composition, mood, what should be in frame.',
+          },
           outputFormat: {
             type: 'string',
             enum: ['instagram_post', 'story_reel_cover', 'facebook_banner', 'poster_a4'],
@@ -83,7 +93,12 @@ const CONTENT_CONCEPT_SCHEMA = {
   },
 } as const;
 
-async function recordCost(ctx: WorkerContext, brandId: string, opportunityId: string, cost: CostEvent): Promise<void> {
+async function recordCost(
+  ctx: WorkerContext,
+  brandId: string,
+  opportunityId: string,
+  cost: CostEvent,
+): Promise<void> {
   await ctx.db.insert(schema.costEvents).values({
     brandId,
     system: 'content',
@@ -147,7 +162,9 @@ async function generateContentConcepts(
                 '',
                 `**The product to promote:** ${product.name}`,
                 product.description ?? '',
-                product.sellingPoints.length ? `Selling points: ${product.sellingPoints.join(', ')}` : '',
+                product.sellingPoints.length
+                  ? `Selling points: ${product.sellingPoints.join(', ')}`
+                  : '',
               ]
                 .filter(Boolean)
                 .join('\n'),
@@ -187,7 +204,9 @@ export function buildCreativeRequest(
     extraInstructions: [
       concept.postConcept,
       `Visual direction: ${concept.visualDirection}`,
-      concept.hashtags.length ? `Hashtags: ${concept.hashtags.map((tag) => `#${tag}`).join(' ')}` : '',
+      concept.hashtags.length
+        ? `Hashtags: ${concept.hashtags.map((tag) => `#${tag}`).join(' ')}`
+        : '',
       `Caption: ${concept.captionText}`,
     ]
       .filter(Boolean)
@@ -234,7 +253,9 @@ export async function triggerAutoOpportunity(
     return;
   }
 
-  console.warn(`[opportunity-trigger] opportunity ${opportunity.id}: generating content concepts...`);
+  console.warn(
+    `[opportunity-trigger] opportunity ${opportunity.id}: generating content concepts...`,
+  );
   const { concepts, cost } = await generateContentConcepts(ctx, opportunity, brand, product);
   await recordCost(ctx, brand.id, opportunity.id, cost);
 
@@ -270,7 +291,9 @@ export async function triggerAutoOpportunity(
       })
       .returning();
     if (!campaign) {
-      throw new Error(`Failed to insert scheduled campaign for concept ${index} of opportunity ${opportunity.id}`);
+      throw new Error(
+        `Failed to insert scheduled campaign for concept ${index} of opportunity ${opportunity.id}`,
+      );
     }
 
     const [job] = await ctx.db
@@ -286,8 +309,12 @@ export async function triggerAutoOpportunity(
       })
       .returning();
     if (!job) {
-      await ctx.db.delete(schema.scheduledCampaigns).where(eq(schema.scheduledCampaigns.id, campaign.id));
-      throw new Error(`Failed to insert generation job for concept ${index} of opportunity ${opportunity.id}`);
+      await ctx.db
+        .delete(schema.scheduledCampaigns)
+        .where(eq(schema.scheduledCampaigns.id, campaign.id));
+      throw new Error(
+        `Failed to insert generation job for concept ${index} of opportunity ${opportunity.id}`,
+      );
     }
 
     const [post] = await ctx.db
@@ -304,8 +331,12 @@ export async function triggerAutoOpportunity(
       .returning();
     if (!post) {
       await ctx.db.delete(schema.generationJobs).where(eq(schema.generationJobs.id, job.id));
-      await ctx.db.delete(schema.scheduledCampaigns).where(eq(schema.scheduledCampaigns.id, campaign.id));
-      throw new Error(`Failed to insert scheduled post for concept ${index} of opportunity ${opportunity.id}`);
+      await ctx.db
+        .delete(schema.scheduledCampaigns)
+        .where(eq(schema.scheduledCampaigns.id, campaign.id));
+      throw new Error(
+        `Failed to insert scheduled post for concept ${index} of opportunity ${opportunity.id}`,
+      );
     }
 
     try {
@@ -337,7 +368,9 @@ export async function triggerAutoOpportunity(
       // no queued job would wedge the idempotency check forever.
       await ctx.db.delete(schema.scheduledPosts).where(eq(schema.scheduledPosts.id, post.id));
       await ctx.db.delete(schema.generationJobs).where(eq(schema.generationJobs.id, job.id));
-      await ctx.db.delete(schema.scheduledCampaigns).where(eq(schema.scheduledCampaigns.id, campaign.id));
+      await ctx.db
+        .delete(schema.scheduledCampaigns)
+        .where(eq(schema.scheduledCampaigns.id, campaign.id));
       throw error;
     }
 

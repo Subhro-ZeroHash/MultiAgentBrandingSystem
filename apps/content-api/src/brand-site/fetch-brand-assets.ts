@@ -118,9 +118,7 @@ async function normalise(
     if (!meta.width || !meta.height) return null;
 
     const measured =
-      edge === 'longest'
-        ? Math.max(meta.width, meta.height)
-        : Math.min(meta.width, meta.height);
+      edge === 'longest' ? Math.max(meta.width, meta.height) : Math.min(meta.width, meta.height);
     if (measured < minEdge) return null;
 
     // SVG has no fixed raster size and sharp rasterises it at its nominal

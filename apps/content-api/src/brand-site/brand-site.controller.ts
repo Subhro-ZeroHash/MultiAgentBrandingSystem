@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Request, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import {
   applyBrandSiteSchema,
   importBrandSiteSchema,
@@ -39,14 +49,8 @@ export class BrandSiteController {
   }
 
   @Get()
-  async get(
-    @Param('brandId') brandId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
-    const profile = await this.siteProfiles.getProfile(
-      brandId,
-      req.user.id,
-    );
+  async get(@Param('brandId') brandId: string, @Request() req: AuthenticatedRequest) {
+    const profile = await this.siteProfiles.getProfile(brandId, req.user.id);
 
     if (!profile) return { profile: null, suggestedColors: [] };
     return { profile, suggestedColors: this.siteProfiles.suggestedPalette(profile) };
@@ -58,19 +62,12 @@ export class BrandSiteController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(applyBrandSiteSchema)) body: unknown,
   ) {
-    return this.siteProfiles.apply(
-      brandId,
-      req.user.id,
-      body as ApplyBrandSiteInput,
-    );
+    return this.siteProfiles.apply(brandId, req.user.id, body as ApplyBrandSiteInput);
   }
 
   @Delete()
   @HttpCode(204)
-  async remove(
-    @Param('brandId') brandId: string,
-    @Request() req: AuthenticatedRequest,
-  ) {
+  async remove(@Param('brandId') brandId: string, @Request() req: AuthenticatedRequest) {
     await this.siteProfiles.remove(brandId, req.user.id);
   }
 }

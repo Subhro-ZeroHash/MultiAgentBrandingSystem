@@ -11,7 +11,7 @@ describe('buildTavilyRequestBody', () => {
     expect(buildTavilyRequestBody({ query: 'x' }).topic).toBe('general');
   });
 
-  it('maps a news-topic request to Tavily\'s news topic', () => {
+  it("maps a news-topic request to Tavily's news topic", () => {
     expect(buildTavilyRequestBody({ query: 'x', topic: 'news' }).topic).toBe('news');
   });
 

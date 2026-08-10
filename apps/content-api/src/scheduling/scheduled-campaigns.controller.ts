@@ -1,4 +1,16 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import {
   createScheduledCampaignSchema,
   updateScheduledCampaignSchema,
@@ -45,11 +57,7 @@ export class ScheduledCampaignsController {
     @Request() req: AuthenticatedRequest,
     @Body(new ZodValidationPipe(updateScheduledCampaignSchema)) body: unknown,
   ) {
-    return this.scheduling.updateCampaign(
-      id,
-      req.user.id,
-      body as UpdateScheduledCampaignInput,
-    );
+    return this.scheduling.updateCampaign(id, req.user.id, body as UpdateScheduledCampaignInput);
   }
 
   @Post('scheduled-campaigns/:id/pause')

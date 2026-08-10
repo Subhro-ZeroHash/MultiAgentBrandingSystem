@@ -128,7 +128,7 @@ const RELEVANCE_SCHEMA = {
           },
           brandRelevance: {
             type: 'number',
-            description: '0-100. How well this fits the brand\'s industry, products and voice.',
+            description: "0-100. How well this fits the brand's industry, products and voice.",
           },
           audienceRelevance: {
             type: 'number',
@@ -149,14 +149,14 @@ const RELEVANCE_SCHEMA = {
           urgency: {
             type: 'number',
             description:
-              "0-100. How time-sensitive acting on this is — a closing window (a festival " +
+              '0-100. How time-sensitive acting on this is — a closing window (a festival ' +
               'date passing, a news cycle fading) scores high; an evergreen angle with no real ' +
               'deadline scores low.',
           },
           recommendationOverride: {
             type: ['string', 'null'],
             description:
-              'A brand-specific recommendation, ONLY if this brand\'s real angle genuinely ' +
+              "A brand-specific recommendation, ONLY if this brand's real angle genuinely " +
               'differs from the generic one shown — otherwise null to keep the generic one.',
           },
         },
@@ -240,7 +240,7 @@ async function scoreTrendRelevanceOnce(
               'job is to score how well each one actually fits this brand and its audience, and to ' +
               'write a brand-specific recommendation only when the generic one genuinely does not fit.\n\n' +
               'Score every opportunity honestly. It is correct and expected to give a near-zero ' +
-              "score to something popular but irrelevant to this brand, and a high score to " +
+              'score to something popular but irrelevant to this brand, and a high score to ' +
               'something with modest reach that fits perfectly. Return only the ones with a real ' +
               'brandRelevance or audienceRelevance — omit anything genuinely irrelevant rather than ' +
               'including it with a low score just to fill a quota.\n\n' +
@@ -264,8 +264,8 @@ async function scoreTrendRelevanceOnce(
                       `them as a fresh idea:** ${brandContext.recentTopics.join('; ')}.`
                     : '',
                   '',
-                  '**The brand\'s products, numbered — reference the [N] number in `productIndex`, ' +
-                  'or null if none genuinely fit:**',
+                  "**The brand's products, numbered — reference the [N] number in `productIndex`, " +
+                    'or null if none genuinely fit:**',
                   describeProductsForPrompt(brandContext.products),
                   '',
                   '**Opportunities to score, numbered — reference the [N] number in `poolItemIndex`:**',
@@ -336,7 +336,9 @@ async function maybeAutoTriggerBestOpportunity(
     .limit(1);
   if (!settings?.autoTrigger) return;
 
-  const candidates = opportunityRows.filter((row) => row.actionTier === 'immediate_action' && row.productId);
+  const candidates = opportunityRows.filter(
+    (row) => row.actionTier === 'immediate_action' && row.productId,
+  );
   if (candidates.length === 0) return;
 
   const best = candidates.reduce((top, row) => (row.score.overall > top.score.overall ? row : top));
@@ -365,7 +367,10 @@ export async function runTrendResearch(
 
   await ctx.db
     .update(schema.trendResearchRuns)
-    .set({ status: 'running', startedAt: sql`coalesce(${schema.trendResearchRuns.startedAt}, now())` })
+    .set({
+      status: 'running',
+      startedAt: sql`coalesce(${schema.trendResearchRuns.startedAt}, now())`,
+    })
     .where(eq(schema.trendResearchRuns.id, run.id));
 
   console.warn(`[trend-research] starting run ${run.id} for brand ${brand.id} ("${brand.name}")`);
@@ -400,14 +405,18 @@ export async function runTrendResearch(
     // allowance the old synthesis prompt always had) — not a failure, and
     // not worth an LLM call to confirm the obvious.
     if (poolItems.length === 0) {
-      console.warn(`[trend-research] run ${run.id}: pool is empty, skipping relevance scoring — 0 opportunities`);
+      console.warn(
+        `[trend-research] run ${run.id}: pool is empty, skipping relevance scoring — 0 opportunities`,
+      );
     }
 
     const opportunityRows =
       poolItems.length === 0
         ? []
         : await (async () => {
-            console.warn(`[trend-research] run ${run.id}: scoring relevance against ${poolItems.length} pool items for this brand...`);
+            console.warn(
+              `[trend-research] run ${run.id}: scoring relevance against ${poolItems.length} pool items for this brand...`,
+            );
             const { items: drafts, cost } = await scoreTrendRelevance(
               ctx,
               run.id,
@@ -429,7 +438,9 @@ export async function runTrendResearch(
                   ? brandContext.products[draft.productIndex]!
                   : null;
 
-              const trendScore = Math.round((poolItem.score.popularity + poolItem.score.freshness) / 2);
+              const trendScore = Math.round(
+                (poolItem.score.popularity + poolItem.score.freshness) / 2,
+              );
               const modelScore: TrendModelScore = {
                 brandRelevance: draft.brandRelevance,
                 audienceRelevance: draft.audienceRelevance,
@@ -471,14 +482,17 @@ export async function runTrendResearch(
       // here any more — see this file's header.
       await tx.delete(schema.trendSignals).where(eq(schema.trendSignals.runId, run.id));
 
-      if (opportunityRows.length) await tx.insert(schema.trendOpportunities).values(opportunityRows);
+      if (opportunityRows.length)
+        await tx.insert(schema.trendOpportunities).values(opportunityRows);
 
       await tx
         .update(schema.trendResearchRuns)
         .set({ status: 'succeeded', finishedAt: new Date(), error: null })
         .where(eq(schema.trendResearchRuns.id, run.id));
     });
-    console.warn(`[trend-research] run ${run.id} succeeded: ${opportunityRows.length} opportunities for ${brand.name}`);
+    console.warn(
+      `[trend-research] run ${run.id} succeeded: ${opportunityRows.length} opportunities for ${brand.name}`,
+    );
 
     // Best-effort, deliberately outside the transaction and its own try/catch:
     // a failure here must never flip a successful research run to 'failed' —

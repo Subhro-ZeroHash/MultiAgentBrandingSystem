@@ -54,7 +54,10 @@ async function recordCost(ctx: WorkerContext, brandId: string, cost: CostEvent):
   });
 }
 
-export async function ensureBrandCategoryKey(ctx: WorkerContext, brand: Brand): Promise<CategoryKey> {
+export async function ensureBrandCategoryKey(
+  ctx: WorkerContext,
+  brand: Brand,
+): Promise<CategoryKey> {
   const [row] = await ctx.db
     .select({
       categoryKey: schema.brandContexts.categoryKey,
@@ -71,7 +74,9 @@ export async function ensureBrandCategoryKey(ctx: WorkerContext, brand: Brand): 
   const sourceText = row?.industry?.trim() || brand.category?.trim() || null;
 
   if (row?.categoryKey && row.categoryKeyClassifiedFor === sourceText) {
-    console.warn(`[category-classifier] brand ${brand.id} already classified as '${row.categoryKey}' (cached)`);
+    console.warn(
+      `[category-classifier] brand ${brand.id} already classified as '${row.categoryKey}' (cached)`,
+    );
     return row.categoryKey;
   }
 
@@ -79,7 +84,9 @@ export async function ensureBrandCategoryKey(ctx: WorkerContext, brand: Brand): 
   // not cached: a brand with no industry text yet should be re-checked once
   // it has some, not permanently stuck in the fallback bucket.
   if (!sourceText) {
-    console.warn(`[category-classifier] brand ${brand.id} has no industry/category text yet, using 'other'`);
+    console.warn(
+      `[category-classifier] brand ${brand.id} has no industry/category text yet, using 'other'`,
+    );
     return 'other';
   }
 
@@ -124,7 +131,9 @@ export async function ensureBrandCategoryKey(ctx: WorkerContext, brand: Brand): 
         set: { categoryKey: value.category, categoryKeyClassifiedFor: sourceText },
       });
 
-    console.warn(`[category-classifier] brand ${brand.id} classified as '${value.category}' (cached)`);
+    console.warn(
+      `[category-classifier] brand ${brand.id} classified as '${value.category}' (cached)`,
+    );
     return value.category;
   } catch (error) {
     // Layer B cannot proceed without *some* category — fall back rather than

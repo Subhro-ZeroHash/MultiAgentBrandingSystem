@@ -13,14 +13,20 @@ describe('bucketsNeedingRefresh', () => {
   });
 
   it('is due when the latest run failed', () => {
-    const latest = new Map([['category:technology', { status: 'failed' as const, expiresAt: null }]]);
+    const latest = new Map([
+      ['category:technology', { status: 'failed' as const, expiresAt: null }],
+    ]);
     const due = bucketsNeedingRefresh([categoryBucket], latest, now);
     expect(due).toEqual([categoryBucket]);
   });
 
   it('is not due while a run is still queued or running', () => {
-    const queued = new Map([['category:technology', { status: 'queued' as const, expiresAt: null }]]);
-    const running = new Map([['category:technology', { status: 'running' as const, expiresAt: null }]]);
+    const queued = new Map([
+      ['category:technology', { status: 'queued' as const, expiresAt: null }],
+    ]);
+    const running = new Map([
+      ['category:technology', { status: 'running' as const, expiresAt: null }],
+    ]);
     expect(bucketsNeedingRefresh([categoryBucket], queued, now)).toEqual([]);
     expect(bucketsNeedingRefresh([categoryBucket], running, now)).toEqual([]);
   });

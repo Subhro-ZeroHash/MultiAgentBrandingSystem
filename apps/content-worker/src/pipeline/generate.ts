@@ -171,10 +171,7 @@ export async function runGeneration(
         startedAt: sql`coalesce(${schema.generationJobs.startedAt}, now())`,
       })
       .where(
-        and(
-          eq(schema.generationJobs.id, job.jobId),
-          ne(schema.generationJobs.status, 'cancelled'),
-        ),
+        and(eq(schema.generationJobs.id, job.jobId), ne(schema.generationJobs.status, 'cancelled')),
       )
       .returning();
 

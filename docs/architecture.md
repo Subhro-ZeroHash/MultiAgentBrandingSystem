@@ -65,12 +65,12 @@ forget - that's deliberate, per the PRD's "cost telemetry from day one".
 
 Four tables (marked ✨ above) implement persistent context and learning:
 
-| Table | Purpose | Lifespan |
-|-------|---------|----------|
-| `brand_context` | Static brand kit: goals, positioning, pillars, competitors, products | Until user edits |
-| `brand_preferences` | Append-only feedback log: rejections, regenerations, edits, approvals | Forever (audit trail) |
-| `automation_settings` | Publishing policy: auto-publish flag, posting times, research cadence | Until user changes |
-| `context_snapshots` | Audit log: what context each generation saw | With the generating job |
+| Table                 | Purpose                                                               | Lifespan                |
+| --------------------- | --------------------------------------------------------------------- | ----------------------- |
+| `brand_context`       | Static brand kit: goals, positioning, pillars, competitors, products  | Until user edits        |
+| `brand_preferences`   | Append-only feedback log: rejections, regenerations, edits, approvals | Forever (audit trail)   |
+| `automation_settings` | Publishing policy: auto-publish flag, posting times, research cadence | Until user changes      |
+| `context_snapshots`   | Audit log: what context each generation saw                           | With the generating job |
 
 This is the **Brand Brain**: a persistent knowledge base that transforms the content
 agent from stateless to learning. Every generation that uses brand context records

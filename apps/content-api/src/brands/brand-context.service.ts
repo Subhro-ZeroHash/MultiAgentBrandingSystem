@@ -80,7 +80,11 @@ export class BrandContextService {
     // are already there, and an empty Brand Brain screen on a brand that has
     // answered these questions once reads as data loss.
     const [brand] = await this.db
-      .select({ location: schema.brands.location, audience: schema.brands.audience, category: schema.brands.category })
+      .select({
+        location: schema.brands.location,
+        audience: schema.brands.audience,
+        category: schema.brands.category,
+      })
       .from(schema.brands)
       .where(eq(schema.brands.id, brandId))
       .limit(1);
@@ -191,7 +195,12 @@ export class BrandContextService {
       const created = await this.db
         .select()
         .from(schema.brandContexts)
-        .where(inArray(schema.brandContexts.brandId, missingContext.map((brand) => brand.id)));
+        .where(
+          inArray(
+            schema.brandContexts.brandId,
+            missingContext.map((brand) => brand.id),
+          ),
+        );
       for (const row of created) contextByBrand.set(row.brandId, row);
     }
 
@@ -204,7 +213,12 @@ export class BrandContextService {
       const created = await this.db
         .select()
         .from(schema.automationSettings)
-        .where(inArray(schema.automationSettings.brandId, missingSettings.map((b) => b.id)));
+        .where(
+          inArray(
+            schema.automationSettings.brandId,
+            missingSettings.map((b) => b.id),
+          ),
+        );
       for (const row of created) settingsByBrand.set(row.brandId, row);
     }
 
@@ -498,17 +512,24 @@ export class BrandContextService {
    * the first read was poor); silently reverting someone's corrections because
    * they refreshed is not a tradeoff worth making for slightly fresher prose.
    */
-  async updateBrandContextFromWebsite(brandId: string, analysis: SiteAnalysis): Promise<BrandContext> {
+  async updateBrandContextFromWebsite(
+    brandId: string,
+    analysis: SiteAnalysis,
+  ): Promise<BrandContext> {
     const context = await this.ensureContext(brandId);
 
     if (context.confirmedAt) {
-      this.logger.log(`Brand ${brandId} context is user-confirmed; leaving the website import out of it.`);
+      this.logger.log(
+        `Brand ${brandId} context is user-confirmed; leaving the website import out of it.`,
+      );
       return context;
     }
 
     const filled: Record<string, unknown> = {};
-    if (!context.industry && analysis.suggestedCategory) filled.industry = analysis.suggestedCategory;
-    if (!context.audience && analysis.suggestedAudience) filled.audience = analysis.suggestedAudience;
+    if (!context.industry && analysis.suggestedCategory)
+      filled.industry = analysis.suggestedCategory;
+    if (!context.audience && analysis.suggestedAudience)
+      filled.audience = analysis.suggestedAudience;
     // `offering` is the model's one-sentence read of what the business sells —
     // the closest thing a homepage offers to a positioning statement, and the
     // field the analysis already keeps out of the image brief for its own

@@ -34,7 +34,12 @@ export function createObjectStore(config: ObjectStoreConfig): ObjectStore {
   return {
     async put(key, body, contentType) {
       await client.send(
-        new PutObjectCommand({ Bucket: config.bucket, Key: key, Body: body, ContentType: contentType }),
+        new PutObjectCommand({
+          Bucket: config.bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
       );
     },
   };
