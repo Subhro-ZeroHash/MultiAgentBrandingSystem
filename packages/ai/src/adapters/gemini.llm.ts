@@ -1,194 +1,283 @@
-import { NotImplementedError, ProviderError, ProviderNotConfiguredError } from '../errors.js';
+import { GoogleGenAI } from '@google/genai';
+import { ProviderError, ProviderNotConfiguredError, describeError } from '../errors.js';
 import type {
   LlmJsonRequest,
   LlmService,
   LlmTextRequest,
   LlmVisionRequest,
+  ModelRole,
 } from '../llm.js';
 import { buildCostEvent } from '../pricing.js';
+import { isQuotaExhausted, isRetryable } from '../resilience.js';
 import type { ProviderContext, ProviderResult } from '../types.js';
+
+/** Text and vision calls are far quicker than image generation; see the image
+ *  adapter for why an explicit ceiling matters at all. */
+const REQUEST_TIMEOUT_MS = 60_000;
 
 export interface GeminiLlmConfig {
   apiKey: string | undefined;
-  model?: string;
+  models: Record<ModelRole, string>;
+  /** Overrides the API host. Unset in every deployed environment; exists so
+   *  local development and CI can point at a mock and exercise this adapter's
+   *  real request/response handling without credentials or spend. */
   baseUrl?: string;
 }
 
-interface GeminiGenerateResponse {
-  candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
-    finishReason?: string;
-  }>;
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    thoughtsTokenCount?: number;
-  };
-  modelVersion?: string;
-  promptFeedback?: { blockReason?: string };
-}
-
 /**
- * Gemini as a general text/JSON LLM, distinct from the Gemini *answer engine*
- * (gemini.engine.ts): no grounding tool, just structured extraction.
+ * Text/vision LLM served by Gemini, so a deployment can run the whole content
+ * pipeline on a single Google credential instead of holding an Anthropic key
+ * as well. Selected by `LLM_PROVIDER=gemini`; see AiRegistry.
  *
- * This exists as a stopgap so the GEO analyser can run on a Google key alone,
- * before an Anthropic key is provisioned. It is opt-in via `LLM_PROVIDER=gemini`
- * and the registry still defaults to Anthropic, so the content workstream's use
- * of `ai.llm()` is unaffected. Raw `fetch`, like the other Gemini adapter, keeps
- * the request shape visible and avoids pulling in an SDK.
+ * This and `gemini.image.ts` are the only places `@google/genai` is imported.
  *
- * Roles (`orchestrator` / `volume` / `qa`) collapse to a single model here: the
- * role→model map is Anthropic-specific, and for a one-model stopgap a tier
- * distinction would be pretend precision. Revisit if this outlives "for now".
+ * `effort` is accepted but deliberately not mapped onto Gemini's
+ * `thinkingConfig`. The obvious mapping (`low` -> `thinkingBudget: 0`) is
+ * rejected outright by the Pro tier, which cannot disable thinking, so a
+ * mis-mapping would fail at request time on exactly the role most likely to ask
+ * for it. Letting each model apply its own default is the safe behaviour until
+ * the mapping can be checked against live models per role.
+ *
+ * As in the image adapter, retries are not applied here — callers wrap this in
+ * `withRetry` and nesting the two multiplies the attempt count. What this owes
+ * the caller is accurate `retryable` classification.
  */
 export class GeminiLlmAdapter implements LlmService {
   readonly provider = 'google';
-  private readonly baseUrl: string;
-  private readonly model: string;
+  private readonly client: GoogleGenAI | null;
 
   constructor(private readonly config: GeminiLlmConfig) {
-    this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
-    // 2.5-flash grounds and extracts fine on a free-tier key; the 3.x line is
-    // paid-only for the tool paths. See gemini.engine.ts for the same note.
-    this.model = config.model ?? 'gemini-2.5-flash';
+    this.client = config.apiKey
+      ? new GoogleGenAI({
+          apiKey: config.apiKey,
+          httpOptions: {
+            timeout: REQUEST_TIMEOUT_MS,
+            ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+          },
+        })
+      : null;
   }
 
-  private key(): string {
-    if (!this.config.apiKey) throw new ProviderNotConfiguredError('google', 'GOOGLE_API_KEY');
-    return this.config.apiKey;
+  private require(): GoogleGenAI {
+    if (!this.client) throw new ProviderNotConfiguredError('google', 'GOOGLE_API_KEY');
+    return this.client;
   }
 
-  async generateText(req: LlmTextRequest, ctx?: ProviderContext): Promise<ProviderResult<string>> {
-    const { text, body, latencyMs } = await this.call(
-      { system: req.system, messages: req.messages, maxTokens: req.maxTokens },
-      ctx,
-    );
-    return { value: text, cost: this.cost(body, `text:${req.role}`, latencyMs) };
+  private modelFor(role: ModelRole): string {
+    return this.config.models[role];
   }
 
-  async generateJson<T>(req: LlmJsonRequest<T>, ctx?: ProviderContext): Promise<ProviderResult<T>> {
-    // The schema travels as instruction, not as a hard `responseSchema`: Gemini's
-    // schema dialect differs from the JSON Schema our callers write (no
-    // additionalProperties, `nullable` not `type: [..., 'null']`), so forcing it
-    // would reject valid callers. `responseMimeType` still guarantees the output
-    // parses as JSON; correctness of the shape rides on the instruction + the
-    // caller's own `parse`.
-    const system = [
-      req.system ?? '',
-      '',
-      'Return ONLY a JSON value conforming to this JSON Schema. No prose, no markdown fences:',
-      JSON.stringify(req.schema),
-    ]
-      .join('\n')
-      .trim();
+  /** Same classification rule as the image adapter: a 429 from a burst clears
+   *  in seconds, a 429 carrying `limit: 0` never will. */
+  private static wrap(error: unknown, operation: string): ProviderError {
+    if (error instanceof ProviderError) return error;
+    // See the image adapter: `.message` alone loses the transport failure.
+    const message = describeError(error);
 
-    const { text, body, latencyMs } = await this.call(
-      {
-        system,
-        messages: req.messages,
-        maxTokens: req.maxTokens,
-        responseMimeType: 'application/json',
-      },
-      ctx,
-    );
+    if (isQuotaExhausted(error)) {
+      return new ProviderError(
+        `google.${operation}: quota exhausted (limit: 0) — the project has no allocation, ` +
+          `so retrying will not help. ${message}`,
+        'google',
+        { retryable: false, cause: error },
+      );
+    }
 
+    return new ProviderError(`google.${operation}: ${message}`, 'google', {
+      retryable: isRetryable(error),
+      cause: error,
+    });
+  }
+
+  /** Gemini names the assistant turn `model`; everything else maps across. */
+  private static contents(messages: LlmTextRequest['messages']) {
+    return messages.map((message) => ({
+      role: message.role === 'assistant' ? ('model' as const) : ('user' as const),
+      parts: [{ text: message.content }],
+    }));
+  }
+
+  /**
+   * Thinking tokens are billed at the output rate but reported separately, so
+   * they are folded into `outputTokens` — otherwise every reasoning-heavy call
+   * under-reports its cost in `core.cost_events`.
+   */
+  private static usageOf(usage?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
+    cachedContentTokenCount?: number;
+  }) {
+    const cachedInputTokens = usage?.cachedContentTokenCount ?? 0;
     return {
-      value: req.parse(JSON.parse(stripFences(text))),
-      cost: this.cost(body, `json:${req.role}`, latencyMs),
+      // Unlike Anthropic (where `input_tokens` and `cache_read_input_tokens`
+      // are separate, additive counts), Gemini's `promptTokenCount` already
+      // includes the cached portion. `priceTokens` charges inputTokens and
+      // cachedInputTokens additively, so passing the raw total here would
+      // double-bill every cached token; subtract it out first.
+      inputTokens: Math.max(0, (usage?.promptTokenCount ?? 0) - cachedInputTokens),
+      outputTokens: (usage?.candidatesTokenCount ?? 0) + (usage?.thoughtsTokenCount ?? 0),
+      cachedInputTokens,
     };
   }
 
-  analyzeImage(_req: LlmVisionRequest, _ctx?: ProviderContext): Promise<ProviderResult<string>> {
-    // Only the content QA pass calls this, and content does not run on the Gemini
-    // LLM backend. Wire Gemini vision here if that ever changes.
-    throw new NotImplementedError('google', 'analyzeImage');
+  /** Concatenates the text parts of the first candidate. */
+  private static textOf(response: {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  }): string {
+    return (response.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text)
+      .filter((text): text is string => Boolean(text))
+      .join('');
   }
 
-  private async call(
-    args: {
-      system?: string;
-      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-      maxTokens?: number;
-      responseMimeType?: string;
-    },
-    ctx?: ProviderContext,
-  ): Promise<{ text: string; body: GeminiGenerateResponse; latencyMs: number }> {
+  async generateText(req: LlmTextRequest, ctx?: ProviderContext): Promise<ProviderResult<string>> {
+    const model = this.modelFor(req.role);
     const startedAt = Date.now();
-    const response = await fetch(
-      `${this.baseUrl}/models/${this.model}:generateContent?key=${this.key()}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...(args.system ? { systemInstruction: { parts: [{ text: args.system }] } } : {}),
-          contents: args.messages.map((m) => ({
-            // Gemini names the assistant turn 'model', not 'assistant'.
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }],
-          })),
-          generationConfig: {
-            maxOutputTokens: args.maxTokens ?? 4096,
-            ...(args.responseMimeType ? { responseMimeType: args.responseMimeType } : {}),
-          },
-        }),
-        signal: ctx?.signal,
-      },
-    );
 
-    if (!response.ok) {
-      throw new ProviderError(
-        `Gemini LLM returned ${response.status}: ${await response.text()}`,
-        'google',
-        { retryable: response.status === 429 || response.status >= 500 },
-      );
+    let response;
+    try {
+      response = await this.require().models.generateContent({
+        model,
+        contents: GeminiLlmAdapter.contents(req.messages),
+        config: {
+          maxOutputTokens: req.maxTokens ?? 4096,
+          ...(req.system ? { systemInstruction: req.system } : {}),
+          ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
+        },
+      });
+    } catch (error) {
+      throw GeminiLlmAdapter.wrap(error, `text:${req.role}`);
     }
 
-    const body = (await response.json()) as GeminiGenerateResponse;
-    if (body.promptFeedback?.blockReason) {
-      throw new ProviderError(
-        `Gemini blocked the prompt: ${body.promptFeedback.blockReason}`,
-        'google',
-        { retryable: false },
-      );
-    }
-
-    const text = (body.candidates?.[0]?.content?.parts ?? [])
-      .map((part) => part.text ?? '')
-      .join('')
-      .trim();
-
-    if (!text) {
-      // A truncated MAX_TOKENS response or an all-thinking candidate lands here.
-      throw new ProviderError(
-        `Gemini returned no text (finishReason: ${body.candidates?.[0]?.finishReason ?? 'unknown'})`,
-        'google',
-        { retryable: true },
-      );
-    }
-
-    return { text, body, latencyMs: Date.now() - startedAt };
+    return {
+      value: GeminiLlmAdapter.textOf(response),
+      cost: buildCostEvent({
+        provider: this.provider,
+        model,
+        operation: `text:${req.role}`,
+        ...GeminiLlmAdapter.usageOf(response.usageMetadata),
+        latencyMs: Date.now() - startedAt,
+      }),
+    };
   }
 
-  private cost(body: GeminiGenerateResponse, operation: string, latencyMs: number) {
-    return buildCostEvent({
-      provider: 'google',
-      model: this.model,
-      operation,
-      inputTokens: body.usageMetadata?.promptTokenCount,
-      outputTokens:
-        (body.usageMetadata?.candidatesTokenCount ?? 0) +
-        (body.usageMetadata?.thoughtsTokenCount ?? 0),
-      latencyMs,
-      // TODO(geo): no Gemini row in TOKEN_RATES, so this lands as 0. Same gap as
-      // the answer-engine adapter — needs confirmed list pricing.
-      costMicroUsd: 0,
-    });
-  }
-}
+  async generateJson<T>(req: LlmJsonRequest<T>, ctx?: ProviderContext): Promise<ProviderResult<T>> {
+    const model = this.modelFor(req.role);
+    const startedAt = Date.now();
 
-/** Defensive: strip ```json fences if the model adds them despite instructions. */
-function stripFences(text: string): string {
-  const fenced = text.match(/^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/);
-  return fenced?.[1] ?? text;
+    let response;
+    try {
+      response = await this.require().models.generateContent({
+        model,
+        contents: GeminiLlmAdapter.contents(req.messages),
+        config: {
+          maxOutputTokens: req.maxTokens ?? 4096,
+          // responseJsonSchema requires responseMimeType and forbids the older
+          // responseSchema; it takes JSON Schema, which is what callers hold.
+          responseMimeType: 'application/json',
+          responseJsonSchema: req.schema,
+          ...(req.system ? { systemInstruction: req.system } : {}),
+          ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
+        },
+      });
+    } catch (error) {
+      throw GeminiLlmAdapter.wrap(error, `json:${req.role}`);
+    }
+
+    const raw = GeminiLlmAdapter.textOf(response);
+    if (!raw) {
+      throw new ProviderError('Model returned no text for a JSON request', 'google', {
+        retryable: true,
+      });
+    }
+
+    // Constrained decoding can still be cut short by maxOutputTokens, which
+    // yields valid-looking but truncated JSON. Retryable: a rerun usually fits.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new ProviderError(
+        `google.json:${req.role}: response was not valid JSON — ${raw.slice(0, 200)}`,
+        'google',
+        { retryable: true, cause: error },
+      );
+    }
+
+    // Syntactically valid JSON that still fails the caller's schema — a field
+    // type mismatch, an enum value the JSON-schema `enum` didn't actually keep
+    // the model inside, a field it omitted despite `required`. Wrapped and
+    // marked retryable for the same reason the truncated-JSON case above it
+    // is: this is the model's constrained decoding producing a bad instance
+    // this one time, and a rerun is the fix, not a permanent failure. Left as
+    // a raw ZodError it was unrecognised by `isRetryable`, so it skipped the
+    // cheap in-call retry and went straight to failing the whole pipeline
+    // stage — the expensive way to recover from something a second attempt
+    // usually fixes in place.
+    let value: ReturnType<typeof req.parse>;
+    try {
+      value = req.parse(parsed);
+    } catch (error) {
+      throw new ProviderError(
+        `google.json:${req.role}: response did not match the expected schema — ${describeError(error)}`,
+        'google',
+        { retryable: true, cause: error },
+      );
+    }
+
+    return {
+      value,
+      cost: buildCostEvent({
+        provider: this.provider,
+        model,
+        operation: `json:${req.role}`,
+        ...GeminiLlmAdapter.usageOf(response.usageMetadata),
+        latencyMs: Date.now() - startedAt,
+      }),
+    };
+  }
+
+  async analyzeImage(
+    req: LlmVisionRequest,
+    ctx?: ProviderContext,
+  ): Promise<ProviderResult<string>> {
+    const model = this.modelFor(req.role);
+    const startedAt = Date.now();
+
+    // Images lead, instruction last — the model reads them as context for the
+    // prompt that follows, matching how the image adapter orders references.
+    const parts = [
+      ...req.images.map((image) => ({
+        inlineData: { mimeType: image.mediaType, data: image.data.toString('base64') },
+      })),
+      { text: req.prompt },
+    ];
+
+    let response;
+    try {
+      response = await this.require().models.generateContent({
+        model,
+        contents: [{ role: 'user', parts }],
+        config: {
+          maxOutputTokens: req.maxTokens ?? 2048,
+          ...(req.system ? { systemInstruction: req.system } : {}),
+          ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
+        },
+      });
+    } catch (error) {
+      throw GeminiLlmAdapter.wrap(error, 'vision');
+    }
+
+    return {
+      value: GeminiLlmAdapter.textOf(response),
+      cost: buildCostEvent({
+        provider: this.provider,
+        model,
+        operation: 'vision',
+        ...GeminiLlmAdapter.usageOf(response.usageMetadata),
+        latencyMs: Date.now() - startedAt,
+      }),
+    };
+  }
 }

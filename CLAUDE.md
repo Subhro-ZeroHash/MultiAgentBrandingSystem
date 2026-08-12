@@ -31,6 +31,18 @@ Ask for a _role_, not a model name: `orchestrator`, `volume`, or `qa`. The
 registry resolves roles to model ids from env. Don't hard-code a model string
 in a service.
 
+## Brand Brain system (Phase 1 complete)
+
+The Content Agent now includes persistent context and learning:
+
+- **Context Manager** (`packages/db/src/context/context-manager.ts`) is the single source of truth for brand knowledge
+- Four retrieval functions feed task-specific context: trend research, generation, publishing, scheduling
+- Brand preferences are append-only (never updated/deleted by user action) to preserve learning history
+- Three layers of knowledge: Static (brand kit), Dynamic (recent activity), Learned (user feedback)
+- Five tests pin critical invariants (approval confidence, regeneration floor, starvation prevention)
+
+See [docs/brand-brain-system.md](docs/brand-brain-system.md) for full architecture, data model, bugs fixed, and roadmap.
+
 ## Deliberate gaps
 
 Auth, payments, object storage, and observability are unbuilt on purpose — the
@@ -42,8 +54,13 @@ rather than guessing from training data.
 ## Verifying a change
 
 ```bash
-pnpm typecheck && pnpm lint && pnpm build
+pnpm typecheck && pnpm lint && pnpm build && pnpm test
 ```
 
-There is no meaningful test suite yet; if you add logic worth protecting, add
-tests alongside it rather than assuming coverage exists.
+Tests are Vitest, named `*.test.ts` beside the code they cover, and extend the
+shared base at `@bmas/config/vitest/node`. Coverage is deliberate rather than
+broad: the pure functions where a silent regression is expensive (failure
+classification, aspect-ratio mapping) and `composeBrief`, which is driven
+through a fake `db` so it stays a unit test. Anything needing a real Postgres,
+Redis, or provider does not belong in this suite. Add tests alongside new logic
+worth protecting rather than assuming coverage exists.

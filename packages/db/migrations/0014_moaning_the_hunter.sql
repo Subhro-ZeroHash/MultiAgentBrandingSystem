@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "asset_edits_one_active_per_root_idx" ON "content"."asset_edits" USING btree ("root_asset_id") WHERE "content"."asset_edits"."status" IN ('queued', 'running');

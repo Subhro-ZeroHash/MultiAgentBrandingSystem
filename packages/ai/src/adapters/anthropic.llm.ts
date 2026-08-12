@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ProviderNotConfiguredError, ProviderError } from '../errors.js';
+import { ProviderNotConfiguredError, ProviderError, describeError } from '../errors.js';
 import type {
   LlmJsonRequest,
   LlmService,
@@ -13,6 +13,10 @@ import type { ProviderContext, ProviderResult } from '../types.js';
 export interface AnthropicAdapterConfig {
   apiKey: string | undefined;
   models: Record<ModelRole, string>;
+  /** Overrides the API host. Unset in every deployed environment; exists so
+   *  local development and CI can point at a mock and exercise this adapter's
+   *  real request/response handling without credentials or spend. */
+  baseUrl?: string;
 }
 
 /**
@@ -24,7 +28,12 @@ export class AnthropicLlmAdapter implements LlmService {
   private readonly client: Anthropic | null;
 
   constructor(private readonly config: AnthropicAdapterConfig) {
-    this.client = config.apiKey ? new Anthropic({ apiKey: config.apiKey }) : null;
+    this.client = config.apiKey
+      ? new Anthropic({
+          apiKey: config.apiKey,
+          ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
+        })
+      : null;
   }
 
   private require(): Anthropic {
@@ -114,8 +123,39 @@ export class AnthropicLlmAdapter implements LlmService {
       });
     }
 
+    // `max_tokens` can cut the response short mid-JSON, same failure mode the
+    // Gemini adapter guards against — a rerun usually fits, so this must be
+    // classified retryable rather than surfacing as a bare SyntaxError, which
+    // `isRetryable` does not recognise and would not retry.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new ProviderError(
+        `anthropic.json:${req.role}: response was not valid JSON — ${raw.slice(0, 200)}`,
+        'anthropic',
+        { retryable: true, cause: error },
+      );
+    }
+
+    // Syntactically valid JSON that still fails the caller's schema. Same
+    // reasoning as the truncated-JSON case just above: wrapped and marked
+    // retryable rather than left as a raw ZodError, which `isRetryable` does
+    // not recognise — unwrapped, this skipped the cheap in-call retry and
+    // failed the whole pipeline stage over something a rerun usually fixes.
+    let value: T;
+    try {
+      value = req.parse(parsed);
+    } catch (error) {
+      throw new ProviderError(
+        `anthropic.json:${req.role}: response did not match the expected schema — ${describeError(error)}`,
+        'anthropic',
+        { retryable: true, cause: error },
+      );
+    }
+
     return {
-      value: req.parse(JSON.parse(raw)),
+      value,
       cost: buildCostEvent({
         provider: 'anthropic',
         model,

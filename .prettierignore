@@ -4,3 +4,20 @@ dist
 .turbo
 coverage
 pnpm-lock.yaml
+
+# Drizzle output. `pnpm db:generate` writes these and rewrites them on the next
+# schema change, so formatting them is churn that comes straight back — and
+# hand-editing anything under migrations/ is forbidden outright (CLAUDE.md).
+packages/db/migrations
+
+# Nested checkouts of this same repo, created by `git worktree`. Already
+# excluded from git, but Prettier walks the filesystem rather than the index
+# and would otherwise check every file in the tree a second time.
+.claude/worktrees
+
+# Written by Next.js on every build, and it writes double quotes while this
+# repo's Prettier config asks for single — so the two can never agree. Format
+# it and the next `pnpm build` puts it straight back, leaving a dirty tree and
+# a red format:check. The file says not to edit it, and this is what honouring
+# that looks like.
+apps/web/next-env.d.ts

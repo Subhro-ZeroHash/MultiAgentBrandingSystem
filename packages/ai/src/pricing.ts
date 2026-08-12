@@ -23,11 +23,29 @@ export const TOKEN_RATES: Record<string, TokenRate> = {
   'claude-opus-4-8': { inputMicroUsd: perMillion(5), outputMicroUsd: perMillion(25) },
   'claude-sonnet-5': { inputMicroUsd: perMillion(3), outputMicroUsd: perMillion(15) },
   'claude-haiku-4-5': { inputMicroUsd: perMillion(1), outputMicroUsd: perMillion(5) },
+
+  // TODO(content): UNVERIFIED rates. The model ids are confirmed live (see
+  // GEMINI_MODELS in registry.ts) but their prices were not — a model with no
+  // entry here prices at zero, which under-reports spend silently, so these
+  // estimates stand in until the pricing page is checked.
+  'gemini-3.1-pro-preview': { inputMicroUsd: perMillion(1.25), outputMicroUsd: perMillion(10) },
+  'gemini-3.6-flash': { inputMicroUsd: perMillion(0.3), outputMicroUsd: perMillion(2.5) },
 };
 
-/** Flat per-image rates in micro-USD. Verify before relying on these. */
+/**
+ * Flat per-image rates in micro-USD. Verify before relying on these.
+ *
+ * Every id the adapter can be pointed at needs an entry: `priceImages` returns
+ * zero for an unknown model, so a missing row is not an error but a silently
+ * free-looking image. The stable `gemini-3-pro-image` was absent while being
+ * the configured default, which reported a whole job's image spend as 0.
+ */
 export const IMAGE_RATES: Record<string, number> = {
+  // TODO(content): UNVERIFIED, as with TOKEN_RATES above. The -preview twin and
+  // the stable id are the same model tier, so they carry the same estimate.
+  'gemini-3-pro-image': 40_000,
   'gemini-3-pro-image-preview': 40_000,
+  'gemini-2.5-flash-image': 40_000,
   'fal-ai/flux-pro/kontext': 40_000,
 };
 
@@ -48,6 +66,33 @@ export function priceTokens(
 
 export function priceImages(model: string, count: number): number {
   return Math.round((IMAGE_RATES[model] ?? 0) * count);
+}
+
+/**
+ * Flat per-call rates in micro-USD for providers billed by the call rather
+ * than by token or image — currently just web search.
+ *
+ * TODO(content): UNVERIFIED. Tavily bills in credits (1 for a basic search) at
+ * roughly $8 per 1,000 credits on paid tiers; the free tier's 1,000
+ * credits/month cost nothing. This estimates the paid-tier marginal cost so
+ * the ledger is not silently zero once free-tier volume is exhausted.
+ * Re-check against Tavily's pricing page before relying on this for a real
+ * unit-economics number.
+ */
+/**
+ * TODO(content): UNVERIFIED. SerpApi bills per search on a monthly plan
+ * (e.g. $75/5,000 searches on the Developer plan) rather than pay-as-you-go
+ * credits; this estimates the per-search marginal cost on that tier so the
+ * ledger isn't silently zero. Re-check against SerpApi's pricing page before
+ * relying on this for a real unit-economics number.
+ */
+export const SEARCH_RATES: Record<string, number> = {
+  'tavily-search': 8_000,
+  'serpapi-search': 15_000,
+};
+
+export function priceSearch(model: string): number {
+  return SEARCH_RATES[model] ?? 0;
 }
 
 export function buildCostEvent(

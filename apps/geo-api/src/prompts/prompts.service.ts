@@ -2,7 +2,13 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { eq, schema, type Database, type TrackedPromptRow } from '@bmas/db';
 import { QUEUES, type CreateTrackedPromptInput } from '@bmas/shared';
 import type { Queue } from 'bullmq';
-import { DATABASE, PROBE_QUEUE } from '../core/core.module.js';
+import { DATABASE, PROBE_QUEUE, ROLLUP_QUEUE } from '../core/core.module.js';
+
+/** Long enough for a sweep's probe+analysis jobs to finish before the rollup
+ *  reads `probe_runs`; short enough the dashboard updates the same session. */
+const ROLLUP_DELAY_MS = 2 * 60_000;
+/** Rolling window the rollup scores over. */
+const ROLLUP_WINDOW_MS = 24 * 60 * 60_000;
 
 @Injectable()
 export class PromptsService {
@@ -11,6 +17,7 @@ export class PromptsService {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(PROBE_QUEUE) private readonly probeQueue: Queue,
+    @Inject(ROLLUP_QUEUE) private readonly rollupQueue: Queue,
   ) {}
 
   async listByBrand(brandId: string): Promise<TrackedPromptRow[]> {
@@ -29,6 +36,7 @@ export class PromptsService {
         intent: input.intent,
         locale: input.locale ?? null,
         engines: input.engines,
+        isActive: input.isActive,
         ...(input.schedule ? { schedule: input.schedule } : {}),
       })
       .returning();
@@ -63,6 +71,18 @@ export class PromptsService {
           removeOnFail: 5_000,
         },
       })),
+    );
+
+    // Nothing else in this codebase enqueues `geo-rollup` (a scheduled/cron
+    // trigger for periodic rollups is a separate, not-yet-built gap) — without
+    // this, `visibility_snapshots` never gets a row and the dashboard's score
+    // and trend chart stay empty forever, even though probes ran successfully.
+    const periodEnd = new Date();
+    const periodStart = new Date(periodEnd.getTime() - ROLLUP_WINDOW_MS);
+    await this.rollupQueue.add(
+      QUEUES.geoRollup,
+      { brandId: prompt.brandId, periodStart, periodEnd },
+      { delay: ROLLUP_DELAY_MS, removeOnComplete: 100, removeOnFail: 100 },
     );
 
     this.logger.log(`Enqueued ${prompt.engines.length} probes for prompt ${prompt.id}`);

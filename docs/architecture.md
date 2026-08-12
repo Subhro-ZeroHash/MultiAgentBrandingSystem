@@ -43,11 +43,15 @@ and errors there corrupt every downstream score.
 Three Postgres schemas in one database:
 
 ```
-core     users, brands (Brand Kit), cost_events        <- shared, both owners review
-content  products, product_images, generation_jobs,
-         creative_assets, copy_packs, credit_ledger    <- content workstream
-geo      tracked_prompts, competitors, probe_runs,
-         mentions, visibility_snapshots                <- GEO workstream
+core     users, brands (Brand Kit), cost_events, brand_site_profiles  <- shared, both owners review
+content  products, product_images, generation_jobs, creative_assets,
+         copy_packs, credit_ledger, brand_context, brand_preferences,
+         automation_settings, context_snapshots, trend_research_runs,
+         trend_signals, trend_opportunities, intelligence_runs,
+         intelligence_items, ai_research_queries                      <- content workstream
+         [Brand Brain tables marked with ✨]
+geo      tracked_prompts, competitors, probe_runs, mentions,
+         visibility_snapshots                                        <- GEO workstream
 ```
 
 Namespacing by schema means the two workstreams generate migrations against the
@@ -56,6 +60,44 @@ same database without colliding, while `core` stays an explicit shared surface.
 `core.cost_events` is append-only and written by _every_ provider call in both
 systems. Adapters return `{ value, cost }` together, so the cost row is hard to
 forget - that's deliberate, per the PRD's "cost telemetry from day one".
+
+### Brand Brain tables
+
+Four tables (marked ✨ above) implement persistent context and learning:
+
+| Table                 | Purpose                                                               | Lifespan                |
+| --------------------- | --------------------------------------------------------------------- | ----------------------- |
+| `brand_context`       | Static brand kit: goals, positioning, pillars, competitors, products  | Until user edits        |
+| `brand_preferences`   | Append-only feedback log: rejections, regenerations, edits, approvals | Forever (audit trail)   |
+| `automation_settings` | Publishing policy: auto-publish flag, posting times, research cadence | Until user changes      |
+| `context_snapshots`   | Audit log: what context each generation saw                           | With the generating job |
+
+This is the **Brand Brain**: a persistent knowledge base that transforms the content
+agent from stateless to learning. Every generation that uses brand context records
+a snapshot; every user action (approve, reject, regenerate) records a preference with
+confidence scoring. The next generation queries this accumulated knowledge when
+composing briefs, making content progressively better informed. See
+[docs/phase1-signal-intelligence-report.md](phase1-signal-intelligence-report.md)
+for the full audit and the signal-based trend intelligence rebuild.
+
+### Signal-based trend intelligence
+
+`trend_signals` stores raw, unfiltered search evidence — one row per result a
+search provider actually returned, before any AI judgment runs. `trend_opportunities`
+stores the AI's conclusion after clustering related signals and scoring them against
+one specific brand. The split matters: storing only a synthesized "idea" (the old
+model) means every past judgment is an unauditable black box; storing the signals
+means the evidence outlives the model call that interpreted it, and the same signal
+judged against two different brands correctly produces two different scores.
+
+`trend_signals.source` and `.signal_type` are `text`, not database enums — adding a
+search provider (Tavily today, SerpApi as the second, more later) is new rows under
+this shape, not a migration. See
+[docs/phase1-signal-intelligence-report.md](phase1-signal-intelligence-report.md) §3
+for the full pipeline and a real bug this design caught live (signals were being
+silently discarded when LLM synthesis failed, because they were originally inserted
+in the same transaction as the opportunities — fixed by persisting signals
+independently, before synthesis runs).
 
 ## Async job model
 
@@ -94,6 +136,34 @@ never a re-probe. Treat edits to the analyser prompt
 (`apps/geo-worker/src/pipeline/analyze.ts`) as a methodology change: re-run
 against stored answers and compare before shipping.
 
+## Brand Brain: Context Manager pattern
+
+The **Context Manager** (`packages/db/src/context/context-manager.ts`) is the single source of truth
+for assembling and recording brand knowledge. It exports four task-specific retrieval functions:
+
+### Context assembly functions
+
+- **`getTrendContext(db, brandId)`** — Used by trend research and the leads/intelligence pipeline; returns goals, competitors, positioning, recent topics, learned preferences
+- **`getContentContext(db, brandId, {includeTrend})`** — Used by generation pipeline; returns full brand kit, learnings, rejected patterns
+- **`getPublishingContext(db, brandId)`** — Used by publishing; returns automation settings, posting preferences, recent history
+- **`getCampaignContext(db, brandId, campaignId)`** — Used by scheduling; returns campaign-scoped status
+
+Each function is curated for its use case: trend research doesn't need every visual style preference,
+and publishing doesn't need content pillars. This keeps prompts focused and queryable.
+
+### Feedback recording functions
+
+- **`recordContextSnapshot(db, input)`** — Logs "what the agent was handed" for auditing and future analysis
+- **`recordFeedbackSignal(db, input)`** — Turns user actions (approve/reject/regenerate/edit, and — since the
+  trend/leads rebuild — ignore/save/schedule on a trend opportunity or a lead) into `brand_preferences` rows
+  with confidence scoring. A `type` override lets a caller file a row under a specific dimension (e.g. `'topic'`)
+  regardless of which `kind`'s confidence weight it borrows.
+
+Rejections and regenerations always reach prompts (confidence ≥ 0.4); approvals alone do not (0.25 confidence, below the prompt floor).
+This prevents a single approval from displacing a real measured finding.
+
+For detailed documentation, see [docs/phase1-signal-intelligence-report.md](phase1-signal-intelligence-report.md).
+
 ## Deliberately deferred
 
 The skeleton has no auth, payments, storage client, or observability wiring.
@@ -101,3 +171,10 @@ Those are real decisions (Better Auth vs Supabase, Razorpay + Stripe, R2 vs S3,
 Sentry/PostHog) and stubbing them now would bake in a choice nobody has made.
 Placeholders are marked `TODO(content)` / `TODO(geo)` at the call sites that
 need them.
+
+TikTok/YouTube/Instagram/Facebook/Reddit signal providers are deferred the
+same way: none exposes a free trend-signal API, and building against one that
+doesn't exist would mean fabricated data. `SignalSource`/`SignalType` in
+`@bmas/shared` are open string unions specifically so adding one later, once a
+paid tier is contracted, is new rows under the existing `trend_signals` shape,
+not a redesign.

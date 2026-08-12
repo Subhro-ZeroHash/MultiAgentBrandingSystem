@@ -58,7 +58,16 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
     competitors: competitors.map((c) => ({ id: c.id, name: c.name, aliases: c.aliases })),
   });
 
-  const byName = new Map(competitors.map((c) => [c.name.toLowerCase(), c.id]));
+  // The analysis prompt offers aliases as valid ways to name a competitor
+  // (see analyze.ts), so the lookup has to accept them too — indexing only
+  // `name` sent every alias-named mention to entityId 'unknown'.
+  const byName = new Map<string, string>();
+  for (const competitor of competitors) {
+    byName.set(competitor.name.toLowerCase(), competitor.id);
+    for (const alias of competitor.aliases) {
+      byName.set(alias.toLowerCase(), competitor.id);
+    }
+  }
 
   await ctx.db.transaction(async (tx) => {
     // Re-parsing a run replaces its mentions rather than appending to them, so
@@ -88,17 +97,12 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
   // Record the analyser spend against whichever provider actually served it —
   // not a hardcoded 'anthropic'. The backend is swappable (LLM_PROVIDER), so the
   // ledger has to read the real provider/model back off the returned cost.
-  await ctx.db.insert(schema.costEvents).values({
+  // `operation` is overridden to a stage-specific label so this is
+  // distinguishable in the ledger from other orchestrator-role JSON calls.
+  await recordCost(ctx, {
     brandId: brand.id,
-    system: 'geo',
     referenceId: run.id,
-    provider: analysisCost.provider,
-    model: analysisCost.model,
-    operation: 'geo:analyze',
-    inputTokens: analysisCost.inputTokens ?? null,
-    outputTokens: analysisCost.outputTokens ?? null,
-    latencyMs: analysisCost.latencyMs ?? null,
-    costMicroUsd: analysisCost.costMicroUsd,
+    cost: { ...analysisCost, operation: 'geo:analyze' },
   });
 }
 

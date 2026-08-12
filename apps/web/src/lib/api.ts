@@ -26,16 +26,37 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
   });
 
   if (!response.ok) {
-    throw new ApiError(`${init?.method ?? 'GET'} ${path} failed`, response.status);
+    // NestJS's default exception filter shapes the body as { message, ... } —
+    // for a BadRequestException (e.g. automation-settings.service.ts's
+    // auto-publish/policy check) that message is the actual, actionable
+    // reason, not just "PATCH failed". Best-effort: falls back to the generic
+    // message if the body isn't JSON or doesn't have that shape.
+    const fallback = `${init?.method ?? 'GET'} ${path} failed`;
+    const detail = await response
+      .clone()
+      .json()
+      .then((body: unknown) =>
+        typeof body === 'object' &&
+        body !== null &&
+        'message' in body &&
+        typeof body.message === 'string'
+          ? body.message
+          : null,
+      )
+      .catch(() => null);
+    throw new ApiError(detail ?? fallback, response.status);
   }
 
   return response.json() as Promise<T>;
 }
 
 export const contentApi = {
-  get: <T>(path: string) => request<T>(CONTENT_API, path),
+  get: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>(CONTENT_API, path, { headers }),
   post: <T>(path: string, body: unknown, headers?: Record<string, string>) =>
     request<T>(CONTENT_API, path, { method: 'POST', body: JSON.stringify(body), headers }),
+  patch: <T>(path: string, body: unknown, headers?: Record<string, string>) =>
+    request<T>(CONTENT_API, path, { method: 'PATCH', body: JSON.stringify(body), headers }),
 };
 
 export const geoApi = {
