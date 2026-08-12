@@ -18,6 +18,7 @@
     "TAVILY_API_KEY",
     "SERPAPI_KEY",
     "WEB_SEARCH_PROVIDER",
+    "GEO_*",
     "S3_*",
     "R2_*"
   ],

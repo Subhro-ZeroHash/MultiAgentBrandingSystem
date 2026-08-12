@@ -44,6 +44,13 @@ export interface AiConfig {
   models?: Partial<Record<ModelRole, string>>;
   geminiImageModel?: string;
   falEditModel?: string;
+  /**
+   * Model the Gemini *answer engine* asks during a GEO probe — distinct from
+   * both the image model and the LLM role models. Grounded calls on the 3.x
+   * line are paid-tier only, so a free key has to pin an older grounded model
+   * here without dragging the rest of the registry back with it.
+   */
+  geminiEngineModel?: string;
   /** Artificial per-image latency for the stub adapter, ms. */
   stubImageLatencyMs?: number;
 
@@ -144,7 +151,10 @@ export class AiRegistry {
       ['claude', new ClaudeAnswerEngine({ apiKey: config.anthropicApiKey })],
       ['perplexity', new PerplexityAnswerEngine({ apiKey: config.perplexityApiKey })],
       ['chatgpt', new OpenAiAnswerEngine({ apiKey: config.openaiApiKey })],
-      ['gemini', new GeminiAnswerEngine({ apiKey: config.googleApiKey })],
+      [
+        'gemini',
+        new GeminiAnswerEngine({ apiKey: config.googleApiKey, model: config.geminiEngineModel }),
+      ],
     ]);
 
     this.searches = {
@@ -224,6 +234,7 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     },
     geminiImageModel: env.IMAGE_MODEL_GEMINI,
     falEditModel: env.IMAGE_MODEL_FAL_EDIT,
+    geminiEngineModel: env.GEO_MODEL_GEMINI,
     ...(env.IMAGE_STUB_LATENCY_MS ? { stubImageLatencyMs: Number(env.IMAGE_STUB_LATENCY_MS) } : {}),
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
     imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,

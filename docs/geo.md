@@ -7,20 +7,50 @@ mine, do I show up, and what does it say about me?**
 ## Pipeline
 
 ```
-tracked_prompts --fan-out per engine--> geo-probe queue
-                                             |
-                      +----------------------+----------------------+
-                      |  1. ask the engine (AnswerEngineClient)     |
-                      |  2. persist probe_runs (raw answer + cites) |
-                      |  3. analyse -> mentions                     |
-                      |  4. write cost_events                       |
-                      +----------------------+----------------------+
-                                             |
-                              geo-rollup --> visibility_snapshots --> dashboard
+cron scheduler --> geo-sweep queue --fan-out per engine--> geo-probe queue
+                                                                |
+                            +-----------------------------------+---------+
+                            |  1. ask the engine (AnswerEngineClient)     |
+                            |  2. persist probe_runs (raw answer + cites) |
+                            |  3. analyse -> mentions                     |
+                            |  4. write cost_events                       |
+                            +-----------------------------------+---------+
+                                                                |
+                                     geo-rollup --> visibility_snapshots --> dashboard
 ```
 
 The raw answer is written **before** analysis, so a bug in the analyser never
 costs a paid probe. Re-scoring history is a re-run of step 3 over stored text.
+
+## Scheduling
+
+Cadence is per prompt: `tracked_prompts.schedule` holds a cron expression, and
+the worker registers one BullMQ job scheduler per active prompt. BullMQ rather
+than node-cron because the schedule then lives in Redis — it survives a restart,
+and two worker replicas produce one tick instead of two.
+
+Schedulers are reconciled against the database on an interval
+(`GEO_SCHEDULER_SYNC_MS`, default 60s) rather than at write time, because
+`geo-api` creates prompts but holds no reference to the worker's queues. That
+interval is the lag between creating a prompt and it starting to probe. The same
+pass removes schedulers for prompts that were deactivated or deleted, and an
+unparseable cron is logged and skipped so one bad row can't stop the rest.
+
+Roll-ups run on their own global tick (`GEO_ROLLUP_CRON`) over a trailing window
+(`GEO_ROLLUP_WINDOW_DAYS`), deliberately **not** chained to sweep completion: a
+roll-up aggregates whatever runs exist in its window, so it never has to know
+whether every probe of a cycle has landed, and one slow engine can't stall the
+metric. It replaces the snapshot for its window rather than appending, so a
+re-fired tick doesn't put a step in the trend chart that never happened.
+
+## Failed probes are data
+
+When an engine call throws, the run is still written, with `error` set and empty
+`answer_text`. The roll-up then excludes those rows from every metric. This
+matters more than it looks: an engine that rate-limited us did not decline to
+mention the brand, and counting the failure as a miss would quietly depress
+presence and share of voice — the system would report a visibility problem that
+is really an infrastructure problem.
 
 ## Why fan out per (prompt, engine)
 

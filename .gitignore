@@ -41,6 +41,10 @@ Thumbs.db
 tmp/
 .scratch/
 
+# local GEO testing tooling — not part of the product, never committed
+/geo-test-ui/
+/dev-geo.mjs
+
 # generated assets (never commit user/brand media)
 uploads/
 assets/generated/

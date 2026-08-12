@@ -34,6 +34,17 @@ export type VisibilitySnapshot = z.infer<typeof visibilitySnapshotSchema>;
 /**
  * Single headline number for the dashboard. Weighted so that "shows up at all"
  * dominates — an SMB that never appears cares about presence before position.
+ *
+ * This deliberately keeps a presence term, which the build spec's formula
+ * (docs/GEO-Engine-AGENT-SPEC.md §5) omits. Under the spec's weights a brand
+ * named in one answer out of twenty, but named alone in that one, scores near
+ * the top; that reads as a broken instrument to the businesses we're measuring.
+ * The spec's `citation_rate = total_citations / total_runs` is also unbounded —
+ * a single answer can carry five URLs — so its score can exceed 100.
+ *
+ * Bumping any weight changes what every historical snapshot means, so the
+ * version travels with the number: persist it alongside the score and never
+ * compare across versions.
  */
 export const GEO_SCORE_WEIGHTS = {
   presenceRate: 0.45,
@@ -42,8 +53,21 @@ export const GEO_SCORE_WEIGHTS = {
   citationRate: 0.15,
 } as const;
 
+export const GEO_SCORE_VERSION = 1;
+
 /** Positions beyond this contribute no position quality. */
 const POSITION_HORIZON = 10;
+
+export const GEO_SCORE_BANDS = { high: 75, medium: 45 } as const;
+
+export type GeoScoreBand = 'high' | 'medium' | 'low';
+
+/** Bands the 0-100 score for the dashboard gauge. Thresholds per spec §5. */
+export function geoScoreBand(score: number): GeoScoreBand {
+  if (score >= GEO_SCORE_BANDS.high) return 'high';
+  if (score >= GEO_SCORE_BANDS.medium) return 'medium';
+  return 'low';
+}
 
 export function computeGeoScore(
   snapshot: Pick<
