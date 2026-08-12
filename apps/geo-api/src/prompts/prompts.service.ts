@@ -2,13 +2,12 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { eq, schema, type Database, type TrackedPromptRow } from '@bmas/db';
 import { QUEUES, type CreateTrackedPromptInput } from '@bmas/shared';
 import type { Queue } from 'bullmq';
+import { loadEnv } from '../config/env.js';
 import { DATABASE, PROBE_QUEUE, ROLLUP_QUEUE } from '../core/core.module.js';
 
 /** Long enough for a sweep's probe+analysis jobs to finish before the rollup
  *  reads `probe_runs`; short enough the dashboard updates the same session. */
 const ROLLUP_DELAY_MS = 2 * 60_000;
-/** Rolling window the rollup scores over. */
-const ROLLUP_WINDOW_MS = 24 * 60 * 60_000;
 
 @Injectable()
 export class PromptsService {
@@ -73,12 +72,17 @@ export class PromptsService {
       })),
     );
 
-    // Nothing else in this codebase enqueues `geo-rollup` (a scheduled/cron
-    // trigger for periodic rollups is a separate, not-yet-built gap) — without
-    // this, `visibility_snapshots` never gets a row and the dashboard's score
-    // and trend chart stay empty forever, even though probes ran successfully.
+    // The worker's cron also enqueues roll-ups, but only on its own schedule —
+    // without this, a manual probe wouldn't move the dashboard until the next
+    // tick. The window MUST match the worker's (`GEO_ROLLUP_WINDOW_DAYS`): the
+    // dashboard shows whichever snapshot has the newest `period_start`, so a
+    // shorter window here would win every time and pin the headline score to a
+    // single sweep — one prompt that happened not to name the brand would read
+    // as a score of zero.
     const periodEnd = new Date();
-    const periodStart = new Date(periodEnd.getTime() - ROLLUP_WINDOW_MS);
+    const periodStart = new Date(
+      periodEnd.getTime() - loadEnv().GEO_ROLLUP_WINDOW_DAYS * 24 * 60 * 60_000,
+    );
     await this.rollupQueue.add(
       QUEUES.geoRollup,
       { brandId: prompt.brandId, periodStart, periodEnd },

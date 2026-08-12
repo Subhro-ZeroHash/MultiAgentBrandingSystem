@@ -14,6 +14,15 @@ const envSchema = z.object({
     .default('http://localhost:3000')
     .transform((value) => value.split(',').map((origin) => origin.trim())),
 
+  /**
+   * Must match the worker's `GEO_ROLLUP_WINDOW_DAYS`. Both processes enqueue
+   * roll-ups — the worker on its cron, this API after a manual probe — and the
+   * dashboard reads whichever snapshot has the newest `period_start`. If the
+   * two windows disagree, the shorter one always wins the dashboard and the
+   * headline score silently collapses to whatever a single sweep measured.
+   */
+  GEO_ROLLUP_WINDOW_DAYS: z.coerce.number().int().positive().default(7),
+
   ANTHROPIC_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
