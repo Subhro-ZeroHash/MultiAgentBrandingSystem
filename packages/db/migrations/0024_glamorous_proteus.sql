@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "marketing_plans_one_active_per_brand_idx" ON "content"."marketing_plans" USING btree ("brand_id") WHERE "content"."marketing_plans"."status" = 'active';

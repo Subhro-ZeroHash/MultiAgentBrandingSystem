@@ -162,6 +162,20 @@
       "when": 1787036693092,
       "tag": "0022_silky_zaladane",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787080724707,
+      "tag": "0023_simple_scarlet_witch",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787082831793,
+      "tag": "0024_glamorous_proteus",
+      "breakpoints": true
     }
   ]
 }

@@ -20,6 +20,7 @@ import type {
   BrandCompetitor,
   IntelligencePoolScore,
   IntelligenceScore,
+  PlanEvidence,
   PreferenceValue,
   TrendPoolScore,
   TrendScore,
@@ -1368,6 +1369,255 @@ export const aiResearchQueries = content.table(
 export const aiResearchQueriesRelations = relations(aiResearchQueries, ({ one }) => ({
   brand: one(brands, { fields: [aiResearchQueries.brandId], references: [brands.id] }),
 }));
+
+// ---------------------------------------------------------------------------
+// Marketing Plan
+//
+// The layer above `trend_opportunities`. An opportunity is a single reactive
+// idea ("post about Diwali"); a plan is the standing answer to "what are we
+// doing over the next few weeks, and why" — the thing a marketing team would
+// keep on a whiteboard. It is synthesized from the Brand Brain, the newest
+// trend opportunities, competitor intelligence, and GEO visibility, so it can
+// justify itself with evidence rather than restating the brand kit.
+//
+// Exactly one plan per brand is `active` at a time. Revising never edits in
+// place: the planner writes a new plan and marks the previous one
+// `superseded`, so "why were we doing that last week" stays answerable and a
+// user can see what their own steering actually changed.
+// ---------------------------------------------------------------------------
+
+export const planStatus = content.enum('plan_status', [
+  'draft',
+  'active',
+  /** Replaced by a newer plan — kept for history, never shown as current. */
+  'superseded',
+]);
+
+/**
+ * Why this plan exists in the shape it does.
+ *
+ * `scheduled` plans come from the autonomous loop; `directive` plans were
+ * produced because the user steered. Stored rather than inferred from the
+ * presence of a directive id, because a directive can also *refine* a plan
+ * that a schedule originally created.
+ */
+export const planOrigin = content.enum('plan_origin', ['scheduled', 'directive', 'manual']);
+
+export const marketingPlans = content.table(
+  'marketing_plans',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    status: planStatus('status').notNull().default('draft'),
+    origin: planOrigin('origin').notNull().default('scheduled'),
+    /** How far ahead this plan reaches. Drives the item spacing, and is what
+     *  the user is really choosing when they ask for "a plan for this month". */
+    horizonDays: integer('horizon_days').notNull().default(14),
+    /** One line the user actually reads first: what this plan is trying to
+     *  move — "own the marathon-season conversation in Delhi". */
+    headline: text('headline').notNull(),
+    /** The reasoning, in the planner's own words, citing what it saw. This is
+     *  the difference between a plan and a list. */
+    rationale: text('rationale').notNull(),
+    /** The current theme in the user's language, e.g. "100m dash, Delhi".
+     *  Set from a directive when the user redirects; null when the planner
+     *  chose the focus itself. */
+    focus: text('focus'),
+    /** What the planner read, so a plan can be explained after the sources
+     *  themselves have rotated out of the pool. */
+    evidence: jsonb('evidence').$type<PlanEvidence>().notNull().default({
+      opportunityIds: [],
+      intelligenceItemIds: [],
+      notes: [],
+      geoScoreAtPlanning: null,
+    }),
+    /** The plan this one replaced, newest-first chain. */
+    supersedesId: text('supersedes_id').references((): AnyPgColumn => marketingPlans.id, {
+      onDelete: 'set null',
+    }),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('marketing_plans_brand_created_idx').on(t.brandId, t.createdAt),
+    // The only hot query: this brand's current plan.
+    index('marketing_plans_brand_status_idx').on(t.brandId, t.status),
+    // At most ONE active plan per brand, enforced by the database rather than
+    // by the planner's transaction alone.
+    //
+    // `installPlan` reads the current active plan and then inserts the new
+    // one. Two planners running concurrently for the same brand — a scheduled
+    // refresh landing while the user steers, say — can both read the same
+    // "previous" and both insert, leaving two rows claiming to be current.
+    // Every reader here uses `limit(1)`, so the second plan would not error;
+    // it would silently disappear, taking its proposed items out of the inbox
+    // with it. A partial unique index turns that race into a failed
+    // transaction that rolls back and retries, which is the outcome we want.
+    uniqueIndex('marketing_plans_one_active_per_brand_idx')
+      .on(t.brandId)
+      .where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * Nothing is generated from a plan item until it is `approved`.
+ *
+ * That is the whole point of the status column: the planner may propose
+ * freely, because proposing costs one model call for the whole plan, while
+ * generating costs image spend per item. `proposed -> approved` is the only
+ * transition a human makes, and it is the only one that spends money.
+ */
+export const planItemStatus = content.enum('plan_item_status', [
+  'proposed',
+  'approved',
+  'rejected',
+  /** Generation enqueued; `generationJobId` is set. */
+  'generating',
+  'ready',
+  'scheduled',
+  'published',
+  'failed',
+]);
+
+export const planItems = content.table(
+  'plan_items',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    planId: text('plan_id')
+      .notNull()
+      .references(() => marketingPlans.id, { onDelete: 'cascade' }),
+    /** Denormalized from the plan so the inbox can scope by brand without a
+     *  join on every read. */
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** Position in the plan, 0-based. Ordering is editorial, not chronological
+     *  — an item can be undated. */
+    sequence: integer('sequence').notNull(),
+    title: text('title').notNull(),
+    /** Why this specific post, in one or two sentences the user can argue with. */
+    rationale: text('rationale').notNull(),
+    contentType: trendContentType('content_type').notNull(),
+    /** Prefills the generation request on approval. Same shape the trend
+     *  engine already uses, so approval reuses that path untouched. */
+    suggestedRequest: jsonb('suggested_request').$type<TrendSuggestedRequest>().notNull(),
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
+    /** The opportunity this item was built on, when it came from one. */
+    opportunityId: text('opportunity_id').references(() => trendOpportunities.id, {
+      onDelete: 'set null',
+    }),
+    /** When the plan intends this to go out. Null means "sometime in the
+     *  horizon" — the planner does not always have a reason to pick a day. */
+    plannedFor: timestamp('planned_for', { withTimezone: true }),
+    status: planItemStatus('status').notNull().default('proposed'),
+    generationJobId: text('generation_job_id').references(() => generationJobs.id, {
+      onDelete: 'set null',
+    }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('plan_items_plan_seq_idx').on(t.planId, t.sequence),
+    // Backs the approval inbox: this brand's items awaiting a human.
+    index('plan_items_brand_status_idx').on(t.brandId, t.status),
+  ],
+);
+
+/**
+ * The steering conversation (the chat).
+ *
+ * A user redirects the whole plan by saying so in plain language — "focus on
+ * the 100m dash in Delhi instead" — and that single message is the entire
+ * interface. Each message is a row; the agent's replies are rows too, so the
+ * panel is just this table in order.
+ *
+ * `status` tracks the work one user message set off, because a redirect is not
+ * instant: it researches the new topic first, then re-plans. The user watches
+ * that happen rather than waiting on a spinner with no explanation.
+ */
+export const directiveRole = content.enum('directive_role', ['user', 'agent']);
+
+export const directiveIntent = content.enum('directive_intent', [
+  /** Change what the plan is about. Triggers research, then a new plan. */
+  'redirect',
+  /** Keep the subject, change the treatment — tone, channel, cadence. */
+  'refine',
+  /** "Yes, do it" — approves the current plan's proposed items. */
+  'approve',
+  /** A question about the plan; answered without changing it. */
+  'question',
+  'unclear',
+]);
+
+export const directiveStatus = content.enum('directive_status', [
+  'pending',
+  'researching',
+  'planning',
+  'applied',
+  'failed',
+]);
+
+export const planDirectives = content.table(
+  'plan_directives',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** The plan this message was said *about*. Null for a message sent before
+     *  any plan exists, which is a legitimate way to start one. */
+    planId: text('plan_id').references((): AnyPgColumn => marketingPlans.id, {
+      onDelete: 'set null',
+    }),
+    role: directiveRole('role').notNull(),
+    text: text('text').notNull(),
+    /** Only set on user rows, and only once classified. */
+    intent: directiveIntent('intent'),
+    status: directiveStatus('status').notNull().default('pending'),
+    /** The plan this directive produced, once it has produced one. */
+    resultingPlanId: text('resulting_plan_id').references((): AnyPgColumn => marketingPlans.id, {
+      onDelete: 'set null',
+    }),
+    /** The directed research run this directive kicked off, so the panel can
+     *  show "researching the 100m dash in Delhi" against real progress. */
+    researchRunId: text('research_run_id').references((): AnyPgColumn => trendResearchRuns.id, {
+      onDelete: 'set null',
+    }),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('plan_directives_brand_created_idx').on(t.brandId, t.createdAt)],
+);
+
+export const marketingPlansRelations = relations(marketingPlans, ({ one, many }) => ({
+  brand: one(brands, { fields: [marketingPlans.brandId], references: [brands.id] }),
+  items: many(planItems),
+}));
+
+export const planItemsRelations = relations(planItems, ({ one }) => ({
+  plan: one(marketingPlans, { fields: [planItems.planId], references: [marketingPlans.id] }),
+  opportunity: one(trendOpportunities, {
+    fields: [planItems.opportunityId],
+    references: [trendOpportunities.id],
+  }),
+}));
+
+export type MarketingPlanRow = typeof marketingPlans.$inferSelect;
+export type NewMarketingPlanRow = typeof marketingPlans.$inferInsert;
+export type PlanItemRow = typeof planItems.$inferSelect;
+export type NewPlanItemRow = typeof planItems.$inferInsert;
+export type PlanDirectiveRow = typeof planDirectives.$inferSelect;
+export type NewPlanDirectiveRow = typeof planDirectives.$inferInsert;
 
 export type IntelligenceRunRow = typeof intelligenceRuns.$inferSelect;
 export type NewIntelligenceRunRow = typeof intelligenceRuns.$inferInsert;

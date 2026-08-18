@@ -8,6 +8,9 @@ import {
   poolRefreshJobSchema,
   scheduledPostPublishJobSchema,
   trendResearchJobSchema,
+  contentPlanDirectiveJobSchema,
+  contentPlanItemReplaceJobSchema,
+  contentPlanSynthesisJobSchema,
 } from '@bmas/shared';
 import { Queue, UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
@@ -22,6 +25,9 @@ import {
 } from './pipeline/research-scheduler.js';
 import { runScheduledPostPublish } from './pipeline/scheduled-post-publish.js';
 import { runTrendPoolRefresh } from './pipeline/trend-pool-refresh.js';
+import { runPlanDirective } from './pipeline/plan-directive.js';
+import { runPlanItemReplace } from './pipeline/plan-item-replace.js';
+import { runPlanSynthesis } from './pipeline/plan-synthesis.js';
 import { runTrendResearch } from './pipeline/trend-research.js';
 
 const ctx = createContext();
@@ -159,6 +165,51 @@ intelligencePoolResearchWorker.on('failed', (job, error) => {
   console.error(`[intelligence-pool-refresh] job ${job?.id} failed: ${describeError(error)}`);
 });
 
+// The planning agents. Both are strategy-level LLM calls rather than image
+// work, so they are cheap to run and there is no reason to serialise them
+// beyond keeping one brand's plan writes from racing each other — which the
+// planner's own transaction already handles.
+const planSynthesisWorker = new Worker(
+  QUEUES.contentPlanSynthesis,
+  async (job) => {
+    await runPlanSynthesis(ctx, contentPlanSynthesisJobSchema.parse(job.data));
+  },
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+planSynthesisWorker.on('failed', (job, error) => {
+  console.error(`[plan] job ${job?.id} failed: ${describeError(error)}`);
+});
+
+// Concurrency 1: a directive rewrites the whole plan, and two of a brand's
+// messages processed at once would each supersede the other's plan, leaving
+// the user's earlier instruction silently discarded. Ordering is the feature
+// here, not throughput.
+const planDirectiveWorker = new Worker(
+  QUEUES.contentPlanDirective,
+  async (job) => runPlanDirective(ctx, contentPlanDirectiveJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+planDirectiveWorker.on('failed', (job, error) => {
+  console.error(`[plan-directive] job ${job?.id} failed: ${describeError(error)}`);
+});
+
+const planItemReplaceWorker = new Worker(
+  QUEUES.contentPlanItemReplace,
+  async (job) => {
+    await runPlanItemReplace(ctx, contentPlanItemReplaceJobSchema.parse(job.data));
+  },
+  // Serialised per process: two replacements for the same plan drafted at once
+  // would each be blind to the other's new item, which is exactly the
+  // duplicate this feature exists to prevent.
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+planItemReplaceWorker.on('failed', (job, error) => {
+  console.error(`[plan-replace] job ${job?.id} failed: ${describeError(error)}`);
+});
+
 // Producer-side handles for the scheduler ticks to enqueue into. Separate
 // from the Worker instances above (which only consume) — BullMQ's Queue and
 // Worker are different roles on the same queue name, and a tick needs to add
@@ -245,6 +296,9 @@ async function shutdown(signal: string): Promise<void> {
       researchSchedulerWorker.close(),
       poolSchedulerWorker.close(),
       contentEditWorker.close(),
+      planSynthesisWorker.close(),
+      planDirectiveWorker.close(),
+      planItemReplaceWorker.close(),
       trendResearchProducer.close(),
       intelligenceResearchProducer.close(),
       researchSchedulerQueue.close(),

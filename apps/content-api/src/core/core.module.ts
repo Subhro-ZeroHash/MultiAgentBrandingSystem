@@ -14,6 +14,9 @@ export const SCHEDULED_POST_PUBLISH_QUEUE = Symbol('SCHEDULED_POST_PUBLISH_QUEUE
 export const TREND_RESEARCH_QUEUE = Symbol('TREND_RESEARCH_QUEUE');
 export const INTELLIGENCE_RESEARCH_QUEUE = Symbol('INTELLIGENCE_RESEARCH_QUEUE');
 export const CONTENT_EDIT_QUEUE = Symbol('CONTENT_EDIT_QUEUE');
+export const PLAN_SYNTHESIS_QUEUE = Symbol('PLAN_SYNTHESIS_QUEUE');
+export const PLAN_DIRECTIVE_QUEUE = Symbol('PLAN_DIRECTIVE_QUEUE');
+export const PLAN_ITEM_REPLACE_QUEUE = Symbol('PLAN_ITEM_REPLACE_QUEUE');
 export const ASSET_URLS = Symbol('ASSET_URLS');
 export const OBJECT_STORE = Symbol('OBJECT_STORE');
 
@@ -84,6 +87,19 @@ function redisConnection() {
       provide: CONTENT_EDIT_QUEUE,
       useFactory: () => new Queue(QUEUES.contentEdit, { connection: redisConnection() }),
     },
+    {
+      provide: PLAN_SYNTHESIS_QUEUE,
+      useFactory: () => new Queue(QUEUES.contentPlanSynthesis, { connection: redisConnection() }),
+    },
+    {
+      provide: PLAN_DIRECTIVE_QUEUE,
+      useFactory: () => new Queue(QUEUES.contentPlanDirective, { connection: redisConnection() }),
+    },
+    {
+      provide: PLAN_ITEM_REPLACE_QUEUE,
+      useFactory: () =>
+        new Queue(QUEUES.contentPlanItemReplace, { connection: redisConnection() }),
+    },
   ],
   exports: [
     DATABASE,
@@ -93,6 +109,9 @@ function redisConnection() {
     TREND_RESEARCH_QUEUE,
     INTELLIGENCE_RESEARCH_QUEUE,
     CONTENT_EDIT_QUEUE,
+    PLAN_SYNTHESIS_QUEUE,
+    PLAN_DIRECTIVE_QUEUE,
+    PLAN_ITEM_REPLACE_QUEUE,
     ASSET_URLS,
     OBJECT_STORE,
   ],
@@ -105,6 +124,9 @@ export class CoreModule implements OnApplicationShutdown {
     @Inject(TREND_RESEARCH_QUEUE) private readonly trendResearchQueue: Queue,
     @Inject(INTELLIGENCE_RESEARCH_QUEUE) private readonly intelligenceResearchQueue: Queue,
     @Inject(CONTENT_EDIT_QUEUE) private readonly contentEditQueue: Queue,
+    @Inject(PLAN_SYNTHESIS_QUEUE) private readonly planSynthesisQueue: Queue,
+    @Inject(PLAN_DIRECTIVE_QUEUE) private readonly planDirectiveQueue: Queue,
+    @Inject(PLAN_ITEM_REPLACE_QUEUE) private readonly planItemReplaceQueue: Queue,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
@@ -115,6 +137,9 @@ export class CoreModule implements OnApplicationShutdown {
       this.trendResearchQueue.close(),
       this.intelligenceResearchQueue.close(),
       this.contentEditQueue.close(),
+      this.planSynthesisQueue.close(),
+      this.planDirectiveQueue.close(),
+      this.planItemReplaceQueue.close(),
     ]);
   }
 }

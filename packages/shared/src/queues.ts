@@ -31,6 +31,15 @@ export const QUEUES = {
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
   geoPromptRefresh: 'geo-prompt-refresh',
+  /** The Marketing Planner. Synthesizes the standing plan from the Brand
+   *  Brain plus whatever the research agents have most recently found. */
+  contentPlanSynthesis: 'content-plan-synthesis',
+  /** One user steering message. Classifies it, researches when it names a new
+   *  topic, then re-plans — see plan-directive.ts. */
+  contentPlanDirective: 'content-plan-directive',
+  /** Draft one replacement for a proposal the user dismissed. Separate from
+   *  plan synthesis because it rewrites a single item rather than the plan. */
+  contentPlanItemReplace: 'content-plan-item-replace',
   geoSweep: 'geo-sweep',
 } as const;
 
@@ -42,6 +51,44 @@ export const contentGenerationJobSchema = z.object({
   idempotencyKey: z.string(),
 });
 export type ContentGenerationJob = z.infer<typeof contentGenerationJobSchema>;
+
+/**
+ * Draft or redraft a brand's marketing plan.
+ *
+ * `directiveId` is set when a user's steering message caused this run, so the
+ * planner can attribute the resulting plan and close the loop on the chat
+ * message that asked for it.
+ */
+export const contentPlanSynthesisJobSchema = z.object({
+  brandId: entityIdSchema,
+  directiveId: entityIdSchema.nullable().default(null),
+  /** Overrides the plan's subject. Set from a directive's topic after its
+   *  research run lands; null lets the planner choose. */
+  focus: z.string().max(300).nullable().default(null),
+  horizonDays: z.number().int().min(1).max(90).default(14),
+});
+export type ContentPlanSynthesisJob = z.infer<typeof contentPlanSynthesisJobSchema>;
+
+/** Process one message from the planning chat. */
+export const contentPlanDirectiveJobSchema = z.object({
+  directiveId: entityIdSchema,
+  brandId: entityIdSchema,
+});
+export type ContentPlanDirectiveJob = z.infer<typeof contentPlanDirectiveJobSchema>;
+
+/**
+ * Replace one dismissed proposal with a genuinely different idea.
+ *
+ * Carries only the item id: everything the replacement must avoid — the
+ * dismissed idea itself, the rest of the plan, and every proposal this brand
+ * has rejected before — is derived server-side, so a stale client cannot
+ * narrow the exclusion list by omission.
+ */
+export const contentPlanItemReplaceJobSchema = z.object({
+  planItemId: entityIdSchema,
+  brandId: entityIdSchema,
+});
+export type ContentPlanItemReplaceJob = z.infer<typeof contentPlanItemReplaceJobSchema>;
 
 /** Thin and id-only like every other job schema here — the worker re-reads
  *  the `asset_edits` row's current state rather than trusting a payload that

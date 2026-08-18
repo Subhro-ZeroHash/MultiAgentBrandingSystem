@@ -7,6 +7,7 @@ import { BrandSiteModule } from './brand-site/brand-site.module.js';
 import { BrandsModule } from './brands/brands.module.js';
 import { CoreModule } from './core/core.module.js';
 import { GenerationsModule } from './generations/generations.module.js';
+import { PlanningModule } from './planning/planning.module.js';
 import { HealthModule } from './health/health.module.js';
 import { IntelligenceModule } from './intelligence/intelligence.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
@@ -62,6 +63,7 @@ const GLOBAL_RATE_LIMIT = { ttl: 60_000, limit: 1_000 };
     TrendsModule,
     IntelligenceModule,
     GenerationsModule,
+    PlanningModule,
     SchedulingModule,
     SocialModule,
     NotificationsModule,

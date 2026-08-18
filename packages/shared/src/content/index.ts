@@ -7,3 +7,4 @@ export * from './trends.js';
 export * from './intelligence.js';
 export * from './category.js';
 export * from './research-pool.js';
+export * from './plan.js';
