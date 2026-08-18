@@ -17,7 +17,8 @@ import type { ImageGenService } from './image.js';
 import type { LlmService, ModelRole } from './llm.js';
 import type { WebSearchService } from './search.js';
 
-/** `stub` draws placeholders locally — see adapters/stub.image.ts. */
+/** `stub` draws placeholders locally — see adapters/stub.image.ts. `gemini` is
+ *  the primary content-generation provider. */
 export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 
 /** Which provider serves `LlmService` — text, JSON, and vision QA. */
@@ -87,16 +88,15 @@ const GEMINI_MODELS: Record<ModelRole, string> = {
   qa: 'gemini-3.6-flash',
 };
 
-const OLLAMA_MODELS: Record<ModelRole, string> = {
-  orchestrator: 'gemma4:e4b',
-  volume: 'gemma4:e4b',
-  qa: 'gemma4:e4b',
-};
+/** Used only when OLLAMA_MODEL itself is unset. Unlike the hosted providers,
+ *  Ollama has no fixed per-role catalogue — the only meaningful default is
+ *  whatever's actually pulled locally (`ollama list`), so this is a last
+ *  resort, not a verified id. */
+const OLLAMA_FALLBACK_MODEL = 'gemma4:e4b';
 
-const DEFAULT_MODELS: Record<LlmProviderName, Record<ModelRole, string>> = {
+const DEFAULT_MODELS: Record<Exclude<LlmProviderName, 'ollama'>, Record<ModelRole, string>> = {
   anthropic: ANTHROPIC_MODELS,
   gemini: GEMINI_MODELS,
-  ollama: OLLAMA_MODELS,
 };
 
 /**
@@ -114,7 +114,21 @@ export class AiRegistry {
     // whichever provider is selected — a Claude id under LLM_PROVIDER=gemini
     // reaches Google and 404s. Defaults are picked per provider for that reason.
     const llmProvider = config.llmProvider ?? 'anthropic';
-    const models = { ...DEFAULT_MODELS[llmProvider], ...config.models };
+    // Ollama's per-role default is derived from OLLAMA_MODEL (the model a dev
+    // actually confirmed is pulled) rather than a static catalogue entry —
+    // every role uses that same model unless an LLM_MODEL_* override singles
+    // one out, e.g. pointing `qa` at a vision-capable model while `volume`
+    // stays on a faster text-only one.
+    const ollamaModel = config.ollamaModel ?? OLLAMA_FALLBACK_MODEL;
+    const models: Record<ModelRole, string> =
+      llmProvider === 'ollama'
+        ? {
+            orchestrator: ollamaModel,
+            volume: ollamaModel,
+            qa: ollamaModel,
+            ...config.models,
+          }
+        : { ...DEFAULT_MODELS[llmProvider], ...config.models };
 
     this.llmService =
       llmProvider === 'gemini'

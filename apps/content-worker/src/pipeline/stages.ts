@@ -1050,7 +1050,9 @@ export async function generateCopy(ctx: StageContext): Promise<CopyPack[]> {
                   '  example, and do not tag a category this product does not belong to.',
                   '',
                   `Write in language: ${request.language}.`,
-                  'Return valid JSON with headline, caption, hashtags (array of strings), and cta.',
+                  'Return valid JSON with headline, caption, hashtags (array of strings), and cta. ' +
+                    'The hashtags above belong only in the hashtags array — the caption field must ' +
+                    'read as plain prose with no hashtags appended to it.',
                 ]
                   .filter(Boolean)
                   .join('\n'),

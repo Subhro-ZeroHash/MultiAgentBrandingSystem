@@ -30,6 +30,7 @@ export const QUEUES = {
   poolScheduler: 'pool-scheduler',
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
+  geoPromptRefresh: 'geo-prompt-refresh',
   geoSweep: 'geo-sweep',
 } as const;
 
@@ -124,6 +125,20 @@ export const geoRollupJobSchema = z.object({
 export type GeoRollupJob = z.infer<typeof geoRollupJobSchema>;
 
 /**
+ * Regenerates a brand's suggested tracked prompts.
+ *
+ * Queued rather than done inline in geo-api because it is an LLM call, and
+ * every other model call in this system runs in a worker — the APIs enqueue.
+ * `requestedAt` travels with the job so the client can tell a finished refresh
+ * from the set that was already there, without a status table.
+ */
+export const geoPromptRefreshJobSchema = z.object({
+  brandId: entityIdSchema,
+  requestedAt: z.coerce.date(),
+});
+export type GeoPromptRefreshJob = z.infer<typeof geoPromptRefreshJobSchema>;
+
+/**
  * What the cron schedulers fire. These are orchestration jobs, not work: the
  * sweep worker turns one of these into the fan-out of probe or roll-up jobs.
  * Keeping that indirection means a cron tick carries no per-brand payload, so
@@ -132,5 +147,6 @@ export type GeoRollupJob = z.infer<typeof geoRollupJobSchema>;
 export const geoSweepJobSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('prompt'), promptId: entityIdSchema }),
   z.object({ kind: z.literal('rollup') }),
+  z.object({ kind: z.literal('prompt-suggestions') }),
 ]);
 export type GeoSweepJob = z.infer<typeof geoSweepJobSchema>;

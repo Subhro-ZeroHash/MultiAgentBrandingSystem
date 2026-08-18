@@ -1,11 +1,25 @@
 import { closeDatabase } from '@bmas/db';
-import { QUEUES, geoProbeJobSchema, geoRollupJobSchema, geoSweepJobSchema } from '@bmas/shared';
+import {
+  QUEUES,
+  geoProbeJobSchema,
+  geoPromptRefreshJobSchema,
+  geoRollupJobSchema,
+  geoSweepJobSchema,
+} from '@bmas/shared';
 import { Queue, Worker } from 'bullmq';
 import { createContext } from './context.js';
 import { runProbe } from './pipeline/probe.js';
 import { runRollup } from './pipeline/rollup.js';
+import {
+  regenerateSuggestedPrompts,
+  runPromptSuggestionSweep,
+} from './pipeline/prompt-suggestions.js';
 import { enqueueRollups, sweepPrompt } from './pipeline/sweep.js';
-import { ensureRollupScheduler, syncPromptSchedulers } from './scheduler.js';
+import {
+  ensurePromptSuggestionScheduler,
+  ensureRollupScheduler,
+  syncPromptSchedulers,
+} from './scheduler.js';
 
 const ctx = createContext();
 
@@ -37,6 +51,11 @@ const sweepWorker = new Worker(
       console.warn(`[sweep] prompt ${tick.promptId}: enqueued ${enqueued} probe(s)`);
       return;
     }
+    if (tick.kind === 'prompt-suggestions') {
+      const brands = await runPromptSuggestionSweep(ctx);
+      console.warn(`[sweep] prompt-suggestions tick: topped up ${brands} brand(s)`);
+      return;
+    }
     const brands = await enqueueRollups(ctx, rollupQueue);
     console.warn(`[sweep] roll-up tick: enqueued ${brands} brand(s)`);
   },
@@ -44,7 +63,24 @@ const sweepWorker = new Worker(
   { connection: ctx.redis, concurrency: 1 },
 );
 
-for (const worker of [probeWorker, rollupWorker, sweepWorker]) {
+const promptRefreshWorker = new Worker(
+  QUEUES.geoPromptRefresh,
+  async (job) => {
+    const { brandId } = geoPromptRefreshJobSchema.parse(job.data);
+    const { retired, created } = await regenerateSuggestedPrompts(ctx, brandId);
+    console.warn(
+      `[prompt-refresh] brand ${brandId}: retired ${retired}, created ${created}`,
+    );
+  },
+  // One brand's refresh at a time. Two concurrent refreshes of the SAME brand
+  // would each draft against the other's soon-to-be-retired set and then both
+  // insert, leaving twelve live prompts instead of six. geo-api also keys the
+  // job per brand so a double-tap collapses, but that only dedupes what is
+  // still waiting — this is what bounds the overlap.
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+for (const worker of [probeWorker, rollupWorker, sweepWorker, promptRefreshWorker]) {
   worker.on('failed', (job, error) => {
     console.error(`[${worker.name}] job ${job?.id} failed:`, error.message);
   });
@@ -66,6 +102,7 @@ async function sync(): Promise<void> {
 }
 
 await ensureRollupScheduler(ctx, sweepQueue);
+await ensurePromptSuggestionScheduler(ctx, sweepQueue);
 await sync();
 const syncTimer = setInterval(() => void sync(), ctx.scheduler.syncIntervalMs);
 
@@ -77,7 +114,12 @@ async function shutdown(signal: string): Promise<void> {
   console.warn(`geo-worker received ${signal}, draining...`);
   clearInterval(syncTimer);
   // `close()` waits for in-flight jobs so a deploy never drops a paid probe.
-  await Promise.allSettled([probeWorker.close(), rollupWorker.close(), sweepWorker.close()]);
+  await Promise.allSettled([
+    probeWorker.close(),
+    rollupWorker.close(),
+    sweepWorker.close(),
+    promptRefreshWorker.close(),
+  ]);
   await Promise.allSettled([probeQueue.close(), rollupQueue.close(), sweepQueue.close()]);
   await closeDatabase(ctx.db);
   process.exit(0);

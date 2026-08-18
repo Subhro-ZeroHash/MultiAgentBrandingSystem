@@ -102,8 +102,15 @@ export class AutomationSettingsService {
     await this.assertBrandOwned(brandId, ownerId);
     const current = await this.ensureSettings(brandId);
 
-    const frequency = input.trendFrequency ?? current.trendFrequency;
     const enabled = input.contentAutomationEnabled ?? current.contentAutomationEnabled;
+    // Turning autopilot on with no explicit cadence in the same request means
+    // "run every day" — the frontend has no cadence picker (see brain.tsx),
+    // so without this every brand would inherit the column default ('weekly')
+    // the moment autopilot is switched on, leaving research stale for up to a
+    // week with nobody around to notice. A request that does specify
+    // trendFrequency (e.g. a future settings screen) still wins outright.
+    const turningOn = enabled && !current.contentAutomationEnabled;
+    const frequency = input.trendFrequency ?? (turningOn ? 'daily' : current.trendFrequency);
     const policy = input.approvalPolicy ?? current.approvalPolicy;
     const autoPublish = input.autoPublishEnabled ?? current.autoPublishEnabled;
     const autoTriggerOpportunities =
@@ -121,7 +128,7 @@ export class AutomationSettingsService {
 
     const scheduleChanged =
       (input.trendFrequency !== undefined && input.trendFrequency !== current.trendFrequency) ||
-      (enabled && !current.contentAutomationEnabled);
+      turningOn;
 
     const [updated] = await this.db
       .update(schema.automationSettings)

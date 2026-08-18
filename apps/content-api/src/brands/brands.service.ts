@@ -53,11 +53,9 @@ export class BrandsService {
   // ---------------------------------------------------------------------------
   // Ownership
   //
-  // Auth is unbuilt (see CLAUDE.md), but every other brand-scoped module
-  // (trends, scheduling, brand-site, social) resolves the caller from the
-  // x-user-id header and refuses a brand that is not theirs. This module was
-  // missed when that convention was established, leaving every brand/product
-  // route addressable by UUID alone. These bring it in line.
+  // The caller is resolved from the JWT (JwtAuthGuard -> req.user.id), and
+  // every brand-scoped module (trends, scheduling, brand-site, social, and
+  // now geo-api) refuses a brand that isn't theirs. These enforce it here.
   // ---------------------------------------------------------------------------
 
   private async assertBrandOwned(brandId: string, ownerId: string): Promise<void> {

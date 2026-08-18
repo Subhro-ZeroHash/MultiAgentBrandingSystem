@@ -86,16 +86,29 @@ describe('clipCompetitorItemCounts', () => {
 
 describe('verifyCompetitorSources', () => {
   const signal = {
+    provider: 'tavily',
     results: [{ url: 'https://real.example/a', title: 'A', snippet: '', publishedAt: null }],
   };
 
   it('keeps a source whose URL actually appears in the search results', () => {
-    const kept = verifyCompetitorSources([{ url: 'https://real.example/a', title: 'A' }], signal);
+    const kept = verifyCompetitorSources([{ url: 'https://real.example/a', title: 'A' }], [signal]);
     expect(kept).toHaveLength(1);
   });
 
   it('drops a fabricated source URL', () => {
-    const kept = verifyCompetitorSources([{ url: 'https://fake.example/z', title: 'Z' }], signal);
+    const kept = verifyCompetitorSources([{ url: 'https://fake.example/z', title: 'Z' }], [signal]);
     expect(kept).toHaveLength(0);
+  });
+
+  it('keeps a source that appears in any provider result', () => {
+    const serpSignal = {
+      provider: 'serpapi',
+      results: [{ url: 'https://serp.example/b', title: 'B', snippet: '', publishedAt: null }],
+    };
+    const kept = verifyCompetitorSources(
+      [{ url: 'https://serp.example/b', title: 'B' }],
+      [signal, serpSignal],
+    );
+    expect(kept).toHaveLength(1);
   });
 });

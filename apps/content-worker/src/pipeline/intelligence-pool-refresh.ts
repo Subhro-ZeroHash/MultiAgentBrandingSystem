@@ -1,5 +1,5 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
-import type { WebSearchRequest, WebSearchResult } from '@bmas/ai';
+import type { WebSearchRequest, WebSearchResult, WebSearchService } from '@bmas/ai';
 import { eq, schema, sql } from '@bmas/db';
 import {
   CATEGORY_LABELS,
@@ -37,6 +37,8 @@ export type IntelligencePoolBucket =
 
 interface CollectedSignal {
   category: PoolableIntelligenceCategory;
+  /** Which search provider produced these results. */
+  provider: string;
   request: WebSearchRequest;
   results: WebSearchResult[];
 }
@@ -103,40 +105,47 @@ async function recordCost(ctx: WorkerContext, runId: string, cost: CostEvent): P
   });
 }
 
-/** Same "one category failing doesn't sink the run, all of them failing
- *  does" logic as intelligence-research.ts's `collectIntelligenceSignals`.
- *  Single-provider (`ctx.ai.webSearch()`), matching today's behavior — the
- *  multi-provider fan-out trend pooling uses is a reasonable future
- *  improvement now that this is amortized across a whole category, but not
- *  required for the pool to work. */
+/**
+ * Multi-provider fan-out — mirrors `collectPoolSignals` in trend-pool-refresh.ts.
+ *
+ * Queries every configured search provider (Tavily, SerpAPI, …) for each
+ * category. A development that two independent sources both surface is
+ * stronger evidence than either alone, and the LLM synthesis can weigh
+ * provider corroboration when scoring `businessImpact`. "One provider/category
+ * failing doesn't sink the run, all of them failing does" — same logic as
+ * trend pooling.
+ */
 async function collectPoolSignals(
   ctx: WorkerContext,
   runId: string,
   queries: Array<{ category: PoolableIntelligenceCategory; request: WebSearchRequest }>,
 ): Promise<CollectedSignal[]> {
+  const providers: WebSearchService[] = ctx.ai.configuredWebSearches();
   const collected: CollectedSignal[] = [];
 
   for (const { category, request } of queries) {
-    try {
-      const { value: results, cost } = await withRetry(() =>
-        withTimeout(
-          ctx.ai.webSearch().search(request, { referenceId: runId }),
-          SEARCH_TIMEOUT_MS,
-          `intelligence pool search (${category})`,
-        ),
-      );
-      await recordCost(ctx, runId, cost);
-      collected.push({ category, request, results });
-    } catch (error) {
-      console.warn(
-        `[intelligence-pool-refresh] ${category} search failed for run ${runId}: ${describeError(error)}`,
-      );
+    for (const provider of providers) {
+      try {
+        const { value: results, cost } = await withRetry(() =>
+          withTimeout(
+            provider.search(request, { referenceId: runId }),
+            SEARCH_TIMEOUT_MS,
+            `intelligence pool search (${provider.provider}/${category})`,
+          ),
+        );
+        await recordCost(ctx, runId, cost);
+        collected.push({ category, provider: provider.provider, request, results });
+      } catch (error) {
+        console.warn(
+          `[intelligence-pool-refresh] ${provider.provider}/${category} search failed for run ${runId}: ${describeError(error)}`,
+        );
+      }
     }
   }
 
   if (collected.every((signal) => signal.results.length === 0)) {
     throw new Error(
-      'No search results were available to research this bucket from — every search failed or returned nothing.',
+      'No search results were available to research this bucket from — every search provider failed or returned nothing.',
     );
   }
 
@@ -150,15 +159,28 @@ const CATEGORY_LABEL: Record<PoolableIntelligenceCategory, string> = {
 };
 
 function describeSignalsForPrompt(signals: CollectedSignal[]): string {
-  return signals
-    .map(({ category, results }) => {
-      if (results.length === 0) return `## ${CATEGORY_LABEL[category]}\n(search returned nothing)`;
+  // Group by category so the prompt is still organised by topic, with
+  // provider names shown inline so the LLM can spot corroboration.
+  const byCategory = new Map<PoolableIntelligenceCategory, CollectedSignal[]>();
+  for (const signal of signals) {
+    const bucket = byCategory.get(signal.category) ?? [];
+    bucket.push(signal);
+    byCategory.set(signal.category, bucket);
+  }
 
-      const rows = results
-        .map((result, i) => {
+  return [...byCategory.entries()]
+    .map(([category, categorySignals]) => {
+      const allResults = categorySignals.flatMap((s) =>
+        s.results.map((r) => ({ result: r, provider: s.provider })),
+      );
+      if (allResults.length === 0)
+        return `## ${CATEGORY_LABEL[category]}\n(all searches returned nothing)`;
+
+      const rows = allResults
+        .map(({ result, provider }, i) => {
           const date = result.publishedAt ? ` (${result.publishedAt})` : '';
           const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
-          return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
+          return `${i + 1}. [${provider}] [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
         })
         .join('\n');
 

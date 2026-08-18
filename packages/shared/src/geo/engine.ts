@@ -43,3 +43,21 @@ export const ENGINE_CAPABILITIES: Record<AnswerEngine, EngineCapabilities> = {
     supportsLocale: true,
   },
 };
+
+/**
+ * Engines with a real, working probe path in this deployment right now.
+ * Every other `AnswerEngine` member already has a schema entry, an adapter
+ * file, and a UI label — so adding one later is additive — but no live
+ * credentials-and-code combination a human has signed off spending real
+ * money on unattended: `chatgpt`'s adapter is an intentionally unimplemented
+ * stub (see `OpenAiAnswerEngine`), and `claude`/`perplexity`/`copilot`/
+ * `ai_overviews` have no such sign-off yet even where a key exists (Claude's
+ * key is configured but reserved for content generation, not GEO spend).
+ * Single source of truth for "coming soon" in the UI and for which engine
+ * autonomous prompt suggestions (`prompt-suggestions.ts`) are allowed to pick.
+ */
+export const ACTIVE_ANSWER_ENGINES: readonly AnswerEngine[] = ['gemini'];
+
+export function isEngineActive(engine: AnswerEngine): boolean {
+  return (ACTIVE_ANSWER_ENGINES as readonly string[]).includes(engine);
+}

@@ -47,11 +47,15 @@ export class GeminiAnswerEngine implements AnswerEngineClient {
 
   constructor(private readonly config: GeminiEngineConfig) {
     this.baseUrl = config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
-    // Verified live against the models endpoint on 2026-07-21, and chosen over
-    // the newer 3.x line because grounded calls on those return 429 with
-    // limit 0 on a free-tier key — the model plus server-side search is the
-    // paid-only combination, not the key. Revisit once billing is enabled.
-    this.model = config.model ?? 'gemini-2.5-flash';
+    // `gemini-2.5-flash` (verified live 2026-07-21) was retired for new users
+    // sometime before 2026-08-13 — confirmed via GET /v1beta/models, which no
+    // longer serves it. `-latest` is Google's own floating alias for exactly
+    // this: it survives point-release retirements without a code change here.
+    // Still blocked independently by GOOGLE_API_KEY's account having zero
+    // prepayment credits (every generateContent call 402s, grounded or not,
+    // confirmed 2026-08-13) — that is a billing problem, not a model-id one,
+    // and no model swap here fixes it. Revisit once billing is enabled.
+    this.model = config.model ?? 'gemini-flash-latest';
   }
 
   isConfigured(): boolean {

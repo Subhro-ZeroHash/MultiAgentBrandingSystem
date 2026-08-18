@@ -128,6 +128,14 @@ export class OllamaLlmAdapter implements LlmService {
     }
   }
 
+  /** Every other adapter routes per-role (see anthropic.llm.ts); this one
+   *  used to hard-code `this.model` for every call regardless of `req.role`,
+   *  silently ignoring `config.models` — so a `qa`-only override (e.g. a
+   *  vision-capable model for the readback stage) had no effect. */
+  private modelFor(role: ModelRole): string {
+    return this.config.models?.[role] ?? this.model;
+  }
+
   /**
    * Generates plain text via Ollama's chat endpoint.
    */
@@ -139,7 +147,7 @@ export class OllamaLlmAdapter implements LlmService {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.model,
+          model: this.modelFor(req.role),
           messages: [
             ...(req.system ? [{ role: 'system', content: req.system }] : []),
             ...req.messages,
@@ -177,7 +185,7 @@ export class OllamaLlmAdapter implements LlmService {
         value: result.message.content,
         cost: buildCostEvent({
           provider: 'ollama',
-          model: this.model,
+          model: this.modelFor(req.role),
           operation: 'generateText',
           inputTokens: 0, // Ollama runs locally; token counts are not exposed
           outputTokens: 0,
@@ -215,7 +223,7 @@ ${schemaJson}`;
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.model,
+          model: this.modelFor(req.role),
           messages: [
             {
               role: 'system',
@@ -293,7 +301,7 @@ ${schemaJson}`;
         value,
         cost: buildCostEvent({
           provider: 'ollama',
-          model: this.model,
+          model: this.modelFor(req.role),
           operation: 'generateJson',
           inputTokens: 0,
           outputTokens: 0,
@@ -328,18 +336,21 @@ ${schemaJson}`;
     this.require();
 
     try {
-      // Build messages with image data
+      // Ollama's `images` field is base64 strings, not raw bytes — JSON.stringify
+      // would otherwise serialize the Buffer as {"type":"Buffer","data":[...]},
+      // same encoding the Anthropic and Gemini adapters already apply to this
+      // same field.
       const messages = req.images.map((img) => ({
         role: 'user' as const,
         content: req.prompt,
-        images: [img.data], // Ollama expects base64 image data
+        images: [img.data.toString('base64')],
       }));
 
       const response = await fetch(`${this.baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.model,
+          model: this.modelFor(req.role),
           messages,
           stream: false,
           think: THINK,
@@ -372,7 +383,7 @@ ${schemaJson}`;
         value: result.message.content,
         cost: buildCostEvent({
           provider: 'ollama',
-          model: this.model,
+          model: this.modelFor(req.role),
           operation: 'generateText',
           inputTokens: 0,
           outputTokens: 0,

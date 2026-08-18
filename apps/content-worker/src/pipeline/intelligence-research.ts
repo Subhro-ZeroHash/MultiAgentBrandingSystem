@@ -1,5 +1,5 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
-import type { WebSearchRequest, WebSearchResult } from '@bmas/ai';
+import type { WebSearchRequest, WebSearchResult, WebSearchService } from '@bmas/ai';
 import {
   eq,
   getTrendContext,
@@ -259,6 +259,8 @@ export function resolveIntelligenceRelevanceDrafts(
 // ---------------------------------------------------------------------------
 
 interface CollectedSignal {
+  /** Which search provider produced these results. */
+  provider: string;
   results: WebSearchResult[];
 }
 
@@ -278,31 +280,63 @@ function buildCompetitorQuery(competitors: string[]): WebSearchRequest | null {
   };
 }
 
+/**
+ * Multi-provider fan-out for competitor search — mirrors
+ * `collectPoolSignals` in trend-pool-refresh.ts.
+ *
+ * Queries every configured provider (Tavily, SerpAPI, …) for competitor
+ * news. A development that two independent sources both surface is stronger
+ * evidence than either alone, and the synthesis LLM can see which provider
+ * flagged what. Individual provider failures are tolerated (same
+ * "one failing doesn’t sink the run" rule); all failing re-throws.
+ */
 async function collectCompetitorSignal(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
   request: WebSearchRequest,
-): Promise<CollectedSignal> {
-  const { value: results, cost } = await withRetry(() =>
-    withTimeout(
-      ctx.ai.webSearch().search(request, { brandId: brand.id, referenceId: runId }),
-      SEARCH_TIMEOUT_MS,
-      'intelligence competitor search',
-    ),
-  );
-  await recordCost(ctx, brand.id, runId, cost);
-  return { results };
+): Promise<CollectedSignal[]> {
+  const providers: WebSearchService[] = ctx.ai.configuredWebSearches();
+  const signals: CollectedSignal[] = [];
+
+  for (const provider of providers) {
+    try {
+      const { value: results, cost } = await withRetry(() =>
+        withTimeout(
+          provider.search(request, { brandId: brand.id, referenceId: runId }),
+          SEARCH_TIMEOUT_MS,
+          `intelligence competitor search (${provider.provider})`,
+        ),
+      );
+      await recordCost(ctx, brand.id, runId, cost);
+      signals.push({ provider: provider.provider, results });
+    } catch (error) {
+      console.warn(
+        `[intelligence-research] ${provider.provider}/competitor search failed for run ${runId}: ${describeError(error)}`,
+      );
+    }
+  }
+
+  if (signals.length === 0 || signals.every((s) => s.results.length === 0)) {
+    // Return a single empty-results signal so the caller can still run
+    // synthesis with "search returned nothing" rather than crashing the run.
+    return [{ provider: 'none', results: [] }];
+  }
+
+  return signals;
 }
 
-function describeCompetitorSignalForPrompt(signal: CollectedSignal): string {
-  if (signal.results.length === 0) return '## COMPETITOR NEWS\n(search returned nothing)';
+function describeCompetitorSignalForPrompt(signals: CollectedSignal[]): string {
+  const allResults = signals.flatMap((s) =>
+    s.results.map((r) => ({ result: r, provider: s.provider })),
+  );
+  if (allResults.length === 0) return '## COMPETITOR NEWS\n(search returned nothing)';
 
-  const rows = signal.results
-    .map((result, i) => {
+  const rows = allResults
+    .map(({ result, provider }, i) => {
       const date = result.publishedAt ? ` (${result.publishedAt})` : '';
       const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
-      return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
+      return `${i + 1}. [${provider}] [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
     })
     .join('\n');
 
@@ -459,7 +493,7 @@ async function synthesizeCompetitorItemsOnce(
                   ...renderBrandContextLines(brandContext),
                   '',
                   '**Live search results:**',
-                  describeCompetitorSignalForPrompt(signal),
+                  describeCompetitorSignalForPrompt([signal]),
                   '',
                   'Produce up to 10 ranked items. `whyItMatters` must name the concrete effect on ' +
                     'THIS brand.',
@@ -495,12 +529,14 @@ async function synthesizeCompetitorItemsOnce(
   return { items, cost };
 }
 
-/** Same fabrication guard as the old `verifyIntelligenceSources`. */
+/** Same fabrication guard as the old `verifyIntelligenceSources`.
+ *  Accepts an array of signals since collectCompetitorSignal now fans out
+ *  across multiple providers. */
 export function verifyCompetitorSources(
   sources: TrendSource[],
-  signal: CollectedSignal,
+  signals: CollectedSignal[],
 ): TrendSource[] {
-  const known = new Set(signal.results.map((r) => r.url));
+  const known = new Set(signals.flatMap((s) => s.results.map((r) => r.url)));
   return sources.filter((source) => known.has(source.url));
 }
 
@@ -610,15 +646,20 @@ export async function runIntelligenceResearch(
 
     const competitorRows = competitorQuery
       ? await (async () => {
-          const signal = await collectCompetitorSignal(ctx, run.id, brand, competitorQuery);
-          if (signal.results.length === 0) return [];
+          const signals = await collectCompetitorSignal(ctx, run.id, brand, competitorQuery);
+          const hasAnyResults = signals.some((s) => s.results.length > 0);
+          if (!hasAnyResults) return [];
+
+          // Merge all provider results into a single CollectedSignal for
+          // the synthesis function, which builds one prompt from all of them.
+          const mergedSignal = { provider: 'merged', results: signals.flatMap((s) => s.results) };
 
           const { items, cost } = await synthesizeCompetitorItems(
             ctx,
             run.id,
             brand,
             brandContext,
-            signal,
+            mergedSignal,
           );
           await recordCost(ctx, brand.id, run.id, cost);
 
@@ -631,7 +672,7 @@ export async function runIntelligenceResearch(
             whyItMatters: item.whyItMatters,
             urgency: item.urgency,
             score: { ...item.score, overall: computeIntelligenceScore(item.score) },
-            sources: verifyCompetitorSources(item.sources, signal),
+            sources: verifyCompetitorSources(item.sources, signals),
           }));
         })()
       : [];

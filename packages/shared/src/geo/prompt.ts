@@ -17,6 +17,14 @@ export const promptIntentSchema = z.enum([
 ]);
 export type PromptIntent = z.infer<typeof promptIntentSchema>;
 
+/**
+ * Who put the prompt on the list. `suggested` rows come from the generator and
+ * a refresh replaces them; `user` rows were typed by a person and no automated
+ * path ever removes them.
+ */
+export const trackedPromptSourceSchema = z.enum(['suggested', 'user']);
+export type TrackedPromptSource = z.infer<typeof trackedPromptSourceSchema>;
+
 export const trackedPromptSchema = z.object({
   id: entityIdSchema,
   brandId: entityIdSchema,
@@ -27,13 +35,17 @@ export const trackedPromptSchema = z.object({
   engines: z.array(answerEngineSchema).min(1),
   /** Cron expression for the probe cadence. Defaults to weekly. */
   schedule: z.string().default('0 6 * * 1'),
+  source: trackedPromptSourceSchema.default('user'),
   isActive: z.boolean().default(true),
   createdAt: z.coerce.date(),
 });
 export type TrackedPrompt = z.infer<typeof trackedPromptSchema>;
 
+// `source` is omitted, not partial: a prompt created through the API is by
+// definition one a person added, so letting a caller claim 'suggested' would
+// only create a row the refresh path could silently delete.
 export const createTrackedPromptSchema = trackedPromptSchema
-  .omit({ id: true, createdAt: true })
+  .omit({ id: true, createdAt: true, source: true })
   .partial({ locale: true, schedule: true, isActive: true });
 export type CreateTrackedPromptInput = z.infer<typeof createTrackedPromptSchema>;
 

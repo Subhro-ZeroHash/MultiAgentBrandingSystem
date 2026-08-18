@@ -35,6 +35,17 @@ export const sentiment = geo.enum('sentiment', ['positive', 'neutral', 'negative
 
 export const entityType = geo.enum('entity_type', ['brand', 'competitor']);
 
+/**
+ * Who put a tracked prompt on the list.
+ *
+ * `suggested` rows are written by the prompt-suggestion generator and are
+ * therefore replaceable — a refresh retires the current set and writes a new
+ * one. `user` rows were typed by a person and are never touched by that path,
+ * which is the whole reason this column exists. It defaults to `user` so
+ * anything of unknown provenance is protected rather than discarded.
+ */
+export const trackedPromptSource = geo.enum('tracked_prompt_source', ['suggested', 'user']);
+
 export const trackedPrompts = geo.table(
   'tracked_prompts',
   {
@@ -51,12 +62,15 @@ export const trackedPrompts = geo.table(
     engines: jsonb('engines').$type<string[]>().notNull().default([]),
     /** Cron expression driving the probe cadence. */
     schedule: text('schedule').notNull().default('0 6 * * 1'),
+    source: trackedPromptSource('source').notNull().default('user'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('tracked_prompts_brand_idx').on(t.brandId),
     index('tracked_prompts_active_idx').on(t.isActive),
+    // The refresh path's exact lookup: this brand's live suggested set.
+    index('tracked_prompts_brand_source_active_idx').on(t.brandId, t.source, t.isActive),
   ],
 );
 

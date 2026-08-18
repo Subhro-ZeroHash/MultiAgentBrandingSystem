@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Kept byte-for-byte in step with `.env.example`. See AUTH_SECRET below. */
+const PLACEHOLDER_AUTH_SECRET = 'replace-me-with-32-bytes-of-random';
+
 /**
  * Fail fast on misconfiguration: the process refuses to start rather than
  * throwing on the first request that touches a missing variable.
@@ -13,6 +16,18 @@ const envSchema = z.object({
     .string()
     .default('http://localhost:3000')
     .transform((value) => value.split(',').map((origin) => origin.trim())),
+
+  /** Verify-only here — content-api signs, geo-api only reads. Same secret,
+   *  same validation, so the two apps can never silently drift apart. See
+   *  content-api's config/env.ts for the full reasoning on the placeholder guard. */
+  AUTH_SECRET: z
+    .string()
+    .min(32, 'AUTH_SECRET must be at least 32 characters')
+    .refine((secret) => secret !== PLACEHOLDER_AUTH_SECRET, {
+      message:
+        'AUTH_SECRET is still the placeholder from .env.example, which is public. ' +
+        'Generate a real one: openssl rand -hex 32',
+    }),
 
   /**
    * Must match the worker's `GEO_ROLLUP_WINDOW_DAYS`. Both processes enqueue
