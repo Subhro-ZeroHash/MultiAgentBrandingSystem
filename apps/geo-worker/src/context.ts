@@ -12,6 +12,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 
 const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   /** Probes are provider-bound, not CPU-bound; concurrency is about rate limits. */
@@ -45,7 +46,7 @@ export function createContext(): WorkerContext {
   const url = new URL(env.REDIS_URL);
 
   return {
-    db: createDatabase({ url: env.DATABASE_URL }),
+    db: createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production' }),
     ai: createAiRegistryFromEnv(),
     redis: {
       host: url.hostname,
