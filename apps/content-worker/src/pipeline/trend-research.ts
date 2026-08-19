@@ -24,6 +24,7 @@ import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
 import { ensureFreshTrendPool } from './pool-loader.js';
+import { researchFocusedOpportunities } from './focused-trend-research.js';
 import { triggerAutoOpportunity, type TriggerableOpportunity } from './opportunity-trigger.js';
 
 /**
@@ -410,8 +411,26 @@ export async function runTrendResearch(
       );
     }
 
-    const opportunityRows =
-      poolItems.length === 0
+    // A focus is a different question, so it takes a different path. The pool
+    // can only be re-ranked, never extended — asking it for marathons when it
+    // holds Fashion Week returns Fashion Week — so a named subject gets a real
+    // web search instead. See focused-trend-research.ts.
+    const focused = run.focus?.trim()
+      ? await researchFocusedOpportunities(ctx, {
+          runId: run.id,
+          brand,
+          brandContext,
+          focus: run.focus.trim(),
+          locationOverride: run.locationOverride,
+        })
+      : null;
+
+    // Annotated rather than inferred: the ternary produces a union of two
+    // structurally identical row types, which TS will not narrow to the
+    // auto-trigger's `TriggerableOpportunity` on its own.
+    const opportunityRows: TriggerableOpportunity[] = focused
+      ? (focused.opportunities as TriggerableOpportunity[])
+      : poolItems.length === 0
         ? []
         : await (async () => {
             console.warn(
@@ -477,10 +496,12 @@ export async function runTrendResearch(
 
     await ctx.db.transaction(async (tx) => {
       await tx.delete(schema.trendOpportunities).where(eq(schema.trendOpportunities.runId, run.id));
-      // Defensive: a run.id retried from before this rewrite could carry
-      // signals from the old per-brand search stage. New runs never write
-      // here any more — see this file's header.
+      // Cleared then rewritten: a pool-backed run stores no signals (the
+      // evidence lives in pool_trend_signals), while a focused run stores the
+      // results it actually searched, so its opportunities stay auditable
+      // after the pages themselves move on.
       await tx.delete(schema.trendSignals).where(eq(schema.trendSignals.runId, run.id));
+      if (focused?.signals.length) await tx.insert(schema.trendSignals).values(focused.signals);
 
       if (opportunityRows.length)
         await tx.insert(schema.trendOpportunities).values(opportunityRows);
