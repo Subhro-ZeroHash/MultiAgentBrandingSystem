@@ -5,7 +5,6 @@ import { FalImageAdapter } from './adapters/fal.image.js';
 import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
 import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
-import { OllamaLlmAdapter } from './adapters/ollama.llm.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
 import { SerpApiSearchAdapter } from './adapters/serpapi.search.js';
@@ -21,7 +20,7 @@ import type { WebSearchService } from './search.js';
 export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 
 /** Which provider serves `LlmService` — text, JSON, and vision QA. */
-export type LlmProviderName = 'anthropic' | 'gemini' | 'ollama';
+export type LlmProviderName = 'anthropic' | 'gemini';
 
 /** `stub` returns fixture results locally — see adapters/stub.search.ts. */
 export type SearchProviderName = 'tavily' | 'serpapi' | 'stub';
@@ -38,8 +37,6 @@ export interface AiConfig {
   /** Local-only API host overrides; see AnthropicAdapterConfig.baseUrl. */
   anthropicBaseUrl?: string;
   googleBaseUrl?: string;
-  ollamaBaseUrl?: string;
-  ollamaModel?: string;
 
   models?: Partial<Record<ModelRole, string>>;
   geminiImageModel?: string;
@@ -87,16 +84,9 @@ const GEMINI_MODELS: Record<ModelRole, string> = {
   qa: 'gemini-3.6-flash',
 };
 
-const OLLAMA_MODELS: Record<ModelRole, string> = {
-  orchestrator: 'gemma4:e4b',
-  volume: 'gemma4:e4b',
-  qa: 'gemma4:e4b',
-};
-
 const DEFAULT_MODELS: Record<LlmProviderName, Record<ModelRole, string>> = {
   anthropic: ANTHROPIC_MODELS,
   gemini: GEMINI_MODELS,
-  ollama: OLLAMA_MODELS,
 };
 
 /**
@@ -113,7 +103,10 @@ export class AiRegistry {
     // LLM_MODEL_* overrides are provider-agnostic strings, so they must match
     // whichever provider is selected — a Claude id under LLM_PROVIDER=gemini
     // reaches Google and 404s. Defaults are picked per provider for that reason.
-    const llmProvider = config.llmProvider ?? 'anthropic';
+    // Defaults to gemini: it's the provider with a working key across
+    // environments today, while anthropic support stays in place for whenever
+    // a working Anthropic key is available again.
+    const llmProvider = config.llmProvider ?? 'gemini';
     const models = { ...DEFAULT_MODELS[llmProvider], ...config.models };
 
     this.llmService =
@@ -123,17 +116,11 @@ export class AiRegistry {
             models,
             ...(config.googleBaseUrl ? { baseUrl: config.googleBaseUrl } : {}),
           })
-        : llmProvider === 'ollama'
-          ? new OllamaLlmAdapter({
-              baseUrl: config.ollamaBaseUrl,
-              model: config.ollamaModel,
-              models,
-            })
-          : new AnthropicLlmAdapter({
-              apiKey: config.anthropicApiKey,
-              models,
-              ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
-            });
+        : new AnthropicLlmAdapter({
+            apiKey: config.anthropicApiKey,
+            models,
+            ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
+          });
 
     this.images = {
       gemini: new GeminiImageAdapter({
@@ -225,8 +212,6 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     serpApiKey: env.SERPAPI_KEY,
     ...(env.ANTHROPIC_BASE_URL ? { anthropicBaseUrl: env.ANTHROPIC_BASE_URL } : {}),
     ...(env.GOOGLE_API_BASE_URL ? { googleBaseUrl: env.GOOGLE_API_BASE_URL } : {}),
-    ...(env.OLLAMA_BASE_URL ? { ollamaBaseUrl: env.OLLAMA_BASE_URL } : {}),
-    ...(env.OLLAMA_MODEL ? { ollamaModel: env.OLLAMA_MODEL } : {}),
     models: {
       ...(env.LLM_MODEL_ORCHESTRATOR ? { orchestrator: env.LLM_MODEL_ORCHESTRATOR } : {}),
       ...(env.LLM_MODEL_VOLUME ? { volume: env.LLM_MODEL_VOLUME } : {}),

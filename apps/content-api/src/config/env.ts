@@ -31,10 +31,7 @@ const envSchema = z.object({
   GOOGLE_API_KEY: optionalText(),
   FAL_KEY: optionalText(),
   /** Serves text/JSON/vision. `gemini` needs no Anthropic credential. */
-  LLM_PROVIDER: z.enum(['anthropic', 'gemini', 'ollama']).default('anthropic'),
-  /** Local Ollama server (development only). Defaults to localhost:11434. */
-  OLLAMA_BASE_URL: optionalUrl(),
-  OLLAMA_MODEL: optionalText(),
+  LLM_PROVIDER: z.enum(['anthropic', 'gemini']).default('gemini'),
 
   /** Real-time web search for the Trend Research Agent. Declared here purely
    *  for startup validation and the "three places" rule (CLAUDE.md) —

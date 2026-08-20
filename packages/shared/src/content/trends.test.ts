@@ -119,8 +119,8 @@ describe('computeActionTier', () => {
 
 /**
  * Both research agents build their `sources` arrays from model output, so this
- * schema is a parse boundary against a small local model, not just a type. The
- * failure it guards is real: an Ollama run dropped `title` from a source
+ * schema is a parse boundary against a JSON-Schema-constrained model, not just
+ * a type. The failure it guards is real: a run dropped `title` from a source
  * object entirely and the resulting "expected string, received undefined"
  * failed the whole intelligence synthesis, since the adapter treats a schema
  * mismatch as retryable and then gives up.

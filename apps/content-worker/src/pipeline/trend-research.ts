@@ -48,14 +48,13 @@ import { triggerAutoOpportunity, type TriggerableOpportunity } from './opportuni
  */
 
 // Much smaller prompt than the old full-signal synthesis (no raw search
-// results, just already-summarized pool items). Confirmed live against
-// LLM_PROVIDER=ollama that a smaller prompt does not imply a proportionally
-// shorter wall-clock time — local inference cost is dominated by model
-// load/decode speed, not prompt size, and a 120s ceiling still timed out
-// under load. Matches the 300s headroom every other locally-tested LLM call
-// in this codebase already settled on (trend-pool-refresh.ts,
-// intelligence-pool-refresh.ts) — raising this costs nothing when the
-// response is fast, and only ever matters when a request has stalled.
+// results, just already-summarized pool items). Confirmed live during
+// development that a smaller prompt does not imply a proportionally shorter
+// wall-clock time — a 120s ceiling still timed out under load. Matches the
+// 300s headroom every other LLM call in this codebase already settled on
+// (trend-pool-refresh.ts, intelligence-pool-refresh.ts) — raising this costs
+// nothing when the response is fast, and only ever matters when a request
+// has stalled.
 const RELEVANCE_TIMEOUT_MS = 300_000;
 const MAX_RELEVANCE_TOKENS = 4_000;
 

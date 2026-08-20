@@ -64,8 +64,8 @@ export const signalTypeSchema = z.enum([
 export type SignalType = z.infer<typeof signalTypeSchema>;
 
 /** `title` is nullish rather than merely nullable because it is filled by a
- *  model, not by us: a small local model constrained by Ollama's JSON-Schema
- *  grammar routinely *omits* an optional-looking string field instead of
+ *  model, not by us: a model constrained by JSON-Schema grammar routinely
+ *  *omits* an optional-looking string field instead of
  *  emitting `null` for it, which a bare `.nullable()` rejects with
  *  "expected string, received undefined" and — since the adapter marks schema
  *  mismatches retryable — burns the whole research run on a missing headline.

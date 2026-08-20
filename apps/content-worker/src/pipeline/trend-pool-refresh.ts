@@ -31,10 +31,9 @@ import type { WorkerContext } from '../context.js';
  */
 
 const SEARCH_TIMEOUT_MS = 15_000;
-// Same ceiling as trend-research.ts's SYNTHESIS_TIMEOUT_MS, same live-tested
-// reasoning against LLM_PROVIDER=ollama — see that file's comment. A pool
-// refresh's prompt is the same size class (up to ~15 items instead of 8), not
-// meaningfully smaller.
+// Same ceiling as trend-research.ts's RELEVANCE_TIMEOUT_MS, same reasoning —
+// see that file's comment. A pool refresh's prompt is the same size class (up
+// to ~15 items instead of 8), not meaningfully smaller.
 const SYNTHESIS_TIMEOUT_MS = 300_000;
 const MAX_SYNTHESIS_TOKENS = 16_000;
 const RESULTS_PER_QUERY = 8;
