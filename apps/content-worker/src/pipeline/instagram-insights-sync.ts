@@ -1,8 +1,11 @@
 import { describeError } from '@bmas/ai';
 import { and, eq, gte, isNotNull, schema, type SocialAccount } from '@bmas/db';
 import {
+  graphErrorMessage,
   INSTAGRAM_INSIGHTS_LOOKBACK_DAYS,
   INSTAGRAM_INSIGHTS_SYNC_INTERVAL_HOURS,
+  isGraphErrorPayload,
+  isTokenExpired,
   QUEUES,
   TokenEncryption,
 } from '@bmas/shared';
@@ -23,31 +26,38 @@ import type { WorkerContext } from '../context.js';
  * pattern rather than scheduled-post-publish.ts's worker-calls-API pattern:
  * this is a read sweeping many posts across many owners in one tick, not a
  * single stateful write on behalf of one user, so there is no single owner to
- * mint a service token for. TokenEncryption moved to @bmas/shared so this can
- * decrypt a stored token itself without duplicating security-sensitive code.
+ * mint a service token for. TokenEncryption and the Graph error-parsing
+ * helpers moved to @bmas/shared, both for the same reason: content-api's
+ * SocialService already had them, and this file needs the identical logic
+ * without a second copy that can silently drift from the original.
  */
 
 const GRAPH_BASE = 'https://graph.instagram.com/v21.0';
 
-interface GraphErrorResponse {
-  error?: { message?: string };
-}
+type GraphResult =
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; message: string };
 
-function graphErrorMessage(body: unknown, fallback: string): string {
-  return (body as GraphErrorResponse | null)?.error?.message ?? fallback;
-}
+/**
+ * GET against the Graph API. Returns a result rather than throwing, so a
+ * caller can decide whether a failure here is fatal to the whole fetch or
+ * just one field group — mirrors social.service.ts's private `graphGet`.
+ *
+ * `body === null` (a 200 with an empty or unparseable response) is treated as
+ * a failure explicitly, not just checked via `isGraphErrorPayload`: that function
+ * only looks for an `error` key, so a null body — which has no keys at all —
+ * would otherwise read as "not an error" and be cast into the caller's
+ * expected shape, producing a null-property-access crash instead of a clear
+ * "could not X" message.
+ */
+async function graphGet(path: string, params: Record<string, string>): Promise<GraphResult> {
+  const response = await fetch(`${GRAPH_BASE}/${path}?${new URLSearchParams(params).toString()}`);
+  const body: unknown = await response.json().catch(() => null);
 
-function isErrorPayload(body: unknown): boolean {
-  return Boolean((body as GraphErrorResponse | null)?.error);
-}
-
-interface MediaFields {
-  like_count?: number;
-  comments_count?: number;
-}
-
-interface InsightsResponse {
-  data?: Array<{ name: string; values?: Array<{ value: number }> }>;
+  if (!response.ok || body === null || typeof body !== 'object' || isGraphErrorPayload(body)) {
+    return { ok: false, message: graphErrorMessage(body, `HTTP ${response.status}`) };
+  }
+  return { ok: true, body: body as Record<string, unknown> };
 }
 
 interface FetchedMetrics {
@@ -58,52 +68,43 @@ interface FetchedMetrics {
   raw: Record<string, unknown>;
 }
 
-/** Two calls: basic fields carry like/comment counts, `/insights` carries
- *  reach and saves. Kept separate — and each parsed independently — because a
- *  media type that rejects one metric (e.g. a format Graph doesn't compute
- *  `saved` for) must not lose the fields that succeeded. */
+/** Two calls, fetched concurrently since neither depends on the other's
+ *  result — both only need igMediaId and accessToken, known up front. Each is
+ *  parsed independently: a media type Graph doesn't compute `saved` for must
+ *  not lose the like/comment counts that succeeded, and vice versa. */
 async function fetchMediaMetrics(igMediaId: string, accessToken: string): Promise<FetchedMetrics> {
-  const fieldsResponse = await fetch(
-    `${GRAPH_BASE}/${igMediaId}?${new URLSearchParams({
-      fields: 'like_count,comments_count',
-      access_token: accessToken,
-    }).toString()}`,
-  );
-  const fieldsBody: unknown = await fieldsResponse.json().catch(() => null);
-  if (!fieldsResponse.ok || isErrorPayload(fieldsBody)) {
-    throw new Error(
-      `could not read post fields — ${graphErrorMessage(fieldsBody, `HTTP ${fieldsResponse.status}`)}`,
-    );
-  }
-  const fields = fieldsBody as MediaFields;
+  const [fieldsResult, insightsResult] = await Promise.all([
+    graphGet(igMediaId, { fields: 'like_count,comments_count', access_token: accessToken }),
+    graphGet(`${igMediaId}/insights`, { metric: 'reach,saved', access_token: accessToken }),
+  ]);
 
-  const insightsResponse = await fetch(
-    `${GRAPH_BASE}/${igMediaId}/insights?${new URLSearchParams({
-      metric: 'reach,saved',
-      access_token: accessToken,
-    }).toString()}`,
-  );
-  const insightsBody: unknown = await insightsResponse.json().catch(() => null);
-  // Insights failing is not fatal to the whole fetch — like/comment counts
-  // above are still worth keeping. A common cause is a media type Graph does
-  // not compute these particular metrics for.
-  const insightsOk = insightsResponse.ok && !isErrorPayload(insightsBody);
+  if (!fieldsResult.ok) {
+    throw new Error(`could not read post fields — ${fieldsResult.message}`);
+  }
+
   const byName = new Map<string, number>();
-  if (insightsOk) {
-    for (const metric of (insightsBody as InsightsResponse).data ?? []) {
-      const value = metric.values?.[0]?.value;
-      if (typeof value === 'number') byName.set(metric.name, value);
+  if (insightsResult.ok) {
+    const data = insightsResult.body.data;
+    if (Array.isArray(data)) {
+      for (const metric of data as unknown[]) {
+        const name = (metric as { name?: unknown }).name;
+        const value = (metric as { values?: Array<{ value?: unknown }> }).values?.[0]?.value;
+        if (typeof name === 'string' && typeof value === 'number') byName.set(name, value);
+      }
     }
   }
 
   return {
-    likeCount: fields.like_count ?? null,
-    commentsCount: fields.comments_count ?? null,
+    likeCount: (fieldsResult.body.like_count as number | undefined) ?? null,
+    commentsCount: (fieldsResult.body.comments_count as number | undefined) ?? null,
     reach: byName.get('reach') ?? null,
     saved: byName.get('saved') ?? null,
     raw: {
-      fields: fieldsBody,
-      insights: insightsOk ? insightsBody : { error: graphErrorMessage(insightsBody, 'unknown') },
+      fields: fieldsResult.body,
+      // Insights failing is not fatal to the whole fetch — recorded in `raw`
+      // rather than dropped, so a media type that rejects these metrics is
+      // still visible in the log instead of looking like a clean success.
+      insights: insightsResult.ok ? insightsResult.body : { error: insightsResult.message },
     },
   };
 }
@@ -130,17 +131,58 @@ async function getEligiblePosts(ctx: WorkerContext): Promise<EligiblePost[]> {
     .where(
       and(
         eq(schema.scheduledPosts.status, 'posted'),
+        // A disconnected/revoked account has no business being re-attempted
+        // every tick for its whole lookback window — matches the convention
+        // scheduled-post-hooks.ts already uses for the same table.
+        eq(schema.socialAccounts.status, 'active'),
         isNotNull(schema.scheduledPosts.igMediaId),
         gte(schema.scheduledPosts.updatedAt, cutoff),
       ),
     );
 
-  // igMediaId is proven non-null by the isNotNull filter above; narrowed here
-  // because the query builder's inferred type can't express that from a
-  // runtime WHERE clause.
-  return rows
-    .filter((row): row is EligiblePost & { igMediaId: string } => row.igMediaId !== null)
-    .map((row) => ({ ...row, igMediaId: row.igMediaId as string }));
+  // The type predicate below is what actually narrows igMediaId from
+  // `string | null` to `string` for every row that survives — isNotNull() in
+  // the WHERE clause guarantees it holds, TypeScript just can't see through a
+  // runtime SQL clause to know that.
+  return rows.filter((row): row is EligiblePost => row.igMediaId !== null);
+}
+
+/** Resume rather than restart, same reasoning as geo-worker's probe.ts
+ *  (`findRunInBucket`): BullMQ redelivers a job whose lock expires mid-run,
+ *  and without this check a redelivered tick would produce a second
+ *  near-identical row for the same post inside the same sync window — which
+ *  reads as a real distinct engagement sample to anything consuming this
+ *  table later, not as a redelivery artifact. Unlike probe.ts this isn't
+ *  about avoiding a double-billed paid call (Instagram's Insights API is
+ *  free); it protects the append-only log's own meaning. */
+async function alreadySyncedThisWindow(
+  ctx: WorkerContext,
+  scheduledPostId: string,
+): Promise<boolean> {
+  const windowStart = new Date(Date.now() - INSTAGRAM_INSIGHTS_SYNC_INTERVAL_HOURS * 3_600_000);
+  const [existing] = await ctx.db
+    .select({ id: schema.postInsights.id })
+    .from(schema.postInsights)
+    .where(
+      and(
+        eq(schema.postInsights.scheduledPostId, scheduledPostId),
+        gte(schema.postInsights.fetchedAt, windowStart),
+      ),
+    )
+    .limit(1);
+  return Boolean(existing);
+}
+
+async function recordFailure(
+  ctx: WorkerContext,
+  post: EligiblePost,
+  error: string,
+): Promise<void> {
+  await ctx.db.insert(schema.postInsights).values({
+    scheduledPostId: post.scheduledPostId,
+    brandId: post.brandId,
+    error,
+  });
 }
 
 async function syncOnePost(
@@ -148,21 +190,19 @@ async function syncOnePost(
   encryption: TokenEncryption | null,
   post: EligiblePost,
 ): Promise<void> {
+  if (await alreadySyncedThisWindow(ctx, post.scheduledPostId)) return;
+
   const { account } = post;
 
-  if (account.tokenExpiresAt.getTime() <= Date.now()) {
-    // Same signal SocialService.postToInstagram writes on the same condition —
-    // a token expiring is discovered by whichever job touches the account
-    // first, publish or sync, and both should leave it in the same state.
+  // Same signal SocialService.postToInstagram writes on the same condition —
+  // a token expiring is discovered by whichever job touches the account
+  // first, publish or sync, and both should leave it in the same state.
+  if (isTokenExpired(account.tokenExpiresAt)) {
     await ctx.db
       .update(schema.socialAccounts)
       .set({ status: 'token_expired' as const })
       .where(eq(schema.socialAccounts.id, account.id));
-    await ctx.db.insert(schema.postInsights).values({
-      scheduledPostId: post.scheduledPostId,
-      brandId: post.brandId,
-      error: `Instagram token for ${account.displayName} has expired.`,
-    });
+    await recordFailure(ctx, post, `Instagram token for ${account.displayName} has expired.`);
     return;
   }
 
@@ -170,11 +210,7 @@ async function syncOnePost(
   try {
     accessToken = encryption ? encryption.decrypt(account.pageAccessToken) : account.pageAccessToken;
   } catch (error) {
-    await ctx.db.insert(schema.postInsights).values({
-      scheduledPostId: post.scheduledPostId,
-      brandId: post.brandId,
-      error: `Stored token could not be decrypted: ${describeError(error)}`,
-    });
+    await recordFailure(ctx, post, `Stored token could not be decrypted: ${describeError(error)}`);
     return;
   }
 
@@ -192,11 +228,7 @@ async function syncOnePost(
   } catch (error) {
     // A failed pull is still recorded — see the module comment on why this
     // mirrors probe_runs rather than being dropped.
-    await ctx.db.insert(schema.postInsights).values({
-      scheduledPostId: post.scheduledPostId,
-      brandId: post.brandId,
-      error: describeError(error),
-    });
+    await recordFailure(ctx, post, describeError(error));
   }
 }
 

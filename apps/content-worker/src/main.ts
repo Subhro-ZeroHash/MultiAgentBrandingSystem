@@ -277,6 +277,7 @@ async function shutdown(signal: string): Promise<void> {
       intelligencePoolResearchProducer.close(),
       poolSchedulerQueue.close(),
       contentGenerationProducer.close(),
+      scheduledPostPublishProducer.close(),
       instagramInsightsSyncQueue.close(),
     ]);
     await closeDatabase(ctx.db);
