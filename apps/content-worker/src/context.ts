@@ -12,6 +12,15 @@ import { createStorage, type Storage } from './storage.js';
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 
+/**
+ * A `.env` file spells "not set" as `NAME=`, which reaches us as '' — but
+ * `.optional()` admits only `undefined`, so a blank line fails `.url()`
+ * validation instead of being treated as unset. Mirrors
+ * apps/content-api/src/config/env.ts's `optionalUrl`.
+ */
+const optionalUrl = () =>
+  z.preprocess((value) => (value === '' ? undefined : value), z.string().url().optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DATABASE_URL: z.string().url(),
@@ -27,7 +36,7 @@ const envSchema = z.object({
 
   // Object storage for generated creatives. Defaults match the MinIO container
   // in docker-compose.yml so a local checkout works without extra setup.
-  S3_ENDPOINT: z.string().url().optional(),
+  S3_ENDPOINT: optionalUrl(),
   S3_REGION: z.string().default('auto'),
   S3_BUCKET: z.string().default('bmas-assets'),
   S3_ACCESS_KEY_ID: z.string().default('bmas'),
@@ -36,7 +45,7 @@ const envSchema = z.object({
     .string()
     .default('true')
     .transform((value) => value !== 'false'),
-  S3_PUBLIC_URL: z.string().url().optional(),
+  S3_PUBLIC_URL: optionalUrl(),
 
   /** Where this process reaches content-api's HTTP API. Used only by the
    *  scheduled-post publish job, which posts through the existing
