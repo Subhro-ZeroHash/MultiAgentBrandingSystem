@@ -85,7 +85,34 @@ const focusedSynthesisSchema = z.object({
   note: z.string().max(300).nullable().default(null),
 });
 
+/**
+ * Gemini's structured-output validator rejects this schema outright with a
+ * bare "Request contains an invalid argument" — no field name, no detail —
+ * once the total enum surface across the object gets large enough.
+ * `styleTemplate`'s 12 values combined with the other enum fields here
+ * (campaignType, outputFormat, category, contentType) crosses whatever that
+ * undocumented limit is; confirmed by bisection against the live API, not
+ * from Gemini's own docs, which don't mention one. Loosening the single
+ * largest enum to a plain string — describing the real choices in text
+ * instead of constraining them in the schema — brings the total back under
+ * it. Validation doesn't get weaker: `focusedSynthesisSchema.parse(raw)`
+ * below still enforces the real enum, and a value outside it fails that
+ * parse and retries via the same path as any other malformed response.
+ */
 const SYNTHESIS_JSON_SCHEMA = z.toJSONSchema(focusedSynthesisSchema) as Record<string, unknown>;
+{
+  const opportunityProps = (
+    (SYNTHESIS_JSON_SCHEMA.properties as Record<string, unknown>).opportunities as Record<
+      string,
+      unknown
+    >
+  ).items as Record<string, unknown>;
+  const properties = opportunityProps.properties as Record<string, Record<string, unknown>>;
+  properties.styleTemplate = {
+    type: 'string',
+    description: `One of: ${styleTemplateSchema.options.join(', ')}.`,
+  };
+}
 
 export interface FocusedResearchResult {
   opportunities: NewTrendOpportunityRow[];
