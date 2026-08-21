@@ -38,7 +38,23 @@ const ctx = createContext();
 
 // A fresh MinIO volume has no buckets, so the first upload would fail with
 // NoSuchBucket. Done at boot rather than per job so the cost is paid once.
-await ctx.storage.ensureBucket();
+//
+// Deliberately non-fatal: an unguarded await here means a misconfigured or
+// absent object-storage endpoint (e.g. R2 credentials not set up yet) throws
+// before a single queue below is registered — the whole worker, including
+// every queue that has nothing to do with storage (trend-research,
+// intelligence-research, plan synthesis, ...), silently never starts
+// consuming jobs, with no crash and no error visible short of noticing the
+// process has zero open sockets. Asset uploads still fail per-job with a
+// clear error until storage is configured; that's an acceptable, contained
+// failure — every other queue staying dead because of it is not.
+try {
+  await ctx.storage.ensureBucket();
+} catch (error) {
+  console.error(
+    `[content-worker] object storage unavailable at boot, continuing without it (asset uploads will fail until this is fixed): ${describeError(error)}`,
+  );
+}
 
 console.warn(`[content-worker] LLM provider: ${ctx.ai.llm().provider}`);
 console.warn(

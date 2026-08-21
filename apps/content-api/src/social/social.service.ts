@@ -111,6 +111,12 @@ export class SocialService {
       scope: SCOPES,
       response_type: 'code',
       state,
+      // Without this, an account with an existing grant gets Instagram's
+      // lightweight "continue sharing?" reconfirmation instead of a full
+      // consent pass — and the code that shortcut issues has been failing
+      // token exchange with a redirect_uri error even though every value on
+      // our side matches exactly. Forcing a real consent pass avoids it.
+      force_reauth: 'true',
     });
 
     return { url: `${OAUTH_AUTHORIZE}?${params.toString()}`, state };
@@ -145,21 +151,35 @@ export class SocialService {
     const cleanCode = code.replace(/#_$/, '');
 
     // This one hop is form-POSTed to api.instagram.com; every later call is a
-    // GET against graph.instagram.com.
+    // GET against graph.instagram.com. Instagram's docs use curl -F for this
+    // endpoint (multipart), not -d (urlencoded) — sending urlencoded here
+    // makes Instagram fail to parse redirect_uri server-side and report it as
+    // "not identical" even when the value it received is byte-for-byte
+    // correct, so this must stay multipart/form-data (no Content-Type header:
+    // fetch sets the multipart boundary itself from the FormData body).
+    const tokenForm = new FormData();
+    tokenForm.set('client_id', clientId);
+    tokenForm.set('client_secret', clientSecret);
+    tokenForm.set('grant_type', 'authorization_code');
+    tokenForm.set('redirect_uri', redirectUri);
+    tokenForm.set('code', cleanCode);
     const tokenResponse = await fetch(OAUTH_TOKEN, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri,
-        code: cleanCode,
-      }).toString(),
+      body: tokenForm,
     });
 
     const tokenBody: unknown = await tokenResponse.json().catch(() => null);
     if (!tokenResponse.ok || isGraphErrorPayload(tokenBody)) {
+      console.error(
+        '[instagram-oauth-debug]',
+        JSON.stringify({
+          rawCode: code,
+          cleanCode,
+          redirectUri,
+          status: tokenResponse.status,
+          body: tokenBody,
+        }),
+      );
       throw new BadRequestException(
         `Instagram: could not exchange the authorization code — ${graphErrorMessage(
           tokenBody,
