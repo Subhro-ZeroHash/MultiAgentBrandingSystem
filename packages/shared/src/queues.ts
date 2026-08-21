@@ -41,6 +41,10 @@ export const QUEUES = {
    *  plan synthesis because it rewrites a single item rather than the plan. */
   contentPlanItemReplace: 'content-plan-item-replace',
   geoSweep: 'geo-sweep',
+  /** The periodic tick that sweeps recently-published posts for fresh
+   *  Instagram metrics. Same shape as researchScheduler: one repeatable job,
+   *  empty payload, re-reads what's due every time it fires. */
+  instagramInsightsSync: 'instagram-insights-sync',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -197,3 +201,19 @@ export const geoSweepJobSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('prompt-suggestions') }),
 ]);
 export type GeoSweepJob = z.infer<typeof geoSweepJobSchema>;
+
+/** How often the sync sweeps for fresh Instagram metrics. Engagement numbers
+ *  don't need minute-level freshness, and this keeps Graph API usage light —
+ *  four sweeps a day is enough to see a post's engagement curve without
+ *  hammering the API every time it fires. */
+export const INSTAGRAM_INSIGHTS_SYNC_INTERVAL_HOURS = 6;
+
+/** How far back a post stays in scope for a sync sweep. Engagement on an
+ *  older post has effectively plateaued, so there is little value in an
+ *  unbounded sweep that only grows more expensive as posts accumulate. */
+export const INSTAGRAM_INSIGHTS_LOOKBACK_DAYS = 30;
+
+/** Empty payload, same reasoning as researchSchedulerTickJobSchema — the tick
+ *  re-reads which posts are due fresh every time it fires. */
+export const instagramInsightsSyncTickJobSchema = z.object({});
+export type InstagramInsightsSyncTickJob = z.infer<typeof instagramInsightsSyncTickJobSchema>;

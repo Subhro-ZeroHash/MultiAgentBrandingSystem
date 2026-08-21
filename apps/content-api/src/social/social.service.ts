@@ -8,24 +8,15 @@ import {
 } from '@nestjs/common';
 import { eq, and, schema, type Database } from '@bmas/db';
 import { type SocialAccount } from '@bmas/db';
+import {
+  graphErrorMessage,
+  isGraphErrorPayload,
+  isTokenExpired,
+  TokenEncryption,
+} from '@bmas/shared';
 import { DATABASE } from '../core/core.module.js';
-import { TokenEncryption } from './crypto.js';
 import { loadEnv } from '../config/env.js';
 import { buildAssetLink } from '../assets/asset-proxy.js';
-
-/**
- * Meta returns two different error shapes across the hosts this file talks to:
- * graph.instagram.com nests it under `error`, while api.instagram.com's OAuth
- * endpoint returns `error_message` at the top level. Reading only the first
- * shape reduced "Invalid platform app" — the message that says the app id is
- * wrong — to a bare "HTTP 400".
- */
-interface ErrorResponse {
-  error?: { message?: string; type?: string; code?: number };
-  error_message?: string;
-  error_type?: string;
-  error_description?: string;
-}
 
 /**
  * Instagram API with Instagram Login. The account signs in with Instagram and
@@ -59,19 +50,6 @@ const CONTAINER_POLL_ATTEMPTS = 10;
 const CONTAINER_POLL_INTERVAL_MS = 2000;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Pulls the actionable detail out of whichever error shape came back; the bare
- *  status ("Bad Request") tells the user nothing about what to fix. */
-function graphErrorMessage(body: unknown, fallback: string): string {
-  const error = body as ErrorResponse | null;
-  return error?.error?.message ?? error?.error_message ?? error?.error_description ?? fallback;
-}
-
-/** True when the payload reports a failure, whatever the HTTP status says. */
-function isErrorPayload(body: unknown): boolean {
-  const error = body as ErrorResponse | null;
-  return Boolean(error?.error ?? error?.error_message ?? error?.error_type);
-}
 
 @Injectable()
 export class SocialService {
@@ -181,7 +159,7 @@ export class SocialService {
     });
 
     const tokenBody: unknown = await tokenResponse.json().catch(() => null);
-    if (!tokenResponse.ok || isErrorPayload(tokenBody)) {
+    if (!tokenResponse.ok || isGraphErrorPayload(tokenBody)) {
       throw new BadRequestException(
         `Instagram: could not exchange the authorization code — ${graphErrorMessage(
           tokenBody,
@@ -294,7 +272,7 @@ export class SocialService {
     const response = await fetch(`${GRAPH_BASE}/${path}?${new URLSearchParams(params).toString()}`);
     const body: unknown = await response.json().catch(() => null);
 
-    if (!response.ok || isErrorPayload(body)) {
+    if (!response.ok || isGraphErrorPayload(body)) {
       throw new BadRequestException(
         `Instagram: could not ${action} — ${graphErrorMessage(body, `HTTP ${response.status}`)}`,
       );
@@ -315,7 +293,7 @@ export class SocialService {
     });
     const body: unknown = await response.json().catch(() => null);
 
-    if (!response.ok || isErrorPayload(body)) {
+    if (!response.ok || isGraphErrorPayload(body)) {
       throw new BadRequestException(
         `Instagram: could not ${action} — ${graphErrorMessage(body, `HTTP ${response.status}`)}`,
       );
@@ -519,7 +497,7 @@ export class SocialService {
 
     // Checked before spending two round trips on a token Instagram will reject,
     // and recorded so the UI can show the account as needing attention.
-    if (account.tokenExpiresAt.getTime() <= Date.now()) {
+    if (isTokenExpired(account.tokenExpiresAt)) {
       await this.db
         .update(schema.socialAccounts)
         .set({ status: 'token_expired' as const })

@@ -16,6 +16,10 @@ import { Queue, UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
 import { runAssetEdit } from './pipeline/asset-edit.js';
 import { runGeneration } from './pipeline/generate.js';
+import {
+  runInstagramInsightsSync,
+  scheduleInstagramInsightsSyncTick,
+} from './pipeline/instagram-insights-sync.js';
 import { runIntelligencePoolRefresh } from './pipeline/intelligence-pool-refresh.js';
 import { runIntelligenceResearch } from './pipeline/intelligence-research.js';
 import { runPoolSchedulerTick, schedulePoolSchedulerTick } from './pipeline/pool-scheduler.js';
@@ -251,6 +255,26 @@ poolSchedulerWorker.on('failed', (job, error) => {
   console.error(`[pool-scheduler] tick ${job?.id} failed: ${describeError(error)}`);
 });
 
+// Self-contained tick: unlike researchScheduler/poolScheduler, this does not
+// fan out into another queue — the tick's own processor does the DB read and
+// the Instagram Graph API calls directly. See instagram-insights-sync.ts's
+// module comment for why that lives here rather than as an HTTP call back
+// into content-api.
+const instagramInsightsSyncQueue = new Queue(QUEUES.instagramInsightsSync, {
+  connection: ctx.redis,
+});
+await scheduleInstagramInsightsSyncTick(instagramInsightsSyncQueue);
+
+const instagramInsightsSyncWorker = new Worker(
+  QUEUES.instagramInsightsSync,
+  async () => runInstagramInsightsSync(ctx),
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+instagramInsightsSyncWorker.on('failed', (job, error) => {
+  console.error(`[instagram-insights-sync] tick ${job?.id} failed: ${describeError(error)}`);
+});
+
 // One provider call per job. `runAssetEdit` never rethrows (see its own
 // comment — attempts:1 is a deliberate, capped user-facing budget), so
 // 'failed' here would only ever fire on something outside that try/catch,
@@ -299,6 +323,7 @@ async function shutdown(signal: string): Promise<void> {
       planSynthesisWorker.close(),
       planDirectiveWorker.close(),
       planItemReplaceWorker.close(),
+      instagramInsightsSyncWorker.close(),
       trendResearchProducer.close(),
       intelligenceResearchProducer.close(),
       researchSchedulerQueue.close(),
@@ -306,6 +331,8 @@ async function shutdown(signal: string): Promise<void> {
       intelligencePoolResearchProducer.close(),
       poolSchedulerQueue.close(),
       contentGenerationProducer.close(),
+      scheduledPostPublishProducer.close(),
+      instagramInsightsSyncQueue.close(),
     ]);
     await closeDatabase(ctx.db);
   } catch (error) {
