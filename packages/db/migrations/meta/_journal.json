@@ -176,6 +176,13 @@
       "when": 1787082831793,
       "tag": "0024_glamorous_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787309967002,
+      "tag": "0025_dizzy_giant_man",
+      "breakpoints": true
     }
   ]
 }

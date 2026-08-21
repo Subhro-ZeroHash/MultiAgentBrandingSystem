@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { Database } from '@bmas/db';
 import { SocialService } from './social.service.js';
-import { TokenEncryption } from './crypto.js';
+import { TokenEncryption } from '@bmas/shared';
 import { BadRequestException } from '@nestjs/common';
 
 /** Loose enough to keep `.mockImplementation` available on every method in
