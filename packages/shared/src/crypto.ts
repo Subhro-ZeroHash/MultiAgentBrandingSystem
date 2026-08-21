@@ -5,6 +5,11 @@ import * as crypto from 'node:crypto';
  *
  * Wire format is `iv | authTag | ciphertext`, hex, with fixed-width prefixes so
  * decrypt can slice without a delimiter.
+ *
+ * Lives in @bmas/shared rather than content-api specifically because
+ * content-worker also needs to decrypt a stored Instagram token (to sync post
+ * insights) without duplicating this class — the alternative to sharing it is
+ * two copies of security-sensitive code that can silently drift apart.
  */
 const IV_BYTES = 12; // 96-bit nonce: the size GCM is specified for.
 const TAG_BYTES = 16;

@@ -8,8 +8,8 @@ import {
 } from '@nestjs/common';
 import { eq, and, schema, type Database } from '@bmas/db';
 import { type SocialAccount } from '@bmas/db';
+import { TokenEncryption } from '@bmas/shared';
 import { DATABASE } from '../core/core.module.js';
-import { TokenEncryption } from './crypto.js';
 import { loadEnv } from '../config/env.js';
 import { buildAssetLink } from '../assets/asset-proxy.js';
 

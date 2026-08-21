@@ -47,6 +47,12 @@ const envSchema = z.object({
    *  owner (not a fixed dev id) so the call passes content-api's JwtAuthGuard
    *  as that user, matching whatever brand/post it is publishing. */
   AUTH_SECRET: z.string().min(32, 'AUTH_SECRET must be at least 32 characters'),
+  /** Same key content-api's SocialService encrypts stored Instagram tokens
+   *  with. Needed here so the Instagram insights sync can decrypt a token to
+   *  call the Graph API — optional the same way SocialService treats it: an
+   *  unset key means tokens were stored in plaintext (development only), so
+   *  decryption is skipped rather than attempted. */
+  ENCRYPTION_KEY: z.string().optional(),
 });
 
 export interface WorkerContext {
@@ -58,6 +64,7 @@ export interface WorkerContext {
   qaRegenerationRounds: number;
   contentApiUrl: string;
   authSecret: string;
+  encryptionKey?: string;
 }
 
 export function createContext(): WorkerContext {
@@ -93,5 +100,6 @@ export function createContext(): WorkerContext {
     qaRegenerationRounds: env.QA_REGENERATION_ROUNDS,
     contentApiUrl: env.CONTENT_API_URL,
     authSecret: env.AUTH_SECRET,
+    ...(env.ENCRYPTION_KEY ? { encryptionKey: env.ENCRYPTION_KEY } : {}),
   };
 }

@@ -501,6 +501,43 @@ export const scheduledPostsRelations = relations(scheduledPosts, ({ one }) => ({
   }),
 }));
 
+/**
+ * One sync attempt's worth of Instagram metrics for one published post.
+ * Append-only, same reasoning as `geo.probe_runs`: the sync runs repeatedly
+ * over a post's tracked lifetime, and each pull is retained rather than
+ * overwritten, so engagement growth over time is visible and a failed pull is
+ * data (via `error`) rather than a silent gap. `raw` keeps the full Graph API
+ * response so a metric this table doesn't have a column for yet is not lost.
+ */
+export const postInsights = content.table(
+  'post_insights',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    scheduledPostId: text('scheduled_post_id')
+      .notNull()
+      .references(() => scheduledPosts.id, { onDelete: 'cascade' }),
+    /** Denormalized from scheduledPosts for per-brand queries without a join. */
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    likeCount: integer('like_count'),
+    commentsCount: integer('comments_count'),
+    reach: integer('reach'),
+    saved: integer('saved'),
+    raw: jsonb('raw').$type<Record<string, unknown>>(),
+    /** Set when the fetch itself failed; the typed columns above are null in
+     *  that case. Mirrors probe_runs.error. */
+    error: text('error'),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('post_insights_scheduled_post_fetched_idx').on(t.scheduledPostId, t.fetchedAt),
+    index('post_insights_brand_fetched_idx').on(t.brandId, t.fetchedAt),
+  ],
+);
+
 /** One Expo push token per device registration; upserted so re-registering the
  *  same device (reinstall, token refresh) doesn't accumulate duplicates. */
 export const pushTokens = content.table(
@@ -1415,5 +1452,7 @@ export type ScheduledCampaign = typeof scheduledCampaigns.$inferSelect;
 export type NewScheduledCampaign = typeof scheduledCampaigns.$inferInsert;
 export type ScheduledPost = typeof scheduledPosts.$inferSelect;
 export type NewScheduledPost = typeof scheduledPosts.$inferInsert;
+export type PostInsightRow = typeof postInsights.$inferSelect;
+export type NewPostInsightRow = typeof postInsights.$inferInsert;
 export type PushToken = typeof pushTokens.$inferSelect;
 export type NewPushToken = typeof pushTokens.$inferInsert;
