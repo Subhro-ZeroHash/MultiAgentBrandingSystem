@@ -13,11 +13,11 @@ import { SocialService } from './social.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 
-@UseGuards(JwtAuthGuard)
 @Controller('social')
 export class SocialController {
   constructor(private readonly social: SocialService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Get('auth/instagram/url')
   getInstagramAuthUrl(@Request() req: AuthenticatedRequest) {
     // `state` is issued here, not accepted from the caller: it has to identify
@@ -25,6 +25,9 @@ export class SocialController {
     return this.social.getOAuthUrl(req.user.id);
   }
 
+  // Deliberately unguarded: Instagram redirects the user's browser here
+  // directly, with no Authorization header to attach. See the comment below
+  // on why the account owner is safe to trust from the state token alone.
   @Post('auth/instagram/callback')
   async handleInstagramCallback(@Body() body: { code?: string; state?: string }) {
     if (!body.code || !body.state) {
@@ -41,6 +44,7 @@ export class SocialController {
     };
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('accounts')
   async getUserAccounts(@Request() req: AuthenticatedRequest) {
     const resolvedUserId = req.user.id;
@@ -54,6 +58,7 @@ export class SocialController {
     }));
   }
 
+  @UseGuards(JwtAuthGuard)
   @Delete('accounts/:id')
   async disconnectAccount(@Param('id') accountId: string, @Request() req: AuthenticatedRequest) {
     const resolvedUserId = req.user.id;
@@ -61,6 +66,7 @@ export class SocialController {
     return { success: true };
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('post')
   async postToInstagram(
     @Body() body: { accountId: string; assetId?: string; imageUrl?: string; caption: string },
