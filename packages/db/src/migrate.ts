@@ -23,7 +23,11 @@ if (!url) {
 
 // A migration runner must be the only writer; a single connection avoids
 // two workers racing to take the migration lock.
-const client = postgres(url, { max: 1, onnotice: () => {} });
+const client = postgres(url, {
+  max: 1,
+  onnotice: () => {},
+  ssl: process.env.NODE_ENV === 'production' ? 'require' : false,
+});
 
 try {
   await migrate(drizzle(client), { migrationsFolder: resolve(here, '../migrations') });

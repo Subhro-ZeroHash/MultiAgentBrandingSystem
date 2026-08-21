@@ -22,7 +22,11 @@ if (!url) {
   process.exit(1);
 }
 
-const client = postgres(url, { max: 1, onnotice: () => {} });
+const client = postgres(url, {
+  max: 1,
+  onnotice: () => {},
+  ssl: process.env.NODE_ENV === 'production' ? 'require' : false,
+});
 const db = drizzle(client, { schema });
 
 const DEV_USER_ID = 'dev-user';

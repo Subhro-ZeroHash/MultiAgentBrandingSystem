@@ -34,7 +34,10 @@ function redisConnection() {
   providers: [
     {
       provide: DATABASE,
-      useFactory: (): Database => createDatabase({ url: loadEnv().DATABASE_URL }),
+      useFactory: (): Database => {
+        const env = loadEnv();
+        return createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production' });
+      },
     },
     { provide: AI_REGISTRY, useFactory: (): AiRegistry => createAiRegistryFromEnv() },
     {
