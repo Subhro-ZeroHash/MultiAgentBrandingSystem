@@ -36,7 +36,14 @@ function redisConnection() {
       provide: DATABASE,
       useFactory: (): Database => {
         const env = loadEnv();
-        return createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production' });
+        // Supabase's session pooler caps total concurrent clients at 15
+        // (pool_size in its own dashboard) — shared across every service that
+        // connects, not per-service. Each of the 4 backend processes needs an
+        // explicit, small `max` here or the combined default (10 each) blows
+        // past that ceiling under any real concurrent load, surfacing as
+        // random "max clients reached" failures rather than a clean error at
+        // the one place that's actually over budget.
+        return createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production', max: 4 });
       },
     },
     { provide: AI_REGISTRY, useFactory: (): AiRegistry => createAiRegistryFromEnv() },

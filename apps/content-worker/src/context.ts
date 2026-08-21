@@ -90,7 +90,10 @@ export function createContext(): WorkerContext {
   const url = new URL(env.REDIS_URL);
 
   return {
-    db: createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production' }),
+    // See apps/content-api/src/core/core.module.ts's identical comment —
+    // Supabase's session-pooler cap (15) is shared across every service, not
+    // per-service, so each one needs an explicit small `max`.
+    db: createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production', max: 3 }),
     ai: createAiRegistryFromEnv(),
     storage: createStorage({
       region: env.S3_REGION,
