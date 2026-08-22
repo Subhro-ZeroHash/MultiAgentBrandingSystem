@@ -58,6 +58,15 @@ export class SocialController {
     }));
   }
 
+  /** Live account stats and recent posts for one connected account. Read
+   *  straight from Instagram rather than from `post_insights`, which only
+   *  covers posts this app itself published — see SocialService. */
+  @UseGuards(JwtAuthGuard)
+  @Get('accounts/:id/insights')
+  async getAccountInsights(@Param('id') accountId: string, @Request() req: AuthenticatedRequest) {
+    return this.social.getAccountInsights(accountId, req.user.id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Delete('accounts/:id')
   async disconnectAccount(@Param('id') accountId: string, @Request() req: AuthenticatedRequest) {

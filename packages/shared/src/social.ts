@@ -42,3 +42,49 @@ export function isGraphErrorPayload(body: unknown): boolean {
   const error = body as GraphErrorResponse | null;
   return Boolean(error?.error ?? error?.error_message ?? error?.error_type);
 }
+
+/** One post as `me/media` returns it, before the API layer normalises it. */
+export interface InstagramMediaItem {
+  id: string;
+  caption?: string;
+  media_type?: string;
+  media_url?: string;
+  thumbnail_url?: string;
+  permalink?: string;
+  timestamp?: string;
+  like_count?: number;
+  comments_count?: number;
+}
+
+/** A post in the shape the API returns and the app renders. */
+export interface InstagramMediaSummary {
+  id: string;
+  caption: string | null;
+  mediaType: string | null;
+  mediaUrl: string | null;
+  permalink: string | null;
+  timestamp: string | null;
+  likeCount: number;
+  commentsCount: number;
+}
+
+/**
+ * Live account stats plus recent posts for one connected Instagram account.
+ *
+ * Everything here comes from the `instagram_business_basic` scope, which is
+ * what the existing connection already carries — no `manage_insights` grant
+ * and no reconnect needed. Counts default to 0 rather than being optional:
+ * Instagram omits a field it has no value for, and a missing follower count
+ * means zero followers, not "unknown".
+ */
+export interface InstagramAccountInsights {
+  accountId: string;
+  username: string | null;
+  name: string | null;
+  accountType: string | null;
+  profilePictureUrl: string | null;
+  followersCount: number;
+  followsCount: number;
+  mediaCount: number;
+  media: InstagramMediaSummary[];
+}

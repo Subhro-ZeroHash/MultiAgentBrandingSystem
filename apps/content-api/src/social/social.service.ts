@@ -13,6 +13,8 @@ import {
   isGraphErrorPayload,
   isTokenExpired,
   TokenEncryption,
+  type InstagramAccountInsights,
+  type InstagramMediaItem,
 } from '@bmas/shared';
 import { DATABASE } from '../core/core.module.js';
 import { loadEnv } from '../config/env.js';
@@ -339,6 +341,105 @@ export class SocialService {
 
     if (!accounts[0]) throw new NotFoundException('Social account not found');
     return accounts[0];
+  }
+
+  /**
+   * Account stats plus recent posts, read live from Instagram.
+   *
+   * Deliberately not served from `content.post_insights`: that table only
+   * covers posts *this app* published (it keys off the `ig_media_id` our own
+   * publish flow records), so for an account that posts from the Instagram
+   * app it is permanently empty. `me/media` returns the real timeline
+   * including `like_count`/`comments_count`, and needs only the
+   * `instagram_business_basic` scope the connection already has — no
+   * `manage_insights` grant and no reconnect.
+   *
+   * Live rather than cached because there is no sync job behind this yet;
+   * a stale-cache layer is the fix when the call cost matters, not before.
+   */
+  async getAccountInsights(
+    accountId: string,
+    userId: string,
+    mediaLimit = 12,
+  ): Promise<InstagramAccountInsights> {
+    const account = await this.getAccount(accountId, userId);
+    const token = await this.tokenForReading(account);
+
+    // `profile_picture_url` is requested but not guaranteed — it comes back
+    // only for some account types, so it stays optional rather than being
+    // treated as a failure when absent.
+    const profile = await this.graphGet<{
+      user_id?: string;
+      id?: string;
+      username?: string;
+      name?: string;
+      account_type?: string;
+      profile_picture_url?: string;
+      followers_count?: number;
+      follows_count?: number;
+      media_count?: number;
+    }>(
+      'me',
+      {
+        fields:
+          'user_id,username,name,account_type,profile_picture_url,followers_count,follows_count,media_count',
+        access_token: token,
+      },
+      'read your Instagram profile',
+    );
+
+    const media = await this.graphGet<{ data?: InstagramMediaItem[] }>(
+      'me/media',
+      {
+        fields:
+          'id,caption,media_type,media_url,permalink,thumbnail_url,timestamp,like_count,comments_count',
+        limit: String(mediaLimit),
+        access_token: token,
+      },
+      'read your recent Instagram posts',
+    );
+
+    return {
+      accountId: account.id,
+      username: profile.username ?? null,
+      name: profile.name ?? null,
+      accountType: profile.account_type ?? null,
+      profilePictureUrl: profile.profile_picture_url ?? null,
+      followersCount: profile.followers_count ?? 0,
+      followsCount: profile.follows_count ?? 0,
+      mediaCount: profile.media_count ?? 0,
+      media: (media.data ?? []).map((item) => ({
+        id: item.id,
+        caption: item.caption ?? null,
+        mediaType: item.media_type ?? null,
+        // A video's `media_url` is the file itself; `thumbnail_url` is the
+        // only thing an <Image> can render for it.
+        mediaUrl: item.thumbnail_url ?? item.media_url ?? null,
+        permalink: item.permalink ?? null,
+        timestamp: item.timestamp ?? null,
+        likeCount: item.like_count ?? 0,
+        commentsCount: item.comments_count ?? 0,
+      })),
+    };
+  }
+
+  /**
+   * Decrypts an account's token for a read-only call, failing the same way
+   * `postToInstagram` does when it has expired — including flipping the
+   * stored status, so the UI can show the connection as needing attention
+   * rather than silently rendering an error every refresh.
+   */
+  private async tokenForReading(account: SocialAccount): Promise<string> {
+    if (isTokenExpired(account.tokenExpiresAt)) {
+      await this.db
+        .update(schema.socialAccounts)
+        .set({ status: 'token_expired' as const })
+        .where(eq(schema.socialAccounts.id, account.id));
+      throw new BadRequestException(
+        `The Instagram connection for ${account.displayName} has expired. Reconnect the account and try again.`,
+      );
+    }
+    return this.getDecryptedToken(account);
   }
 
   async disconnectAccount(accountId: string, userId: string): Promise<void> {
