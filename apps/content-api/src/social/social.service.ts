@@ -6,7 +6,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { eq, and, schema, type Database } from '@bmas/db';
+import { eq, and, desc, gte, isNull, schema, type Database } from '@bmas/db';
 import { type SocialAccount } from '@bmas/db';
 import {
   graphErrorMessage,
@@ -15,6 +15,7 @@ import {
   TokenEncryption,
   type InstagramAccountInsights,
   type InstagramMediaItem,
+  type InstagramPerformanceSummary,
 } from '@bmas/shared';
 import { DATABASE } from '../core/core.module.js';
 import { loadEnv } from '../config/env.js';
@@ -33,9 +34,24 @@ const GRAPH_BASE = 'https://graph.instagram.com/v21.0';
 const OAUTH_AUTHORIZE = 'https://www.instagram.com/oauth/authorize';
 const OAUTH_TOKEN = 'https://api.instagram.com/oauth/access_token';
 
-/** Publishing needs the second one; the first is only enough to read the
- *  profile. Both are granted on the same consent screen. */
-const SCOPES = ['instagram_business_basic', 'instagram_business_content_publish'].join(',');
+/**
+ * Publishing needs the second one; the first is only enough to read the
+ * profile, its media, and the comments on that media. All are granted on the
+ * same consent screen.
+ *
+ * `manage_insights` is what unlocks reach, impressions, saves and total
+ * interactions — verified against the live API, those return 403 "Application
+ * does not have permission" without it, while like/comment counts and comment
+ * text come back fine on `basic` alone. An account connected before this was
+ * added keeps working for everything except those metrics; it has to
+ * reconnect once to pick up the wider grant, which is why the insights sync
+ * treats a 403 here as "not granted yet" rather than a hard failure.
+ */
+const SCOPES = [
+  'instagram_business_basic',
+  'instagram_business_content_publish',
+  'instagram_business_manage_insights',
+].join(',');
 
 /** Only professional accounts can publish through the API. A personal account
  *  authenticates fine and then fails at the first /media call, so it is
@@ -52,6 +68,81 @@ const CONTAINER_POLL_ATTEMPTS = 10;
 const CONTAINER_POLL_INTERVAL_MS = 2000;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The metric columns a performance roll-up reads; narrower than the full row
+ *  so the pure helpers below can be exercised without building one. */
+interface MetricSample {
+  igMediaId: string;
+  fetchedAt: Date;
+  likeCount: number | null;
+  commentsCount: number | null;
+  reach: number | null;
+  saved: number | null;
+}
+
+/**
+ * Newest sample per media, from rows already sorted newest-first.
+ *
+ * `post_insights` keeps every sync as its own row so a post's engagement
+ * curve is visible; summing them all would count one post's likes once per
+ * sweep, inflating every total by however often the sync happened to run.
+ */
+export function latestPerMedia<T extends MetricSample>(rowsNewestFirst: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const row of rowsNewestFirst) {
+    if (seen.has(row.igMediaId)) continue;
+    seen.add(row.igMediaId);
+    out.push(row);
+  }
+  return out;
+}
+
+/** Sums the window's metrics. Likes and comments are always present, so they
+ *  total to a number; reach and saved stay null when no measured post carried
+ *  them — a missing grant is not the same as zero reach. */
+export function sumMetrics(samples: MetricSample[]): {
+  likes: number;
+  comments: number;
+  reach: number | null;
+  saved: number | null;
+} {
+  let likes = 0;
+  let comments = 0;
+  let reach: number | null = null;
+  let saved: number | null = null;
+
+  for (const sample of samples) {
+    likes += sample.likeCount ?? 0;
+    comments += sample.commentsCount ?? 0;
+    if (sample.reach !== null) reach = (reach ?? 0) + sample.reach;
+    if (sample.saved !== null) saved = (saved ?? 0) + sample.saved;
+  }
+  return { likes, comments, reach, saved };
+}
+
+/** Interactions as a percentage of reach. Null without reach, and null on
+ *  zero reach rather than dividing by it. */
+export function engagementRate(totals: {
+  likes: number;
+  comments: number;
+  reach: number | null;
+}): number | null {
+  if (totals.reach === null || totals.reach === 0) return null;
+  return ((totals.likes + totals.comments) / totals.reach) * 100;
+}
+
+/**
+ * Percentage change from `before` to `after`.
+ *
+ * Null when there is nothing to compare against — no previous observation, or
+ * a previous value of zero. Reporting "+100%" off a zero baseline reads as
+ * real growth when it only means the metric existed this time and not last.
+ */
+export function percentChange(before: number | null, after: number | null): number | null {
+  if (before === null || after === null || before === 0) return null;
+  return ((after - before) / before) * 100;
+}
 
 @Injectable()
 export class SocialService {
@@ -419,6 +510,90 @@ export class SocialService {
         timestamp: item.timestamp ?? null,
         likeCount: item.like_count ?? 0,
         commentsCount: item.comments_count ?? 0,
+      })),
+    };
+  }
+
+  /**
+   * Aggregated performance over a trailing window, from the sync's stored
+   * history rather than a live call.
+   *
+   * `post_insights` is append-only — one row per media per sync — so totals
+   * take the newest sample per media rather than summing every sample, which
+   * would multiply a post's numbers by how many times it happened to be
+   * swept. Deltas compare against the preceding window of the same length,
+   * and are null when there is no earlier data to compare against rather than
+   * being reported as a 100% rise from zero.
+   */
+  async getAccountPerformance(
+    accountId: string,
+    userId: string,
+    windowDays = 30,
+  ): Promise<InstagramPerformanceSummary> {
+    const account = await this.getAccount(accountId, userId);
+    const now = Date.now();
+    const windowMs = windowDays * 24 * 60 * 60 * 1000;
+    const windowStart = new Date(now - windowMs);
+    const previousStart = new Date(now - windowMs * 2);
+
+    const rows = await this.db
+      .select()
+      .from(schema.postInsights)
+      .where(
+        and(
+          eq(schema.postInsights.socialAccountId, account.id),
+          gte(schema.postInsights.fetchedAt, previousStart),
+          isNull(schema.postInsights.error),
+        ),
+      )
+      .orderBy(desc(schema.postInsights.fetchedAt));
+
+    const current = latestPerMedia(rows.filter((row) => row.fetchedAt >= windowStart));
+    const previous = latestPerMedia(rows.filter((row) => row.fetchedAt < windowStart));
+
+    const currentTotals = sumMetrics(current);
+    const previousTotals = sumMetrics(previous);
+
+    const comments = await this.db
+      .select({
+        id: schema.postComments.id,
+        igMediaId: schema.postComments.igMediaId,
+        text: schema.postComments.text,
+        username: schema.postComments.username,
+        likeCount: schema.postComments.likeCount,
+        commentedAt: schema.postComments.commentedAt,
+      })
+      .from(schema.postComments)
+      .where(eq(schema.postComments.socialAccountId, account.id))
+      .orderBy(desc(schema.postComments.commentedAt))
+      .limit(25);
+
+    return {
+      accountId: account.id,
+      windowDays,
+      postsMeasured: current.length,
+      lastSyncedAt: rows[0]?.fetchedAt.toISOString() ?? null,
+      // Reach comes back only with the manage_insights grant, so its presence
+      // on any measured post is what tells us the grant is live.
+      insightsGranted: current.some((row) => row.reach !== null),
+      totals: currentTotals,
+      engagementRate: engagementRate(currentTotals),
+      deltas: {
+        likes: percentChange(previousTotals.likes, currentTotals.likes),
+        comments: percentChange(previousTotals.comments, currentTotals.comments),
+        reach: percentChange(previousTotals.reach, currentTotals.reach),
+        engagementRate: percentChange(
+          engagementRate(previousTotals),
+          engagementRate(currentTotals),
+        ),
+      },
+      recentComments: comments.map((comment) => ({
+        id: comment.id,
+        igMediaId: comment.igMediaId,
+        text: comment.text,
+        username: comment.username,
+        likeCount: comment.likeCount,
+        commentedAt: comment.commentedAt?.toISOString() ?? null,
       })),
     };
   }

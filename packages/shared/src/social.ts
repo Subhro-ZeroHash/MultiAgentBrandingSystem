@@ -88,3 +88,49 @@ export interface InstagramAccountInsights {
   mediaCount: number;
   media: InstagramMediaSummary[];
 }
+
+/** One comment as stored, for the community-response view. */
+export interface StoredComment {
+  id: string;
+  igMediaId: string;
+  text: string | null;
+  username: string | null;
+  likeCount: number | null;
+  commentedAt: string | null;
+}
+
+/**
+ * Aggregated performance over a trailing window, computed from the stored
+ * `post_insights` history rather than a live call — deltas need more than one
+ * observation, which only the sync's accumulated samples can provide.
+ *
+ * Every field is nullable where the underlying metric may genuinely be
+ * unavailable rather than zero: `reach` and `saved` need the
+ * `manage_insights` grant, and a delta needs a previous window to compare
+ * against. `insightsGranted` distinguishes "this account has not reconnected
+ * since that scope was added" from "reach really was zero", which otherwise
+ * render identically and mean opposite things.
+ */
+export interface InstagramPerformanceSummary {
+  accountId: string;
+  windowDays: number;
+  postsMeasured: number;
+  lastSyncedAt: string | null;
+  insightsGranted: boolean;
+  totals: {
+    likes: number;
+    comments: number;
+    reach: number | null;
+    saved: number | null;
+  };
+  /** (likes + comments) / reach, as a percentage. Null without reach. */
+  engagementRate: number | null;
+  /** Percentage change against the preceding window of the same length. */
+  deltas: {
+    likes: number | null;
+    comments: number | null;
+    reach: number | null;
+    engagementRate: number | null;
+  };
+  recentComments: StoredComment[];
+}

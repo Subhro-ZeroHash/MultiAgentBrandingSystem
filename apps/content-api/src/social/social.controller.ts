@@ -4,18 +4,25 @@ import {
   Controller,
   Delete,
   Get,
+  Inject,
   Param,
   Post,
   Request,
   UseGuards,
 } from '@nestjs/common';
+import { QUEUES } from '@bmas/shared';
+import type { Queue } from 'bullmq';
 import { SocialService } from './social.service.js';
+import { INSTAGRAM_INSIGHTS_SYNC_QUEUE } from '../core/core.module.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 
 @Controller('social')
 export class SocialController {
-  constructor(private readonly social: SocialService) {}
+  constructor(
+    private readonly social: SocialService,
+    @Inject(INSTAGRAM_INSIGHTS_SYNC_QUEUE) private readonly insightsSyncQueue: Queue,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Get('auth/instagram/url')
@@ -65,6 +72,38 @@ export class SocialController {
   @Get('accounts/:id/insights')
   async getAccountInsights(@Param('id') accountId: string, @Request() req: AuthenticatedRequest) {
     return this.social.getAccountInsights(accountId, req.user.id);
+  }
+
+  /** Aggregated performance from the sync's stored history — the trend and
+   *  community-response view, as opposed to `/insights`' live snapshot. */
+  @UseGuards(JwtAuthGuard)
+  @Get('accounts/:id/performance')
+  async getAccountPerformance(
+    @Param('id') accountId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.social.getAccountPerformance(accountId, req.user.id);
+  }
+
+  /**
+   * Runs the insights sync now instead of waiting for the 6-hourly tick.
+   *
+   * Enqueues rather than syncing inline: the sweep is content-worker's job
+   * and can take a while across many posts, so this returns as soon as the
+   * work is queued — same producer/consumer split the rest of the app uses.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('accounts/:id/sync')
+  async syncAccount(@Param('id') accountId: string, @Request() req: AuthenticatedRequest) {
+    // Ownership is checked here so an unauthorised caller cannot queue work
+    // against someone else's account.
+    await this.social.getAccount(accountId, req.user.id);
+    await this.insightsSyncQueue.add(
+      QUEUES.instagramInsightsSync,
+      {},
+      { removeOnComplete: 20, removeOnFail: 50 },
+    );
+    return { queued: true };
   }
 
   @UseGuards(JwtAuthGuard)

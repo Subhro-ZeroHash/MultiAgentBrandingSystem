@@ -516,9 +516,26 @@ export const postInsights = content.table(
     id: text('id')
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    scheduledPostId: text('scheduled_post_id')
-      .notNull()
-      .references(() => scheduledPosts.id, { onDelete: 'cascade' }),
+    /**
+     * Nullable: performance is tracked for every post on the connected
+     * account, not just the ones this app published. A post made from the
+     * Instagram app has no scheduled_posts row to point at, and restricting
+     * this table to app-published posts is what left it permanently empty —
+     * the brand's actual posting history was invisible to the feedback loop.
+     * Set when the post did originate here, so post-level feedback can still
+     * be attributed back to the campaign that produced it.
+     */
+    scheduledPostId: text('scheduled_post_id').references(() => scheduledPosts.id, {
+      onDelete: 'set null',
+    }),
+    /** The Instagram media this row measures. The stable identity here —
+     *  `scheduledPostId` is absent for anything posted outside the app. */
+    igMediaId: text('ig_media_id').notNull(),
+    /** Which connection this was read through; a brand may reconnect or swap
+     *  accounts, and metrics should not silently merge across them. */
+    socialAccountId: text('social_account_id').references(() => socialAccounts.id, {
+      onDelete: 'cascade',
+    }),
     /** Denormalized from scheduledPosts for per-brand queries without a join. */
     brandId: text('brand_id')
       .notNull()
@@ -527,6 +544,12 @@ export const postInsights = content.table(
     commentsCount: integer('comments_count'),
     reach: integer('reach'),
     saved: integer('saved'),
+    /** Post caption and permalink, kept so analysis and the UI don't need a
+     *  second Graph call to say *which* post a number belongs to. */
+    caption: text('caption'),
+    permalink: text('permalink'),
+    mediaType: text('media_type'),
+    postedAt: timestamp('posted_at', { withTimezone: true }),
     raw: jsonb('raw').$type<Record<string, unknown>>(),
     /** Set when the fetch itself failed; the typed columns above are null in
      *  that case. Mirrors probe_runs.error. */
@@ -536,6 +559,48 @@ export const postInsights = content.table(
   (t) => [
     index('post_insights_scheduled_post_fetched_idx').on(t.scheduledPostId, t.fetchedAt),
     index('post_insights_brand_fetched_idx').on(t.brandId, t.fetchedAt),
+    /** Reads are "latest metrics for this media", so the sweep can upsert one
+     *  row per media per run without scanning. */
+    index('post_insights_media_fetched_idx').on(t.igMediaId, t.fetchedAt),
+  ],
+);
+
+/**
+ * Individual comments on a brand's Instagram posts — the raw community
+ * response, stored verbatim so analysis can run over it later without
+ * re-fetching (Instagram pages comments, and old ones fall out of easy reach).
+ *
+ * Readable with the `instagram_business_basic` scope the connection already
+ * carries; no `manage_comments` grant is needed just to read them.
+ */
+export const postComments = content.table(
+  'post_comments',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** Instagram's own comment id. Unique so a re-sync updates the existing
+     *  row rather than accumulating a copy per sweep. */
+    igCommentId: text('ig_comment_id').notNull(),
+    igMediaId: text('ig_media_id').notNull(),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    socialAccountId: text('social_account_id').references(() => socialAccounts.id, {
+      onDelete: 'cascade',
+    }),
+    text: text('text'),
+    username: text('username'),
+    likeCount: integer('like_count'),
+    /** When the comment was posted, per Instagram — not when we read it. */
+    commentedAt: timestamp('commented_at', { withTimezone: true }),
+    raw: jsonb('raw').$type<Record<string, unknown>>(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('post_comments_ig_comment_id_idx').on(t.igCommentId),
+    index('post_comments_media_idx').on(t.igMediaId),
+    index('post_comments_brand_commented_idx').on(t.brandId, t.commentedAt),
   ],
 );
 
@@ -1704,5 +1769,7 @@ export type ScheduledPost = typeof scheduledPosts.$inferSelect;
 export type NewScheduledPost = typeof scheduledPosts.$inferInsert;
 export type PostInsightRow = typeof postInsights.$inferSelect;
 export type NewPostInsightRow = typeof postInsights.$inferInsert;
+export type PostCommentRow = typeof postComments.$inferSelect;
+export type NewPostCommentRow = typeof postComments.$inferInsert;
 export type PushToken = typeof pushTokens.$inferSelect;
 export type NewPushToken = typeof pushTokens.$inferInsert;
