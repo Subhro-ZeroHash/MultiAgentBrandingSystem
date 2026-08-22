@@ -22,6 +22,7 @@ import {
 } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
+import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
 import { ensureFreshTrendPool } from './pool-loader.js';
 import { researchFocusedOpportunities } from './focused-trend-research.js';
@@ -513,6 +514,24 @@ export async function runTrendResearch(
     console.warn(
       `[trend-research] run ${run.id} succeeded: ${opportunityRows.length} opportunities for ${brand.name}`,
     );
+
+    // Only when the run actually found something. A push saying "0 new
+    // opportunities" is a notification the user cannot act on, and autopilot
+    // runs on a schedule — so the empty case would arrive on its own cadence
+    // forever and train them to ignore the channel.
+    if (opportunityRows.length > 0) {
+      const best = opportunityRows.reduce((top, row) =>
+        row.score.overall > top.score.overall ? row : top,
+      );
+      await notifyBrandOwner(ctx.db, brand.id, {
+        title: `${opportunityRows.length} new content idea${opportunityRows.length === 1 ? '' : 's'}`,
+        // Leads with the strongest idea rather than the count alone: the title
+        // already carries the number, and the specific idea is what makes it
+        // worth opening.
+        body: `Top pick: ${best.title}`,
+        data: { type: 'trend-research', runId: run.id },
+      });
+    }
 
     // Best-effort, deliberately outside the transaction and its own try/catch:
     // a failure here must never flip a successful research run to 'failed' —

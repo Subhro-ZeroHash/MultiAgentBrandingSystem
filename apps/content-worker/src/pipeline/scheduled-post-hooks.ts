@@ -1,37 +1,5 @@
 import { and, eq, schema, type Database } from '@bmas/db';
-
-const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
-
-/**
- * Fire-and-forget by design: a push failing to send must never fail the
- * generation job that triggered it, and there is no receipt-tracking UI to
- * feed a retry into. `tokens` is typically 0 or 1 entries in this single-user
- * dev setup, but the endpoint accepts a batch either way.
- */
-async function sendExpoPush(
-  tokens: string[],
-  message: { title: string; body: string; data?: Record<string, unknown> },
-): Promise<void> {
-  if (tokens.length === 0) return;
-
-  try {
-    await fetch(EXPO_PUSH_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(
-        tokens.map((to) => ({
-          to,
-          title: message.title,
-          body: message.body,
-          sound: 'default',
-          ...(message.data ? { data: message.data } : {}),
-        })),
-      ),
-    });
-  } catch (error) {
-    console.error('[scheduled-post] failed to send push notification:', error);
-  }
-}
+import { pushTokensForOwner, sendExpoPush } from './push.js';
 
 /** Instagram's hard limit on a caption. Meta rejects the whole post over this,
  *  so it is a publish-time failure rather than a truncation on their side. */
@@ -74,14 +42,6 @@ export function composeCaption(copy: {
     .filter(present)
     .join('\n\n')
     .slice(0, INSTAGRAM_CAPTION_LIMIT);
-}
-
-async function pushTokensForOwner(db: Database, ownerId: string): Promise<string[]> {
-  const rows = await db
-    .select({ token: schema.pushTokens.expoPushToken })
-    .from(schema.pushTokens)
-    .where(eq(schema.pushTokens.ownerId, ownerId));
-  return rows.map((row) => row.token);
 }
 
 /** The Instagram account this scheduled post defaults to, so the approval
@@ -232,5 +192,3 @@ export async function onGenerationFailed(
     data: { scheduledPostId: post.id },
   });
 }
-
-export { sendExpoPush };

@@ -24,6 +24,7 @@ import {
 } from '@bmas/shared';
 import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
+import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
 import { ensureFreshIntelligencePool } from './pool-loader.js';
 
@@ -692,6 +693,21 @@ export async function runIntelligenceResearch(
     console.warn(
       `[intelligence-research] run ${run.id} succeeded: ${rows.length} items (${pooledRows.length} pooled + ${competitorRows.length} competitor) for ${brand.name}`,
     );
+
+    // Same rule as trend research: notify only on a run that found something,
+    // and lead with the most urgent item rather than the count alone. High
+    // urgency means the window to act is closing, which is exactly the case
+    // where a push earns its interruption.
+    if (rows.length > 0) {
+      const mostUrgent = rows.reduce((top, row) =>
+        row.score.overall > top.score.overall ? row : top,
+      );
+      await notifyBrandOwner(ctx.db, brand.id, {
+        title: `${rows.length} new industry signal${rows.length === 1 ? '' : 's'}`,
+        body: mostUrgent.title,
+        data: { type: 'intelligence', runId: run.id },
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[intelligence-research] run ${run.id} failed: ${message}`);
