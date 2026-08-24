@@ -1,5 +1,6 @@
 import { ProviderError, ProviderNotConfiguredError } from '../errors.js';
 import { buildCostEvent, priceSearch } from '../pricing.js';
+import { dropStaleResults } from '../search.js';
 import type { WebSearchRequest, WebSearchResult, WebSearchService } from '../search.js';
 import type { ProviderContext, ProviderResult } from '../types.js';
 
@@ -30,16 +31,6 @@ interface SerpApiResponse {
 const MODEL = 'serpapi-search';
 const MAX_RESULTS = 20;
 
-/**
- * Builds the query params SerpApi's Google engine expects. Exported and pure,
- * same split as buildTavilyRequestBody — testable without a network call.
- *
- * `tbm=nws` switches to Google's News vertical, matching `req.topic ===
- * 'news'` the same way Tavily's `topic` param does; SerpApi has no combined
- * "general or news" toggle, it's a different results array entirely
- * (`news_results` vs `organic_results`), which is why mapSerpApiResponse below
- * branches on it rather than merging both.
- */
 /** Google's date filter wants US-format dates, whatever the query's locale. */
 function toGoogleDate(date: Date): string {
   const month = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -59,6 +50,16 @@ export function buildRecencyFilter(recencyDays: number, now: Date = new Date()):
   return `cdr:1,cd_min:${toGoogleDate(from)},cd_max:${toGoogleDate(now)}`;
 }
 
+/**
+ * Builds the query params SerpApi's Google engine expects. Exported and pure,
+ * same split as buildTavilyRequestBody — testable without a network call.
+ *
+ * `tbm=nws` switches to Google's News vertical, matching `req.topic ===
+ * 'news'` the same way Tavily's `topic` param does; SerpApi has no combined
+ * "general or news" toggle, it's a different results array entirely
+ * (`news_results` vs `organic_results`), which is why mapSerpApiResponse below
+ * branches on it rather than merging both.
+ */
 export function buildSerpApiParams(
   req: WebSearchRequest,
   apiKey: string,
@@ -176,7 +177,9 @@ export class SerpApiSearchAdapter implements WebSearchService {
       throw new ProviderError(`SerpApi error: ${body.error}`, 'serpapi', { retryable: false });
     }
 
-    const results = mapSerpApiResponse(body);
+    // Belt and braces alongside the `tbs` date range above: the filter is
+    // a request to Google, this is the guarantee to our callers.
+    const results = dropStaleResults(mapSerpApiResponse(body), req.recencyDays);
     const latencyMs = Date.now() - startedAt;
 
     return {

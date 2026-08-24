@@ -1,5 +1,6 @@
 import { ProviderError, ProviderNotConfiguredError } from '../errors.js';
 import { buildCostEvent, priceSearch } from '../pricing.js';
+import { dropStaleResults } from '../search.js';
 import type { WebSearchRequest, WebSearchResult, WebSearchService } from '../search.js';
 import type { ProviderContext, ProviderResult } from '../types.js';
 
@@ -129,9 +130,13 @@ export class TavilySearchAdapter implements WebSearchService {
     }
 
     const body = (await response.json()) as TavilyResponse;
-    const results = (body.results ?? [])
+    const mapped = (body.results ?? [])
       .map(mapTavilyResult)
       .filter((result): result is WebSearchResult => result !== null);
+    // Tavily accepts `days` but does not reliably honour it — a 45-day
+    // request has come back with seven-month-old rows — so the window is
+    // enforced here rather than trusted.
+    const results = dropStaleResults(mapped, req.recencyDays);
     const latencyMs = Date.now() - startedAt;
 
     return {
