@@ -14,7 +14,12 @@ import {
   marketName,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
-import { currentMonthInIndia, dateGrounding } from './prompt-context.js';
+import {
+  describeCalendarForPrompt,
+  loadUpcomingCalendar,
+  type VerifiedCalendarEvent,
+} from './festival-calendar.js';
+import { currentMonthInMarket, dateGrounding } from './prompt-context.js';
 
 /**
  * Trend Research — Layer A (Global Pool refresh).
@@ -48,8 +53,7 @@ const SIGNAL_TYPE_FOR_CATEGORY: Record<TrendCategory, SignalType> = {
 };
 
 export type TrendPoolBucket = (
-  | { scope: 'category'; category: CategoryKey }
-  | { scope: 'national' }
+  { scope: 'category'; category: CategoryKey } | { scope: 'national' }
 ) & { market: string };
 
 /**
@@ -67,18 +71,22 @@ export function buildTrendPoolQueries(
   bucket: TrendPoolBucket,
 ): Array<{ category: TrendCategory; request: WebSearchRequest }> {
   const place = marketName(bucket.market);
-  const month = currentMonthInIndia();
+  const month = currentMonthInMarket(bucket.market);
 
   if (bucket.scope === 'national') {
     return [
       {
         category: 'event_festival',
+        // Deliberately no longer asks search which festivals are coming up.
+        // That question has no answer on any page, so it used to return
+        // whatever sale listicle ranked best — the Republic Day result.
+        // `festival-calendar.ts` answers it properly now; this query is left
+        // to what search is actually good at, which is what is being reported
+        // on right now in the market.
         request: {
-          query:
-            `upcoming festivals, public holidays, product-launch-worthy dates and events in ` +
-            `the next 30 days in ${place}, as of ${month}`,
+          query: `what consumers in ${place} are shopping for and talking about right now, ${month}`,
           topic: 'news',
-          recencyDays: 45,
+          recencyDays: 14,
           maxResults: RESULTS_PER_QUERY,
         },
       },
@@ -199,6 +207,48 @@ function mapResultsToSignals(
     sourceUrl: result.url,
     publishedAt: result.publishedAt,
   }));
+}
+
+/**
+ * Turns each verified observance into one signal.
+ *
+ * One per event, not one per corroborating result: the evidence here is the
+ * *observance*, and the pages found about it are corroboration of a single
+ * fact, not five independent findings. Emitting one apiece would inflate
+ * `popularity`, which the synthesis prompt is explicitly told to read as "how
+ * many independent sources surfaced this".
+ *
+ * `sourceUrl` takes the best corroborating page — every signal must carry one,
+ * and an event that reached here has at least one by construction.
+ * `publishedAt` stays that page's own date rather than the event date: it means
+ * "when this evidence was written", and quietly putting a future date in it
+ * would misreport every downstream recency judgment. The event's date is in the
+ * title, where it is read as what it is.
+ */
+export function calendarEventsToSignals(events: VerifiedCalendarEvent[]): SignalCandidate[] {
+  return events.flatMap((event) => {
+    const top = event.results[0];
+    if (!top) return [];
+    return [
+      {
+        id: crypto.randomUUID(),
+        source: 'calendar',
+        signalType: 'event_proximity' as const,
+        title: `${event.name} — ${event.date} (in ${event.daysAway} days)`.slice(0, 300),
+        snippet:
+          `${event.kind} observance, observed by ${event.audience}. ${event.significance}`.slice(
+            0,
+            MAX_SNIPPET_CHARS,
+          ),
+        // Nearer is stronger: the whole value of a dated event is the closing
+        // window to act on it. Floored rather than decayed to nothing, since
+        // an event six weeks out is still a real planning opportunity.
+        strength: Math.max(100 - event.daysAway * 1.5, 40),
+        sourceUrl: top.url,
+        publishedAt: top.publishedAt,
+      },
+    ];
+  });
 }
 
 function describeSignalsForPrompt(signals: SignalCandidate[]): string {
@@ -353,11 +403,12 @@ async function synthesizePoolItems(
   runId: string,
   bucket: TrendPoolBucket,
   signals: SignalCandidate[],
+  calendar: VerifiedCalendarEvent[],
 ): Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await synthesizePoolItemsOnce(ctx, runId, bucket, signals);
+      return await synthesizePoolItemsOnce(ctx, runId, bucket, signals, calendar);
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -375,11 +426,31 @@ async function synthesizePoolItemsOnce(
   runId: string,
   bucket: TrendPoolBucket,
   signals: SignalCandidate[],
+  calendar: VerifiedCalendarEvent[],
 ): Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }> {
   const audience =
     bucket.scope === 'national'
       ? `small businesses across every industry in ${marketName(bucket.market)}`
       : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
+
+  // Both empty for a category bucket, which has no calendar — the prompt is
+  // then character-for-character what it was before this existed.
+  const calendarBlock = calendar.length
+    ? `**Verified upcoming calendar for ${marketName(bucket.market)}** — each of these is a real ` +
+      `dated observance, confirmed against live sources. These dates are more reliable than ` +
+      `anything in the signals below, and an observance here is a genuine opportunity even if no ` +
+      `signal happens to mention it:\n${describeCalendarForPrompt(calendar)}\n`
+    : '';
+  const calendarInstruction = calendar.length
+    ? 'A verified calendar of upcoming dated observances is given alongside the signals. Treat it ' +
+      'as established fact — it was confirmed against live sources — and build an opportunity for ' +
+      'each observance genuinely worth acting on, whether or not a signal mentions it. Where a ' +
+      'signal does relate to one, cluster them together and cite the signal. Where none does, ' +
+      'still produce the opportunity and cite the calendar signal carrying that event. A dated ' +
+      'observance arriving soon is the single strongest kind of opportunity this pool can ' +
+      'surface: there is a fixed date to build toward and a known reason people are already ' +
+      'thinking about it.\n\n'
+    : '';
 
   const { value, cost } = await withRetry(
     () =>
@@ -388,12 +459,13 @@ async function synthesizePoolItemsOnce(
           {
             role: 'orchestrator',
             system:
-              dateGrounding() +
+              dateGrounding(bucket.market) +
               `You are a marketing strategist turning raw search signals into content ` +
               `opportunities for ${audience} generally — not one specific business. You work ` +
-              `ONLY from the signals you are given below — they are current and real; your own ` +
+              `ONLY from the material you are given below — it is current and verified; your own ` +
               `knowledge is not, and might be stale by months. Never invent a trend, event, date, ` +
-              `or fact that is not actually present in the signals.\n\n` +
+              `or fact that is not actually present in that material.\n\n` +
+              calendarInstruction +
               'Cluster related signals into opportunities first — several signals about the same ' +
               'topic become ONE opportunity backed by multiple signals, not several near-duplicate ' +
               'opportunities. A topic two independent signal sources both surfaced is stronger ' +
@@ -406,6 +478,7 @@ async function synthesizePoolItemsOnce(
               {
                 role: 'user',
                 content: [
+                  calendarBlock,
                   '**Raw signals collected, numbered — reference these numbers in `signalIndexes`:**',
                   describeSignalsForPrompt(signals),
                   '',
@@ -415,7 +488,9 @@ async function synthesizePoolItemsOnce(
                     'up, so they must be genuinely apt for the opportunity, not a default. Put the ' +
                     "opportunity's real context into `extraInstructions`, written as direction to a " +
                     'designer who has not seen the signals: name the event/topic and why it matters.',
-                ].join('\n'),
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
               },
             ],
             maxTokens: MAX_SYNTHESIS_TOKENS,
@@ -517,8 +592,32 @@ export async function runTrendPoolRefresh(
     console.warn(
       `[trend-pool-refresh] run ${run.id}: searching ${queries.length} quer${queries.length === 1 ? 'y' : 'ies'} across ${ctx.ai.configuredWebSearches().length} provider(s)...`,
     );
-    const signals = await collectPoolSignals(ctx, run.id, queries);
-    console.warn(`[trend-pool-refresh] run ${run.id}: collected ${signals.length} signals`);
+
+    // Only the national bucket. Festivals are the thing it exists to cover,
+    // and a category bucket asks "what is happening in this industry", which
+    // is a question search answers perfectly well on its own.
+    const calendar =
+      bucket.scope === 'national' ? await loadUpcomingCalendar(ctx, run.id, bucket.market) : [];
+
+    // Search first, calendar second — but neither alone is allowed to sink the
+    // run. `collectPoolSignals` throws when every provider comes back empty,
+    // which used to be correct: with no signals there was nothing to
+    // synthesise. A verified calendar is now signal enough on its own, so the
+    // throw is caught when one exists.
+    let searchSignals: SignalCandidate[] = [];
+    try {
+      searchSignals = await collectPoolSignals(ctx, run.id, queries);
+    } catch (error) {
+      if (calendar.length === 0) throw error;
+      console.warn(
+        `[trend-pool-refresh] run ${run.id}: search produced nothing, continuing on the calendar alone — ${describeError(error)}`,
+      );
+    }
+
+    const signals = [...calendarEventsToSignals(calendar), ...searchSignals];
+    console.warn(
+      `[trend-pool-refresh] run ${run.id}: collected ${signals.length} signals (${signals.length - searchSignals.length} calendar, ${searchSignals.length} search)`,
+    );
 
     const signalRows = signals.map((signal) => ({
       id: signal.id,
@@ -545,7 +644,13 @@ export async function runTrendPoolRefresh(
     console.warn(
       `[trend-pool-refresh] run ${run.id}: synthesizing opportunities from ${signals.length} signals...`,
     );
-    const { items: drafts, cost } = await synthesizePoolItems(ctx, run.id, bucket, signals);
+    const { items: drafts, cost } = await synthesizePoolItems(
+      ctx,
+      run.id,
+      bucket,
+      signals,
+      calendar,
+    );
     await recordCost(ctx, run.id, cost);
 
     const resolved = resolvePoolItemSignals(drafts, signals);

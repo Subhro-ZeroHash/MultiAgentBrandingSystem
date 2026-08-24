@@ -38,8 +38,16 @@ import { campaignTypeSchema, outputFormatSchema, styleTemplateSchema } from './c
  * an existing shape, not a migration and an app-wide type change. This union
  * is the one place that has to grow when a provider is added; the database
  * column stays `text`.
+ *
+ * `calendar` is the one member that is not a search provider. It marks an
+ * observance the model enumerated and a targeted search then corroborated
+ * (see `festival-calendar.ts`) — evidence about a *future* dated event, which
+ * no search provider can supply directly, since ranking pages by relevance
+ * cannot answer "what is coming up". It is a distinct source rather than being
+ * laundered as a Tavily result because its provenance is genuinely different,
+ * and a signal's provenance is the thing this column exists to record.
  */
-export const signalSourceSchema = z.enum(['tavily', 'serpapi']);
+export const signalSourceSchema = z.enum(['tavily', 'serpapi', 'calendar']);
 export type SignalSource = z.infer<typeof signalSourceSchema>;
 
 /**

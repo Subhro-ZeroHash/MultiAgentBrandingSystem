@@ -20,6 +20,7 @@ import {
 } from '@bmas/shared';
 import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
+import { ensureBrandMarket } from './market-classifier.js';
 import { dateGrounding } from './prompt-context.js';
 
 /**
@@ -147,10 +148,12 @@ export async function researchFocusedOpportunities(
   const place = locationOverride?.trim() || brandContext.identity.location || null;
   const query = place ? `${focus} ${place}` : focus;
 
+  // Only for the date grounding: "today" and "already passed" are local
+  // facts, and a focused run is judged against the brand's own calendar.
+  const market = await ensureBrandMarket(ctx, brand);
+
   const results = await search(ctx, runId, query);
-  console.warn(
-    `[focused-trend] run ${runId}: "${query}" returned ${results.length} result(s)`,
-  );
+  console.warn(`[focused-trend] run ${runId}: "${query}" returned ${results.length} result(s)`);
 
   if (results.length === 0) {
     return {
@@ -176,7 +179,7 @@ export async function researchFocusedOpportunities(
     publishedAt: r.publishedAt,
   }));
 
-  const { draft, cost } = await synthesise(ctx, brand, brandContext, focus, place, trimmed);
+  const { draft, cost } = await synthesise(ctx, brand, brandContext, focus, place, market, trimmed);
   await recordCost(ctx, brand.id, runId, cost);
 
   const opportunities = draft.opportunities.map((o) => {
@@ -283,6 +286,7 @@ async function synthesise(
   brandContext: TrendTaskContext,
   focus: string,
   place: string | null,
+  market: string,
   results: WebSearchResult[],
 ): Promise<{ draft: z.infer<typeof focusedSynthesisSchema>; cost: CostEvent }> {
   const { value: draft, cost } = await withRetry(() =>
@@ -291,7 +295,7 @@ async function synthesise(
         {
           role: 'orchestrator',
           system:
-            dateGrounding() +
+            dateGrounding(market) +
             'You turn live search results about a subject the business owner asked for into ' +
             'content opportunities for their brand.\n\n' +
             'Every opportunity must be grounded in the results below — cite them by index in ' +
@@ -318,14 +322,14 @@ async function synthesise(
                 "**The brand's products, numbered — reference [N] in `productIndex`, or null:**",
                 brandContext.products.length
                   ? brandContext.products
-                      .map((p, i) => `[${i}] ${p.name}${p.description ? ` — ${p.description}` : ''}`)
+                      .map(
+                        (p, i) => `[${i}] ${p.name}${p.description ? ` — ${p.description}` : ''}`,
+                      )
                       .join('\n')
                   : 'No products on file.',
                 '',
                 '**Live search results, numbered — reference [N] in `sourceIndexes`:**',
-                ...results.map(
-                  (r, i) => `[${i}] ${r.title ?? r.url} — ${r.snippet} (${r.url})`,
-                ),
+                ...results.map((r, i) => `[${i}] ${r.title ?? r.url} — ${r.snippet} (${r.url})`),
                 '',
                 'Return up to 4 opportunities, best first.',
               ]

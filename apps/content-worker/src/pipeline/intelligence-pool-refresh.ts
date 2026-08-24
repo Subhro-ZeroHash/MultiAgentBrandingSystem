@@ -13,7 +13,7 @@ import {
   marketName,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
-import { currentMonthInIndia, dateGrounding } from './prompt-context.js';
+import { currentMonthInMarket, dateGrounding } from './prompt-context.js';
 
 /**
  * Intelligence Research — Layer A (Global Pool refresh).
@@ -35,8 +35,7 @@ const RESULTS_PER_QUERY = 6;
 const MAX_SNIPPET_CHARS = 500;
 
 export type IntelligencePoolBucket = (
-  | { scope: 'category'; category: CategoryKey }
-  | { scope: 'national' }
+  { scope: 'category'; category: CategoryKey } | { scope: 'national' }
 ) & { market: string };
 
 interface CollectedSignal {
@@ -54,7 +53,7 @@ export function buildIntelligencePoolQueries(
   bucket: IntelligencePoolBucket,
 ): Array<{ category: PoolableIntelligenceCategory; request: WebSearchRequest }> {
   const place = marketName(bucket.market);
-  const month = currentMonthInIndia();
+  const month = currentMonthInMarket(bucket.market);
 
   if (bucket.scope === 'national') {
     return [
@@ -306,7 +305,7 @@ async function synthesizePoolItemsOnce(
           {
             role: 'orchestrator',
             system:
-              dateGrounding() +
+              dateGrounding(bucket.market) +
               `You are a business intelligence analyst keeping ${audience} informed. You work ` +
               'ONLY from the search results you are given — never invent a policy, a news item, a ' +
               'fact, or a date that is not actually present in the results.\n\n' +

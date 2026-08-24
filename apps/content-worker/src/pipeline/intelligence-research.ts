@@ -173,12 +173,20 @@ async function scoreIntelligenceRelevance(
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
+  market: string,
   poolItems: PoolIntelligenceItemRow[],
 ): Promise<{ items: IntelligenceRelevanceDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await scoreIntelligenceRelevanceOnce(ctx, runId, brand, brandContext, poolItems);
+      return await scoreIntelligenceRelevanceOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        market,
+        poolItems,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -196,6 +204,7 @@ async function scoreIntelligenceRelevanceOnce(
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
+  market: string,
   poolItems: PoolIntelligenceItemRow[],
 ): Promise<{ items: IntelligenceRelevanceDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
@@ -205,7 +214,7 @@ async function scoreIntelligenceRelevanceOnce(
           {
             role: 'orchestrator',
             system:
-              dateGrounding() +
+              dateGrounding(market) +
               'You are a business intelligence analyst judging how relevant a set of ' +
               'already-identified developments are for ONE SPECIFIC small business. The ' +
               'developments below were identified generically for the whole category/country, not ' +
@@ -521,11 +530,20 @@ async function synthesizeCompetitorItems(
   brandContext: TrendTaskContext,
   signal: CollectedSignal,
   category: IntelligenceCategory,
+  market: string,
 ): Promise<{ items: IntelligenceItemDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await synthesizeCompetitorItemsOnce(ctx, runId, brand, brandContext, signal, category);
+      return await synthesizeCompetitorItemsOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        signal,
+        category,
+        market,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -550,8 +568,10 @@ const competitorSynthesisSchema = z.object({ items: z.array(competitorItemDraftS
  *  results against that question rather than defaulting to competitor
  *  framing for everything. */
 const BRAND_QUERY_BRIEF: Record<string, string> = {
-  brand_news: "developments about the brand itself — its own announcements, launches, results, coverage and reputation",
-  competitor: "developments at rival businesses that compete with this brand for the same customers",
+  brand_news:
+    'developments about the brand itself — its own announcements, launches, results, coverage and reputation',
+  competitor:
+    'developments at rival businesses that compete with this brand for the same customers',
   industry_news:
     "developments across the brand's specific industry — demand, supply, materials, pricing, regulation and channel shifts",
   government_policy: 'policy, regulation and tax changes affecting this business',
@@ -565,6 +585,7 @@ async function synthesizeCompetitorItemsOnce(
   brandContext: TrendTaskContext,
   signal: CollectedSignal,
   category: IntelligenceCategory,
+  market: string,
 ): Promise<{ items: IntelligenceItemDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
     () =>
@@ -573,12 +594,12 @@ async function synthesizeCompetitorItemsOnce(
           {
             role: 'orchestrator',
             system:
-              dateGrounding() +
+              dateGrounding(market) +
               'You are a business intelligence analyst keeping one small business owner ' +
               `informed. These search results are about ${BRAND_QUERY_BRIEF[category] ?? category}. ` +
               'You work ONLY from the search results you are given — never invent a fact or a ' +
               'date that is not actually present in the results.\n\n' +
-              "Judge the results against that question specifically. Results drift: a search " +
+              'Judge the results against that question specifically. Results drift: a search ' +
               "about one brand returns rivals, an industry search returns one company's press " +
               'release. Keep what genuinely answers the question asked and drop the rest.\n\n' +
               'This is NOT a content-ideas feed. The question for every item is: does the brand ' +
@@ -722,6 +743,7 @@ export async function runIntelligenceResearch(
               run.id,
               brand,
               brandContext,
+              market,
               poolItems,
             );
             await recordCost(ctx, brand.id, run.id, cost);
@@ -774,31 +796,34 @@ export async function runIntelligenceResearch(
               brandContext,
               mergedSignal,
               category,
+              market,
             );
             await recordCost(ctx, brand.id, run.id, cost);
 
-            return items
-              // Pooled items are relevance-scored in a separate pass; these
-              // are not, so the model's own brandRelevance is the only thing
-              // standing between a drifted search result and the user's feed.
-              // Search drift is real here — an industry query came back with
-              // an unrelated banking acquisition — and the model scores those
-              // low while still returning them.
-              .filter((item) => item.score.brandRelevance >= MIN_BRAND_RELEVANCE)
-              .map((item) => ({
-              runId: run.id,
-              poolItemId: null,
-              // The searched category wins over the model's own guess: this
-              // query was built to answer one question, and letting the model
-              // relabel its answer is how a category silently stays empty.
-              category,
-              title: item.title,
-              summary: item.summary,
-              whyItMatters: item.whyItMatters,
-              urgency: item.urgency,
-              score: { ...item.score, overall: computeIntelligenceScore(item.score) },
-              sources: verifyCompetitorSources(item.sources, signals),
-            }));
+            return (
+              items
+                // Pooled items are relevance-scored in a separate pass; these
+                // are not, so the model's own brandRelevance is the only thing
+                // standing between a drifted search result and the user's feed.
+                // Search drift is real here — an industry query came back with
+                // an unrelated banking acquisition — and the model scores those
+                // low while still returning them.
+                .filter((item) => item.score.brandRelevance >= MIN_BRAND_RELEVANCE)
+                .map((item) => ({
+                  runId: run.id,
+                  poolItemId: null,
+                  // The searched category wins over the model's own guess: this
+                  // query was built to answer one question, and letting the model
+                  // relabel its answer is how a category silently stays empty.
+                  category,
+                  title: item.title,
+                  summary: item.summary,
+                  whyItMatters: item.whyItMatters,
+                  urgency: item.urgency,
+                  score: { ...item.score, overall: computeIntelligenceScore(item.score) },
+                  sources: verifyCompetitorSources(item.sources, signals),
+                }))
+            );
           } catch (error) {
             console.warn(
               `[intelligence-research] run ${run.id}: ${category} search failed, continuing — ${describeError(error)}`,

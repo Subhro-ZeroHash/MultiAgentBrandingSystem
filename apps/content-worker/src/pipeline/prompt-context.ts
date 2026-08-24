@@ -1,3 +1,5 @@
+import { DEFAULT_MARKET, marketName, marketTimeZone } from '@bmas/shared';
+
 /**
  * Date grounding for every research prompt.
  *
@@ -11,6 +13,12 @@
  * This is also what makes `urgency` and `freshness` scoreable at all: both are
  * defined relative to now ("how soon the window to act closes"), and no model
  * can judge that without knowing when now is.
+ *
+ * Every function here is market-scoped. "Today" is a local fact, and these
+ * dates are compared against local observances: a run at 20:00 UTC is already
+ * the next day in India and still the same afternoon in New York, so a single
+ * shared rendering would be a day out for one of them exactly when a festival
+ * window opens.
  */
 
 const DATE_FORMAT: Intl.DateTimeFormatOptions = {
@@ -18,25 +26,43 @@ const DATE_FORMAT: Intl.DateTimeFormatOptions = {
   day: 'numeric',
   month: 'long',
   year: 'numeric',
-  timeZone: 'Asia/Kolkata',
 };
 
-/**
- * Rendered in Asia/Kolkata because every query this pipeline builds is scoped
- * to India — a run just after midnight UTC would otherwise date itself to the
- * previous day for the market it is actually about.
- */
-export function todayInIndia(now: Date = new Date()): string {
-  return new Intl.DateTimeFormat('en-IN', DATE_FORMAT).format(now);
+/** The market's own calendar day, written out in full. */
+export function todayInMarket(market: string = DEFAULT_MARKET, now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    ...DATE_FORMAT,
+    timeZone: marketTimeZone(market),
+  }).format(now);
 }
 
 /** Month and year, for embedding in a search query so the engine biases
  *  toward current coverage rather than an evergreen article from years back. */
-export function currentMonthInIndia(now: Date = new Date()): string {
-  return new Intl.DateTimeFormat('en-IN', {
+export function currentMonthInMarket(
+  market: string = DEFAULT_MARKET,
+  now: Date = new Date(),
+): string {
+  return new Intl.DateTimeFormat('en-GB', {
     month: 'long',
     year: 'numeric',
-    timeZone: 'Asia/Kolkata',
+    timeZone: marketTimeZone(market),
+  }).format(now);
+}
+
+/**
+ * The ISO `YYYY-MM-DD` of the market's today.
+ *
+ * Separate from `todayInMarket` because this one is arithmetic, not prose:
+ * it anchors the horizon window a calendar enumeration is bounded to, and is
+ * compared against model-supplied ISO dates. Built from `en-CA`, whose short
+ * format is already ISO order, so no manual part-juggling is needed.
+ */
+export function isoDateInMarket(market: string = DEFAULT_MARKET, now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    timeZone: marketTimeZone(market),
   }).format(now);
 }
 
@@ -48,9 +74,9 @@ export function currentMonthInIndia(now: Date = new Date()): string {
  * unless told plainly that a passed moment disqualifies an opportunity
  * regardless of how prominent it is.
  */
-export function dateGrounding(now: Date = new Date()): string {
+export function dateGrounding(market: string = DEFAULT_MARKET, now: Date = new Date()): string {
   return (
-    `Today is ${todayInIndia(now)}.\n\n` +
+    `Today is ${todayInMarket(market, now)} in ${marketName(market)}.\n\n` +
     'Anything whose moment has already passed is not an opportunity, however ' +
     'well known it is. A festival, sale, holiday or event dated earlier than ' +
     'today is stale — do not propose it, and do not treat a search result ' +

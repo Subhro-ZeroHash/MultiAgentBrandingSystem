@@ -205,12 +205,21 @@ async function scoreTrendRelevance(
   brand: Brand,
   brandContext: TrendTaskContext,
   focus: string | null,
+  market: string,
   poolItems: PoolTrendItemRow[],
 ): Promise<{ items: TrendRelevanceDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await scoreTrendRelevanceOnce(ctx, runId, brand, brandContext, focus, poolItems);
+      return await scoreTrendRelevanceOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        focus,
+        market,
+        poolItems,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -229,6 +238,7 @@ async function scoreTrendRelevanceOnce(
   brand: Brand,
   brandContext: TrendTaskContext,
   focus: string | null,
+  market: string,
   poolItems: PoolTrendItemRow[],
 ): Promise<{ items: TrendRelevanceDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
@@ -238,7 +248,7 @@ async function scoreTrendRelevanceOnce(
           {
             role: 'orchestrator',
             system:
-              dateGrounding() +
+              dateGrounding(market) +
               'You are a marketing strategist judging how relevant a set of already-identified ' +
               'content opportunities are for ONE SPECIFIC small business. The opportunities below ' +
               'were identified generically for the whole category, not for this brand — your only ' +
@@ -436,8 +446,8 @@ export async function runTrendResearch(
       snapshot: {
         ...brandContext,
         categoryKey,
-        poolRunIds: [categoryPool?.runId, nationalPool?.runId].filter(
-          (id): id is string => Boolean(id),
+        poolRunIds: [categoryPool?.runId, nationalPool?.runId].filter((id): id is string =>
+          Boolean(id),
         ),
         poolItemCount: poolItems.length,
       },
@@ -484,6 +494,7 @@ export async function runTrendResearch(
               brand,
               brandContext,
               run.focus,
+              market,
               poolItems,
             );
             await recordCost(ctx, brand.id, run.id, cost);
