@@ -43,7 +43,13 @@ import { dateGrounding, isoDateInMarket, todayInMarket } from './prompt-context.
  *      wrong date is worse than none, because it looks authoritative. The
  *      pages found in step 2 almost always state the date in so many words,
  *      so this reads them back and corrects the estimate. Cheap: one call for
- *      the whole calendar, not one per event.
+ *      the whole calendar, not one per event. Deliberately conservative about
+ *      overriding: names collide, and a first cut at this moved India's
+ *      Teachers' Day from 5 September to 5 October because a search for the
+ *      name also returns UNESCO's World Teachers' Day. A wrong correction is
+ *      worse than an unchecked estimate — it replaces a good date with a bad
+ *      one and looks authoritative doing it — so the estimate stands unless
+ *      the excerpts are unambiguously about the same observance and agree.
  *
  * An event that survives all three is real, correctly dated, and carries live
  * URLs.
@@ -352,9 +358,10 @@ const RECONCILE_SCHEMA = {
           date: {
             type: 'string',
             description:
-              'The date the excerpts actually support, as YYYY-MM-DD. If they state a date, use ' +
-              'theirs even when it contradicts the estimate — they are live pages and the estimate ' +
-              'is a guess. If they state none, repeat the estimate unchanged. Never split the ' +
+              'The date the excerpts actually support, as YYYY-MM-DD. Use theirs over the ' +
+              'estimate when they are clearly about this same observance and agree on a date. ' +
+              'Repeat the estimate unchanged when they state no date, disagree with each other, ' +
+              'or may be about a different observance that shares the name. Never split the ' +
               'difference between two dates.',
           },
         },
@@ -374,7 +381,10 @@ function describeEventsForReconcile(events: VerifiedCalendarEvent[]): string {
           return `    - ${title}${body ? `: ${body}` : ''}`;
         })
         .join('\n');
-      return `[${index}] ${event.name} — estimated ${event.date}\n${excerpts}`;
+      return (
+        `[${index}] ${event.name} — estimated ${event.date}\n` +
+        `    (as kept by: ${event.audience})\n${excerpts}`
+      );
     })
     .join('\n\n');
 }
@@ -430,12 +440,22 @@ async function reconcileCalendarDates(
           role: 'volume',
           system:
             `Today is ${today} in ${marketName(market)}. You are checking dates, nothing else.\n\n` +
-            'Each observance below carries an estimated date and excerpts from live pages about ' +
-            'it. Read the excerpts and give the date they actually support. Many of these follow ' +
-            'lunar or computed calendars and shift by weeks between years, so an estimate being ' +
-            'confidently stated is no evidence it is right.\n\n' +
-            'The excerpts outrank the estimate whenever they state a date. Only when they state ' +
-            'none does the estimate stand. Return one entry per observance, using its [N] number.',
+            'Each observance below carries an estimated date, who keeps it, and excerpts from ' +
+            'live pages found by searching its name. Read the excerpts and give the date they ' +
+            'actually support. Many of these follow lunar or computed calendars and shift by ' +
+            'weeks between years, so an estimate being confidently stated is no evidence it is ' +
+            'right.\n\n' +
+            'Before using an excerpt, check it is about THIS observance as kept by THIS group in ' +
+            `${marketName(market)}. Names collide: an international or UN day frequently shares ` +
+            'a name with a separate national one on a different date, and a search for the name ' +
+            'returns both. An excerpt about a different observance is not evidence about this ' +
+            'one, however confidently it states a date.\n\n' +
+            'So: change the date only when the excerpts are clearly about this same observance ' +
+            'and agree with each other. Keep the estimate when they state no date, when they ' +
+            'disagree, or when you cannot tell which observance they mean. A wrong correction is ' +
+            'worse than an unchecked estimate — it replaces a good date with a bad one and looks ' +
+            'authoritative doing it.\n\n' +
+            'Return one entry per observance, using its [N] number.',
           messages: [{ role: 'user', content: describeEventsForReconcile(events) }],
           maxTokens: MAX_RECONCILE_TOKENS,
           schema: RECONCILE_SCHEMA as unknown as Record<string, unknown>,
