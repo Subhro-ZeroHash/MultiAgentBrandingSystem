@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildBrandIntelligenceQueries,
   clipCompetitorItemCounts,
   clipIntelligenceRelevanceCounts,
   resolveIntelligenceRelevanceDrafts,
@@ -110,5 +111,69 @@ describe('verifyCompetitorSources', () => {
       [signal, serpSignal],
     );
     expect(kept).toHaveLength(1);
+  });
+});
+
+describe('buildBrandIntelligenceQueries', () => {
+  const bata = {
+    brandName: 'Bata',
+    industry: 'foot wear',
+    location: 'India',
+    competitors: [] as string[],
+  };
+
+  /** brand_news was in the taxonomy but excluded from the poolable set and
+   *  never searched per-brand, so the category could not produce an item
+   *  under any circumstances. */
+  it('searches for the brand itself, which nothing did before', () => {
+    const brandNews = buildBrandIntelligenceQueries(bata).find((q) => q.category === 'brand_news');
+    expect(brandNews).toBeDefined();
+    expect(brandNews!.request.query).toContain('Bata');
+  });
+
+  /** The apparel-not-footwear problem: pooled queries ask about the brand's
+   *  taxonomy bucket ("Fashion & Apparel"), never its real industry text. */
+  it("uses the brand's own industry words, not a taxonomy label", () => {
+    const industry = buildBrandIntelligenceQueries(bata).find(
+      (q) => q.category === 'industry_news',
+    );
+    expect(industry!.request.query).toContain('foot wear');
+    expect(industry!.request.query).toContain('India');
+    expect(industry!.request.query).not.toMatch(/fashion|apparel/i);
+  });
+
+  /** Competitor search used to be skipped entirely when no competitors were
+   *  named — the default state — so the category was always empty. */
+  it('still searches competitors when none are named', () => {
+    const competitor = buildBrandIntelligenceQueries(bata).find(
+      (q) => q.category === 'competitor',
+    );
+    expect(competitor).toBeDefined();
+    expect(competitor!.request.query).toMatch(/competitors of Bata/i);
+  });
+
+  it('prefers named competitors over discovery when they exist', () => {
+    const q = buildBrandIntelligenceQueries({
+      ...bata,
+      competitors: ['Liberty', 'Relaxo'],
+    }).find((x) => x.category === 'competitor');
+    expect(q!.request.query).toContain('Liberty');
+    expect(q!.request.query).not.toMatch(/competitors of/i);
+  });
+
+  /** Without industry text the niche query collapses into the pooled query it
+   *  exists to improve on, so it is skipped rather than sent as noise. */
+  it('omits the niche query when the brand has no industry text', () => {
+    const categories = buildBrandIntelligenceQueries({ ...bata, industry: null }).map(
+      (q) => q.category,
+    );
+    expect(categories).not.toContain('industry_news');
+    expect(categories).toContain('brand_news');
+  });
+
+  it('every query is date-bounded so results are current', () => {
+    for (const { request } of buildBrandIntelligenceQueries(bata)) {
+      expect(request.recencyDays).toBeGreaterThan(0);
+    }
   });
 });
