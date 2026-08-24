@@ -63,10 +63,19 @@ describe('buildTrendPoolQueries', () => {
 describe('clipPoolItemCounts', () => {
   const item = (n: number) => ({ title: `item ${n}` });
 
-  it('drops items beyond the fifteenth', () => {
+  it('drops items beyond the fifteenth by default', () => {
     const raw = { items: Array.from({ length: 20 }, (_unused, i) => item(i)) };
     const clipped = clipPoolItemCounts(raw) as { items: unknown[] };
     expect(clipped.items).toHaveLength(15);
+  });
+
+  /** The national bucket asks for fewer, because generating more was blowing
+   *  Gemini's own server-side deadline once the calendar landed. The clip has
+   *  to follow the ask, or the prompt and the parser disagree. */
+  it('honours a lower limit when the caller sets one', () => {
+    const raw = { items: Array.from({ length: 20 }, (_unused, i) => item(i)) };
+    const clipped = clipPoolItemCounts(raw, 10) as { items: unknown[] };
+    expect(clipped.items).toHaveLength(10);
   });
 
   it('leaves a within-bounds payload untouched', () => {

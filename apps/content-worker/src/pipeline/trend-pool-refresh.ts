@@ -43,6 +43,26 @@ const SEARCH_TIMEOUT_MS = 15_000;
 // to ~15 items instead of 8), not meaningfully smaller.
 const SYNTHESIS_TIMEOUT_MS = 300_000;
 const MAX_SYNTHESIS_TOKENS = 16_000;
+
+/**
+ * How many opportunities each bucket asks for, and why national asks for
+ * fewer.
+ *
+ * The ceiling is a wall-clock lever, not a token one. Gemini enforces its own
+ * server-side deadline and returns 504 DEADLINE_EXCEEDED when a single
+ * structured response takes too long to generate — which the national bucket
+ * started hitting on roughly half its runs once the calendar landed, twice
+ * exhausting both retries. Nothing was over the token budget; there was simply
+ * more to write than the deadline allowed.
+ *
+ * Fifteen was set when the national bucket was one broad search, most of whose
+ * signals clustered into nothing and needed padding to fill the list. With a
+ * confirmed calendar it now has ten-odd concrete dated events before search
+ * contributes anything, so the last few slots were producing filler at the
+ * exact cost that was blowing the deadline. Category buckets have no calendar
+ * and keep the original ceiling.
+ */
+const MAX_POOL_ITEMS = { national: 10, category: 15 } as const;
 const RESULTS_PER_QUERY = 8;
 const MAX_SNIPPET_CHARS = 500;
 
@@ -267,12 +287,12 @@ function describeSignalsForPrompt(signals: SignalCandidate[]): string {
  *  trend-research.ts's `clipOpportunityCounts` — see that function's
  *  comment for why this exists instead of a `maxItems` on the JSON schema
  *  itself. */
-export function clipPoolItemCounts(raw: unknown): unknown {
+export function clipPoolItemCounts(raw: unknown, limit: number = MAX_POOL_ITEMS.category): unknown {
   if (typeof raw !== 'object' || raw === null || !('items' in raw)) return raw;
   const items = (raw as { items: unknown }).items;
   if (!Array.isArray(items)) return raw;
 
-  return { ...raw, items: items.slice(0, 15) };
+  return { ...raw, items: items.slice(0, limit) };
 }
 
 const SYNTHESIS_SCHEMA = {
@@ -433,6 +453,8 @@ async function synthesizePoolItemsOnce(
       ? `small businesses across every industry in ${marketName(bucket.market)}`
       : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
 
+  const maxItems = MAX_POOL_ITEMS[bucket.scope];
+
   // Both empty for a category bucket, which has no calendar — the prompt is
   // then character-for-character what it was before this existed.
   const calendarBlock = calendar.length
@@ -482,7 +504,7 @@ async function synthesizePoolItemsOnce(
                   '**Raw signals collected, numbered — reference these numbers in `signalIndexes`:**',
                   describeSignalsForPrompt(signals),
                   '',
-                  'Produce up to 15 ranked opportunities. For `suggestedRequest`, pick the ' +
+                  `Produce up to ${maxItems} ranked opportunities. For \`suggestedRequest\`, pick the ` +
                     'campaignType, styleTemplate and outputFormat that best fit each opportunity in ' +
                     'general — these prefill an actual generation request once a business picks this ' +
                     'up, so they must be genuinely apt for the opportunity, not a default. Put the ' +
@@ -495,7 +517,7 @@ async function synthesizePoolItemsOnce(
             ],
             maxTokens: MAX_SYNTHESIS_TOKENS,
             schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
-            parse: (raw) => trendPoolSynthesisSchema.parse(clipPoolItemCounts(raw)),
+            parse: (raw) => trendPoolSynthesisSchema.parse(clipPoolItemCounts(raw, maxItems)),
           },
           { referenceId: runId },
         ),
