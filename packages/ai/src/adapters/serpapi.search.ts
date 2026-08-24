@@ -40,7 +40,30 @@ const MAX_RESULTS = 20;
  * (`news_results` vs `organic_results`), which is why mapSerpApiResponse below
  * branches on it rather than merging both.
  */
-export function buildSerpApiParams(req: WebSearchRequest, apiKey: string): URLSearchParams {
+/** Google's date filter wants US-format dates, whatever the query's locale. */
+function toGoogleDate(date: Date): string {
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${month}/${day}/${date.getUTCFullYear()}`;
+}
+
+/**
+ * Google's custom date-range filter, as SerpApi forwards it.
+ *
+ * A precise range rather than the coarser `qdr:` buckets (past day/week/
+ * month/year): a 45-day window has no `qdr` equivalent — `qdr:m` silently
+ * drops the last fortnight and `qdr:y` lets a year of stale coverage back in.
+ */
+export function buildRecencyFilter(recencyDays: number, now: Date = new Date()): string {
+  const from = new Date(now.getTime() - recencyDays * 24 * 60 * 60 * 1000);
+  return `cdr:1,cd_min:${toGoogleDate(from)},cd_max:${toGoogleDate(now)}`;
+}
+
+export function buildSerpApiParams(
+  req: WebSearchRequest,
+  apiKey: string,
+  now: Date = new Date(),
+): URLSearchParams {
   const params = new URLSearchParams({
     engine: 'google',
     q: req.query,
@@ -48,6 +71,13 @@ export function buildSerpApiParams(req: WebSearchRequest, apiKey: string): URLSe
     num: String(Math.min(Math.max(req.maxResults ?? 8, 1), MAX_RESULTS)),
   });
   if (req.topic === 'news') params.set('tbm', 'nws');
+  // Without this the request carried no time bound at all, so a caller asking
+  // for the last 14 days got Google's all-time ranking — which is how a query
+  // for "upcoming festivals in the next 30 days" came back with a
+  // seven-month-old Republic Day sale article as its top result. Tavily
+  // already honoured `recencyDays` via its own `days` param, so half of every
+  // search was date-bounded and half was not.
+  if (req.recencyDays) params.set('tbs', buildRecencyFilter(req.recencyDays, now));
   // SerpApi's `gl` wants a two-letter country code; a free-text locality (a
   // city name) doesn't fit it, so only a value that already looks like one is
   // forwarded — anything else is silently dropped rather than sent wrong.

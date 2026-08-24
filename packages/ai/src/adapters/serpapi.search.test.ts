@@ -90,3 +90,30 @@ describe('mapSerpApiResponse', () => {
     expect(mapSerpApiResponse({})).toEqual([]);
   });
 });
+
+describe('buildSerpApiParams recency', () => {
+  const now = new Date('2026-08-23T12:00:00Z');
+
+  /**
+   * The bug this pins: no time filter was sent at all, so a 14-day request
+   * got Google's all-time ranking. A query for festivals "in the next 30
+   * days" returned a seven-month-old Republic Day sale as its top hit, while
+   * Tavily — which did honour recencyDays — returned current coverage for the
+   * same query. Half the signals were date-bounded and half were not.
+   */
+  it('bounds the search to the requested window', () => {
+    const params = buildSerpApiParams({ query: 'x', recencyDays: 14 }, 'k', now);
+    expect(params.get('tbs')).toBe('cdr:1,cd_min:08/09/2026,cd_max:08/23/2026');
+  });
+
+  it('sends no time filter when the caller did not ask for one', () => {
+    expect(buildSerpApiParams({ query: 'x' }, 'k', now).get('tbs')).toBeNull();
+  });
+
+  /** A 45-day window has no `qdr:` bucket — `qdr:m` would silently drop the
+   *  last fortnight, `qdr:y` would let a year of stale coverage back in. */
+  it('expresses a window that no coarse qdr bucket matches', () => {
+    const params = buildSerpApiParams({ query: 'x', recencyDays: 45 }, 'k', now);
+    expect(params.get('tbs')).toBe('cdr:1,cd_min:07/09/2026,cd_max:08/23/2026');
+  });
+});
