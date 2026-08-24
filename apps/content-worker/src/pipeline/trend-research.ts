@@ -22,6 +22,7 @@ import {
 } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
 import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
 import { ensureFreshTrendPool } from './pool-loader.js';
@@ -235,6 +236,7 @@ async function scoreTrendRelevanceOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding() +
               'You are a marketing strategist judging how relevant a set of already-identified ' +
               'content opportunities are for ONE SPECIFIC small business. The opportunities below ' +
               'were identified generically for the whole category, not for this brand — your only ' +

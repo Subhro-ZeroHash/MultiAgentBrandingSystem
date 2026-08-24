@@ -13,6 +13,7 @@ import {
   type TrendSource,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
 
 /**
  * Trend Research — Layer A (Global Pool refresh).
@@ -379,6 +380,7 @@ async function synthesizePoolItemsOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding() +
               `You are a marketing strategist turning raw search signals into content ` +
               `opportunities for ${audience} generally — not one specific business. You work ` +
               `ONLY from the signals you are given below — they are current and real; your own ` +

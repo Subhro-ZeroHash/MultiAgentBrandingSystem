@@ -24,6 +24,7 @@ import {
 } from '@bmas/shared';
 import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
 import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
 import { ensureFreshIntelligencePool } from './pool-loader.js';
@@ -191,6 +192,7 @@ async function scoreIntelligenceRelevanceOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding() +
               'You are a business intelligence analyst judging how relevant a set of ' +
               'already-identified developments are for ONE SPECIFIC small business. The ' +
               'developments below were identified generically for the whole category/country, not ' +
@@ -479,6 +481,7 @@ async function synthesizeCompetitorItemsOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding() +
               'You are a business intelligence analyst keeping one small business owner informed ' +
               'about their named competitors. You work ONLY from the search results you are given ' +
               '— never invent a fact or a date that is not actually present in the results.\n\n' +

@@ -12,6 +12,7 @@ import {
   type TrendSource,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
 
 /**
  * Intelligence Research — Layer A (Global Pool refresh).
@@ -299,6 +300,7 @@ async function synthesizePoolItemsOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding() +
               `You are a business intelligence analyst keeping ${audience} informed. You work ` +
               'ONLY from the search results you are given — never invent a policy, a news item, a ' +
               'fact, or a date that is not actually present in the results.\n\n' +

@@ -20,6 +20,7 @@ import {
 } from '@bmas/shared';
 import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
 
 /**
  * Focused trend research — the path a run takes when the user named a subject.
@@ -290,6 +291,7 @@ async function synthesise(
         {
           role: 'orchestrator',
           system:
+            dateGrounding() +
             'You turn live search results about a subject the business owner asked for into ' +
             'content opportunities for their brand.\n\n' +
             'Every opportunity must be grounded in the results below — cite them by index in ' +
