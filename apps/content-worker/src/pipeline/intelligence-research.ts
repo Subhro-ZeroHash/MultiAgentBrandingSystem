@@ -59,6 +59,17 @@ const MAX_RELEVANCE_TOKENS = 4_000;
 const COMPETITOR_SYNTHESIS_TIMEOUT_MS = 300_000;
 const MAX_COMPETITOR_SYNTHESIS_TOKENS = 6_000;
 const RESULTS_PER_QUERY = 6;
+/**
+ * Floor for a brand-specific item's own `brandRelevance` score.
+ *
+ * Pooled items are filtered by a dedicated relevance pass; brand-specific
+ * ones are not, so without this the only gate is the search engine. Set at
+ * the point where the model is saying "this is about the right industry but
+ * not really about this business" — high enough to drop an unrelated banking
+ * acquisition that a footwear industry query happened to surface, low enough
+ * to keep a genuine sector development the brand does not appear in.
+ */
+const MIN_BRAND_RELEVANCE = 35;
 const MAX_SNIPPET_CHARS = 500;
 
 async function recordCost(
@@ -447,9 +458,12 @@ const COMPETITOR_SYNTHESIS_SCHEMA = {
           },
           whyItMatters: {
             type: 'string',
+            // The parse below caps this at 400 characters; saying so here is
+            // what stops the model overrunning it and forcing a full retry of
+            // an otherwise-good synthesis.
             description:
               'The answer to "so what?" for THIS brand specifically. Name the concrete effect: a ' +
-              'cost, a risk, an opportunity, a decision to make.',
+              'cost, a risk, an opportunity, a decision to make. Under 400 characters.',
           },
           urgency: { enum: ['low', 'medium', 'high'] },
           score: {
@@ -763,7 +777,15 @@ export async function runIntelligenceResearch(
             );
             await recordCost(ctx, brand.id, run.id, cost);
 
-            return items.map((item) => ({
+            return items
+              // Pooled items are relevance-scored in a separate pass; these
+              // are not, so the model's own brandRelevance is the only thing
+              // standing between a drifted search result and the user's feed.
+              // Search drift is real here — an industry query came back with
+              // an unrelated banking acquisition — and the model scores those
+              // low while still returning them.
+              .filter((item) => item.score.brandRelevance >= MIN_BRAND_RELEVANCE)
+              .map((item) => ({
               runId: run.id,
               poolItemId: null,
               // The searched category wins over the model's own guess: this
