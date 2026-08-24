@@ -86,6 +86,21 @@ export function buildSerpApiParams(
   return params;
 }
 
+/**
+ * True for SerpApi's "no results" message, which arrives as an `error` field
+ * on an otherwise-successful 200.
+ *
+ * An empty result set is an answer, not a failure. Treating it as one meant a
+ * single provider finding nothing threw, and since the pool refresh aborts
+ * when every provider fails, one narrow query could sink an entire research
+ * run — which is exactly what happened once a tighter date range made empty
+ * results common: "No signals were collected — every search provider failed
+ * or returned nothing."
+ */
+export function isEmptyResultError(error: string): boolean {
+  return /hasn't returned any results|no results found/i.test(error);
+}
+
 /** Maps one SerpApi response into the shared result shape, branching on which
  *  array the engine actually populated. Exported for the same reason as
  *  buildSerpApiParams — pure, worth pinning independently. */
@@ -170,7 +185,7 @@ export class SerpApiSearchAdapter implements WebSearchService {
     }
 
     const body = (await response.json()) as SerpApiResponse;
-    if (body.error) {
+    if (body.error && !isEmptyResultError(body.error)) {
       // SerpApi returns 200 with an `error` field for some failure modes
       // (e.g. a malformed query) rather than a non-2xx status — checked
       // separately from the !response.ok branch above for that reason.

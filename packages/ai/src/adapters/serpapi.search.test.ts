@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildSerpApiParams, mapSerpApiResponse } from './serpapi.search.js';
+import {
+  buildSerpApiParams,
+  isEmptyResultError,
+  mapSerpApiResponse,
+} from './serpapi.search.js';
 
 describe('buildSerpApiParams', () => {
   it('carries the query through unchanged', () => {
@@ -115,5 +119,24 @@ describe('buildSerpApiParams recency', () => {
   it('expresses a window that no coarse qdr bucket matches', () => {
     const params = buildSerpApiParams({ query: 'x', recencyDays: 45 }, 'k', now);
     expect(params.get('tbs')).toBe('cdr:1,cd_min:07/09/2026,cd_max:08/23/2026');
+  });
+});
+
+describe('isEmptyResultError', () => {
+  /**
+   * SerpApi reports an empty result set as an `error` field on a 200. Treating
+   * that as a provider failure meant one narrow query could sink an entire
+   * research run, since the pool refresh aborts when every provider fails —
+   * surfacing to the user as "every search provider failed or returned
+   * nothing" on a run whose other buckets were fine.
+   */
+  it('recognises an empty result set as an answer, not a failure', () => {
+    expect(isEmptyResultError("Google hasn't returned any results for this query.")).toBe(true);
+    expect(isEmptyResultError('No results found for your query')).toBe(true);
+  });
+
+  it('still treats real errors as errors', () => {
+    expect(isEmptyResultError('Invalid API key')).toBe(false);
+    expect(isEmptyResultError('Your account has run out of searches')).toBe(false);
   });
 });

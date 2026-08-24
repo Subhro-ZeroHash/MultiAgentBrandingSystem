@@ -392,13 +392,42 @@ export async function runTrendResearch(
       `[trend-research] run ${run.id}: brand category resolved to '${categoryKey}' in ${marketName(market)}`,
     );
 
-    const [categoryPool, nationalPool] = await Promise.all([
+    // Settled, not all: the two buckets answer different questions, and one
+    // coming up empty is not a reason to lose the other. The national
+    // (festival/event) bucket in particular depends on a search that can
+    // legitimately return nothing for a quiet week — before this, that took
+    // the whole run down with it and the user saw "every search provider
+    // failed" on a run whose category trends were fine.
+    const [categoryResult, nationalResult] = await Promise.allSettled([
       ensureFreshTrendPool(ctx, { scope: 'category', category: categoryKey, market }),
       ensureFreshTrendPool(ctx, { scope: 'national', market }),
     ]);
-    const poolItems = [...categoryPool.items, ...nationalPool.items];
+    for (const [label, result] of [
+      ['category', categoryResult],
+      ['national', nationalResult],
+    ] as const) {
+      if (result.status === 'rejected') {
+        console.warn(
+          `[trend-research] run ${run.id}: ${label} pool unavailable, continuing without it — ${describeError(result.reason)}`,
+        );
+      }
+    }
+
+    const categoryPool = categoryResult.status === 'fulfilled' ? categoryResult.value : null;
+    const nationalPool = nationalResult.status === 'fulfilled' ? nationalResult.value : null;
+
+    // Both failing is still a real failure — there is nothing to score.
+    if (!categoryPool && !nationalPool) {
+      throw new Error(
+        categoryResult.status === 'rejected'
+          ? describeError(categoryResult.reason)
+          : 'No trend pool could be loaded for this brand.',
+      );
+    }
+
+    const poolItems = [...(categoryPool?.items ?? []), ...(nationalPool?.items ?? [])];
     console.warn(
-      `[trend-research] run ${run.id}: pool loaded — ${categoryPool.items.length} category items + ${nationalPool.items.length} national items = ${poolItems.length} total`,
+      `[trend-research] run ${run.id}: pool loaded — ${categoryPool?.items.length ?? 0} category items + ${nationalPool?.items.length ?? 0} national items = ${poolItems.length} total`,
     );
 
     await recordContextSnapshot(ctx.db, {
@@ -407,7 +436,9 @@ export async function runTrendResearch(
       snapshot: {
         ...brandContext,
         categoryKey,
-        poolRunIds: [categoryPool.runId, nationalPool.runId],
+        poolRunIds: [categoryPool?.runId, nationalPool?.runId].filter(
+          (id): id is string => Boolean(id),
+        ),
         poolItemCount: poolItems.length,
       },
     });
