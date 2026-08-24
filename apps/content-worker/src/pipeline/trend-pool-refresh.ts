@@ -271,12 +271,19 @@ export function calendarEventsToSignals(events: VerifiedCalendarEvent[]): Signal
   });
 }
 
-function describeSignalsForPrompt(signals: SignalCandidate[]): string {
+/**
+ * `offset` exists because synthesis runs as two calls over two slices of one
+ * signal array (see `synthesizePoolItems`). Numbering each slice from its real
+ * position means both calls return indexes into the combined array, so
+ * `resolvePoolItemSignals` resolves either one's output without knowing which
+ * call produced it.
+ */
+export function describeSignalsForPrompt(signals: SignalCandidate[], offset = 0): string {
   return signals
     .map((signal, index) => {
       const date = signal.publishedAt ? ` (${signal.publishedAt})` : '';
       return (
-        `[${index}] (${signal.source}/${signal.signalType}) ${signal.title}${date} — ${signal.sourceUrl}\n` +
+        `[${offset + index}] (${signal.source}/${signal.signalType}) ${signal.title}${date} — ${signal.sourceUrl}\n` +
         `   ${signal.snippet}`
       );
     })
@@ -418,122 +425,283 @@ const SYNTHESIS_SCHEMA = {
 
 const GEMINI_STRUCTURED_OUTPUT_REJECTION = /INVALID_ARGUMENT/;
 
+/**
+ * Synthesis, as two calls rather than one.
+ *
+ * Gemini enforces a server-side wall-clock deadline, and the national bucket
+ * blew through it on nearly every run once the calendar landed — 504
+ * DEADLINE_EXCEEDED, both retries burned, the whole run lost. Asking for fewer
+ * items did not help, which is the clue: the cost is in reasoning over the
+ * material, not in writing the list.
+ *
+ * And the material is two unlike things. Clustering fourteen loose search
+ * results into whatever topics they happen to share is open-ended judgment.
+ * Turning a confirmed dated observance into an opportunity is nearly
+ * mechanical — the event, its date and its customs are already established, so
+ * what is left is writing it up. Doing both in one structured response means
+ * the model holds all of it at once, and the deadline is against the total.
+ *
+ * Split, each call reasons over half the material against a prompt aimed at
+ * one job, and both finish comfortably. The failure isolation is the second
+ * prize and nearly as valuable: search synthesis failing no longer costs the
+ * calendar items, which are the ones with a fixed date to build toward and the
+ * whole reason the calendar exists.
+ *
+ * A category bucket has no calendar, so it makes exactly one call — the same
+ * call it always made.
+ */
 async function synthesizePoolItems(
   ctx: WorkerContext,
   runId: string,
   bucket: TrendPoolBucket,
   signals: SignalCandidate[],
   calendar: VerifiedCalendarEvent[],
+): Promise<{ items: TrendPoolItemDraft[]; costs: CostEvent[] }> {
+  const calendarSignals = signals.filter((signal) => signal.source === 'calendar');
+  const searchSignals = signals.filter((signal) => signal.source !== 'calendar');
+
+  const passes: Array<{
+    label: string;
+    run: () => Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }>;
+  }> = [];
+
+  if (calendar.length && calendarSignals.length) {
+    passes.push({
+      label: 'calendar',
+      // Calendar signals are first in the combined array, so they number from 0.
+      run: () => synthesizeCalendarPass(ctx, runId, bucket, calendarSignals, calendar),
+    });
+  }
+  if (searchSignals.length) {
+    passes.push({
+      label: 'search',
+      run: () => synthesizeSearchPass(ctx, runId, bucket, searchSignals, calendarSignals.length),
+    });
+  }
+
+  const settled = await Promise.allSettled(passes.map((pass) => pass.run()));
+
+  const items: TrendPoolItemDraft[] = [];
+  const costs: CostEvent[] = [];
+  const failures: string[] = [];
+
+  settled.forEach((outcome, index) => {
+    const label = passes[index]!.label;
+    if (outcome.status === 'fulfilled') {
+      items.push(...outcome.value.items);
+      costs.push(outcome.value.cost);
+      console.warn(
+        `[trend-pool-refresh] run ${runId}: ${label} synthesis produced ${outcome.value.items.length} item(s)`,
+      );
+      return;
+    }
+    failures.push(label);
+    console.warn(
+      `[trend-pool-refresh] run ${runId}: ${label} synthesis failed — ${describeError(outcome.reason)}`,
+    );
+  });
+
+  // Only a total loss fails the run. One pass surviving is a usable refresh,
+  // and losing it too would throw away work that already succeeded.
+  if (items.length === 0) {
+    const reason = settled.find((outcome) => outcome.status === 'rejected');
+    throw reason && reason.status === 'rejected'
+      ? reason.reason
+      : new Error('Synthesis produced no items.');
+  }
+  if (failures.length) {
+    console.warn(
+      `[trend-pool-refresh] run ${runId}: continuing without the ${failures.join(' and ')} pass`,
+    );
+  }
+
+  return { items, costs };
+}
+
+/** Retries once on the provider's structured-output validator rejecting the
+ *  payload — see `clipPoolItemCounts` for why that happens and why a bare
+ *  retry is the right response. */
+async function withStructuredOutputRetry(
+  runId: string,
+  label: string,
+  once: () => Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }>,
 ): Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await synthesizePoolItemsOnce(ctx, runId, bucket, signals, calendar);
+      return await once();
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       if (attempt === 2 || !GEMINI_STRUCTURED_OUTPUT_REJECTION.test(message)) throw error;
       console.warn(
-        `[trend-pool-refresh] synthesis rejected by the provider's structured-output validator for run ${runId}, retrying once: ${message}`,
+        `[trend-pool-refresh] ${label} synthesis rejected by the provider's structured-output validator for run ${runId}, retrying once: ${message}`,
       );
     }
   }
   throw lastError;
 }
 
-async function synthesizePoolItemsOnce(
+function audienceFor(bucket: TrendPoolBucket): string {
+  return bucket.scope === 'national'
+    ? `small businesses across every industry in ${marketName(bucket.market)}`
+    : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
+}
+
+/**
+ * The calendar pass — confirmed dated observances into opportunities.
+ *
+ * No clustering to do: each observance is already its own distinct occasion
+ * with a date and known customs, and each carries exactly one signal. The work
+ * is judging which are worth acting on for a general audience and writing them
+ * up, which is why this prompt is so much shorter than the search pass's.
+ */
+async function synthesizeCalendarPass(
   ctx: WorkerContext,
   runId: string,
   bucket: TrendPoolBucket,
-  signals: SignalCandidate[],
+  calendarSignals: SignalCandidate[],
   calendar: VerifiedCalendarEvent[],
 ): Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }> {
-  const audience =
-    bucket.scope === 'national'
-      ? `small businesses across every industry in ${marketName(bucket.market)}`
-      : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
+  const audience = audienceFor(bucket);
+  const limit = MAX_POOL_ITEMS.national;
 
-  const maxItems = MAX_POOL_ITEMS[bucket.scope];
-
-  // Both empty for a category bucket, which has no calendar — the prompt is
-  // then character-for-character what it was before this existed.
-  const calendarBlock = calendar.length
-    ? `**Confirmed upcoming calendar for ${marketName(bucket.market)}** — each of these is a real ` +
-      `dated observance, checked against live sources for both existence and date. An observance ` +
-      `here is a genuine opportunity even if no signal below happens to mention it:` +
-      `\n${describeCalendarForPrompt(calendar)}\n`
-    : '';
-  const calendarInstruction = calendar.length
-    ? 'A verified calendar of upcoming dated observances is given alongside the signals. Treat it ' +
-      'as established fact — it was confirmed against live sources — and build an opportunity for ' +
-      'each observance genuinely worth acting on, whether or not a signal mentions it. Where a ' +
-      'signal does relate to one, cluster them together and cite the signal. Where none does, ' +
-      'still produce the opportunity and cite the calendar signal carrying that event. A dated ' +
-      'observance arriving soon is the single strongest kind of opportunity this pool can ' +
-      'surface: there is a fixed date to build toward and a known reason people are already ' +
-      'thinking about it.\n\n'
-    : '';
-
-  const { value, cost } = await withRetry(
-    () =>
-      withTimeout(
-        ctx.ai.llm().generateJson<{ items: TrendPoolItemDraft[] }>(
-          {
-            role: 'orchestrator',
-            system:
-              dateGrounding(bucket.market) +
-              `You are a marketing strategist turning raw search signals into content ` +
-              `opportunities for ${audience} generally — not one specific business. You work ` +
-              `ONLY from the material you are given below — it is current and verified; your own ` +
-              `knowledge is not, and might be stale by months. Never invent a trend, event, date, ` +
-              `or fact that is not actually present in that material.\n\n` +
-              calendarInstruction +
-              'Cluster related signals into opportunities first — several signals about the same ' +
-              'topic become ONE opportunity backed by multiple signals, not several near-duplicate ' +
-              'opportunities. A topic two independent signal sources both surfaced is stronger ' +
-              'evidence than either alone; weigh that in `popularity`.\n\n' +
-              'Since no single business is in view yet, judge only how significant and current each ' +
-              'opportunity is on its own terms — a later step scores it against one specific ' +
-              'brand. If nothing clusters into a genuinely significant opportunity, return fewer — ' +
-              'or none — rather than manufacturing a weak one to fill a quota.',
-            messages: [
-              {
-                role: 'user',
-                content: [
-                  calendarBlock,
-                  '**Raw signals collected, numbered — reference these numbers in `signalIndexes`:**',
-                  describeSignalsForPrompt(signals),
-                  '',
-                  `Produce up to ${maxItems} ranked opportunities. For \`suggestedRequest\`, pick the ` +
-                    'campaignType, styleTemplate and outputFormat that best fit each opportunity in ' +
-                    'general — these prefill an actual generation request once a business picks this ' +
-                    'up, so they must be genuinely apt for the opportunity, not a default. Put the ' +
-                    "opportunity's real context into `extraInstructions`, written as direction to a " +
-                    'designer who has not seen the signals: name the event/topic and why it matters.',
-                ]
-                  .filter(Boolean)
-                  .join('\n'),
-              },
-            ],
-            maxTokens: MAX_SYNTHESIS_TOKENS,
-            schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
-            parse: (raw) => trendPoolSynthesisSchema.parse(clipPoolItemCounts(raw, maxItems)),
-          },
-          { referenceId: runId },
+  return withStructuredOutputRetry(runId, 'calendar', async () => {
+    const { value, cost } = await withRetry(
+      () =>
+        withTimeout(
+          ctx.ai.llm().generateJson<{ items: TrendPoolItemDraft[] }>(
+            {
+              role: 'orchestrator',
+              system:
+                dateGrounding(bucket.market) +
+                `You are a marketing strategist turning confirmed upcoming occasions into content ` +
+                `opportunities for ${audience} generally — not one specific business.\n\n` +
+                'Every occasion below is real and its date has been checked against live sources. ' +
+                'Treat both as established fact. Do not add occasions that are not listed, and do ' +
+                'not adjust a date.\n\n' +
+                'One opportunity per occasion, in the order given — they are already sorted by how ' +
+                'soon they arrive. Judge each on its own merit for a general business audience: ' +
+                'skip an observance that offers nothing a business could honestly speak to rather ' +
+                'than forcing an angle onto it, and treat a solemn or religious occasion with the ' +
+                'restraint it deserves instead of turning it into a discount. Fewer, apter ' +
+                'opportunities beat a complete list.\n\n' +
+                'Score `freshness` from how soon it arrives, and `popularity` from how widely it ' +
+                'is actually observed by the audience named for it — a nationwide holiday and a ' +
+                "single region's observance are not the same reach.",
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    `**Confirmed upcoming occasions in ${marketName(bucket.market)}:**`,
+                    describeCalendarForPrompt(calendar),
+                    '',
+                    '**The signal carrying each occasion, numbered — reference these numbers in ' +
+                      '`signalIndexes`:**',
+                    describeSignalsForPrompt(calendarSignals),
+                    '',
+                    `Produce at most ${limit} opportunities. For \`suggestedRequest\`, pick the ` +
+                      'campaignType, styleTemplate and outputFormat that genuinely fit the occasion — ' +
+                      'these prefill a real generation request once a business picks this up. Put the ' +
+                      "occasion's date and customs into `extraInstructions`, written as direction to a " +
+                      'designer who has not seen this list.',
+                  ].join('\n'),
+                },
+              ],
+              maxTokens: MAX_SYNTHESIS_TOKENS,
+              schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
+              parse: (raw) => trendPoolSynthesisSchema.parse(clipPoolItemCounts(raw, limit)),
+            },
+            { referenceId: runId },
+          ),
+          SYNTHESIS_TIMEOUT_MS,
+          'calendar opportunity synthesis',
         ),
-        SYNTHESIS_TIMEOUT_MS,
-        'pool opportunity synthesis',
-      ),
-    {
-      onRetry: ({ attempt, error }) =>
-        console.warn(
-          `[trend-pool-refresh] synthesis attempt ${attempt} failed for run ${runId}, retrying:`,
-          describeError(error),
-        ),
-    },
-  );
+      {
+        onRetry: ({ attempt, error }) =>
+          console.warn(
+            `[trend-pool-refresh] calendar synthesis attempt ${attempt} failed for run ${runId}, retrying:`,
+            describeError(error),
+          ),
+      },
+    );
+    return { items: value.items, cost };
+  });
+}
 
-  return { items: value.items, cost };
+/**
+ * The search pass — the original synthesis, unchanged in substance.
+ *
+ * `signalOffset` is where this slice starts in the combined signal array, so
+ * the indexes this returns line up with the calendar pass's.
+ */
+async function synthesizeSearchPass(
+  ctx: WorkerContext,
+  runId: string,
+  bucket: TrendPoolBucket,
+  searchSignals: SignalCandidate[],
+  signalOffset: number,
+): Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }> {
+  const audience = audienceFor(bucket);
+  const limit = MAX_POOL_ITEMS[bucket.scope];
+
+  return withStructuredOutputRetry(runId, 'search', async () => {
+    const { value, cost } = await withRetry(
+      () =>
+        withTimeout(
+          ctx.ai.llm().generateJson<{ items: TrendPoolItemDraft[] }>(
+            {
+              role: 'orchestrator',
+              system:
+                dateGrounding(bucket.market) +
+                `You are a marketing strategist turning raw search signals into content ` +
+                `opportunities for ${audience} generally — not one specific business. You work ` +
+                `ONLY from the signals you are given below — they are current and real; your own ` +
+                `knowledge is not, and might be stale by months. Never invent a trend, event, date, ` +
+                `or fact that is not actually present in the signals.\n\n` +
+                'Cluster related signals into opportunities first — several signals about the same ' +
+                'topic become ONE opportunity backed by multiple signals, not several near-duplicate ' +
+                'opportunities. A topic two independent signal sources both surfaced is stronger ' +
+                'evidence than either alone; weigh that in `popularity`.\n\n' +
+                'Since no single business is in view yet, judge only how significant and current each ' +
+                'opportunity is on its own terms — a later step scores it against one specific ' +
+                'brand. If nothing clusters into a genuinely significant opportunity, return fewer — ' +
+                'or none — rather than manufacturing a weak one to fill a quota.',
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    '**Raw signals collected, numbered — reference these numbers in `signalIndexes`:**',
+                    describeSignalsForPrompt(searchSignals, signalOffset),
+                    '',
+                    `Produce up to ${limit} ranked opportunities. For \`suggestedRequest\`, pick the ` +
+                      'campaignType, styleTemplate and outputFormat that best fit each opportunity in ' +
+                      'general — these prefill an actual generation request once a business picks this ' +
+                      'up, so they must be genuinely apt for the opportunity, not a default. Put the ' +
+                      "opportunity's real context into `extraInstructions`, written as direction to a " +
+                      'designer who has not seen the signals: name the event/topic and why it matters.',
+                  ].join('\n'),
+                },
+              ],
+              maxTokens: MAX_SYNTHESIS_TOKENS,
+              schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown>,
+              parse: (raw) => trendPoolSynthesisSchema.parse(clipPoolItemCounts(raw, limit)),
+            },
+            { referenceId: runId },
+          ),
+          SYNTHESIS_TIMEOUT_MS,
+          'pool opportunity synthesis',
+        ),
+      {
+        onRetry: ({ attempt, error }) =>
+          console.warn(
+            `[trend-pool-refresh] search synthesis attempt ${attempt} failed for run ${runId}, retrying:`,
+            describeError(error),
+          ),
+      },
+    );
+    return { items: value.items, cost };
+  });
 }
 
 interface ResolvedPoolItem {
@@ -666,14 +834,14 @@ export async function runTrendPoolRefresh(
     console.warn(
       `[trend-pool-refresh] run ${run.id}: synthesizing opportunities from ${signals.length} signals...`,
     );
-    const { items: drafts, cost } = await synthesizePoolItems(
+    const { items: drafts, costs } = await synthesizePoolItems(
       ctx,
       run.id,
       bucket,
       signals,
       calendar,
     );
-    await recordCost(ctx, run.id, cost);
+    for (const cost of costs) await recordCost(ctx, run.id, cost);
 
     const resolved = resolvePoolItemSignals(drafts, signals);
     const finishedAt = new Date();

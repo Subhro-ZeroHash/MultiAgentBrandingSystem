@@ -3,6 +3,7 @@ import {
   buildTrendPoolQueries,
   calendarEventsToSignals,
   clipPoolItemCounts,
+  describeSignalsForPrompt,
   resolvePoolItemSignals,
 } from './trend-pool-refresh.js';
 import type { VerifiedCalendarEvent } from './festival-calendar.js';
@@ -272,5 +273,47 @@ describe('calendarEventsToSignals', () => {
 
   it('contributes nothing for a bucket with no calendar', () => {
     expect(calendarEventsToSignals([])).toHaveLength(0);
+  });
+});
+
+/**
+ * Synthesis runs as two calls over two slices of one signal array, and both
+ * return indexes that `resolvePoolItemSignals` resolves against the whole of
+ * it. If the second slice numbered itself from zero, its items would silently
+ * attach to the calendar's sources instead of their own — wrong citations on
+ * plausible-looking items, which nothing downstream could detect.
+ */
+describe('describeSignalsForPrompt', () => {
+  const signal = (title: string) => ({
+    id: `id-${title}`,
+    source: 'tavily',
+    signalType: 'news_mention' as const,
+    title,
+    snippet: 'body',
+    strength: 50,
+    sourceUrl: `https://example.com/${title}`,
+    publishedAt: null,
+  });
+
+  it('numbers from zero by default', () => {
+    expect(describeSignalsForPrompt([signal('a'), signal('b')])).toMatch(/^\[0\]/);
+  });
+
+  it('numbers from the offset it is given', () => {
+    const text = describeSignalsForPrompt([signal('a'), signal('b')], 11);
+    expect(text).toContain('[11]');
+    expect(text).toContain('[12]');
+    expect(text).not.toContain('[0]');
+  });
+
+  /** The two slices together must cover 0..n-1 exactly once, with no gap and
+   *  no repeat — that is what makes one shared resolution correct. */
+  it('produces a contiguous numbering across both slices', () => {
+    const calendar = [signal('c1'), signal('c2')];
+    const search = [signal('s1'), signal('s2'), signal('s3')];
+    const combined =
+      describeSignalsForPrompt(calendar) + '\n' + describeSignalsForPrompt(search, calendar.length);
+    const indexes = [...combined.matchAll(/^\[(\d+)\]/gm)].map((m) => Number(m[1]));
+    expect(indexes).toEqual([0, 1, 2, 3, 4]);
   });
 });
