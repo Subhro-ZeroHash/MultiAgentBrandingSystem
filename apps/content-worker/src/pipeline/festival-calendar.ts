@@ -310,7 +310,12 @@ async function enumerateCalendarEvents(
 }
 
 const RECONCILE_TIMEOUT_MS = 60_000;
-const MAX_RECONCILE_TOKENS = 2_000;
+/** Sized for the reasoning, not the answer — same trap as
+ *  MAX_ENUMERATE_TOKENS above. The reply is a dozen `{index, date}` pairs and
+ *  measures a couple of hundred tokens, but comparing each estimate against
+ *  three excerpts is the actual work, and it is charged here too. 2,000 was
+ *  not enough for ten events and truncated mid-JSON on the fourth live run. */
+const MAX_RECONCILE_TOKENS = 8_000;
 /** Enough of each page for the date to appear in it; a date is stated early or
  *  not at all, and the whole calendar's excerpts share one prompt. */
 const MAX_EXCERPT_CHARS = 300;
