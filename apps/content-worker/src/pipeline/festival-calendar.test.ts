@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WebSearchResult } from '@bmas/ai';
 import {
   CALENDAR_HORIZON_DAYS,
+  applyReconciledDates,
   MAX_CALENDAR_EVENTS,
   buildCalendarVerificationQuery,
   daysBetween,
@@ -9,6 +10,7 @@ import {
   filterToHorizon,
   keepCorroborated,
   type CalendarEvent,
+  type VerifiedCalendarEvent,
 } from './festival-calendar.js';
 
 const event = (name: string, date: string): CalendarEvent => ({
@@ -214,5 +216,87 @@ describe('describeCalendarForPrompt', () => {
    *  bucket's prompt stays exactly what it was before this existed. */
   it('is empty for an empty calendar', () => {
     expect(describeCalendarForPrompt([])).toBe('');
+  });
+});
+
+/**
+ * Search proves an event is real but says nothing about whether our date for
+ * it is right. Two consecutive live runs placed Onam three days out and
+ * thirty-two days out — so the corrections have to win, and a corrected date
+ * has to be re-checked against the window.
+ */
+describe('applyReconciledDates', () => {
+  const today = '2026-08-24';
+  const verified = (name: string, date: string): VerifiedCalendarEvent => ({
+    ...event(name, date),
+    daysAway: daysBetween(today, date),
+    results: [result('https://a.example')],
+  });
+
+  it("takes the sources' date over the estimate", () => {
+    const out = applyReconciledDates(
+      [verified('Onam', '2026-09-25')],
+      [{ index: 0, date: '2026-08-26' }],
+      today,
+    );
+    expect(out[0]!.date).toBe('2026-08-26');
+    expect(out[0]!.daysAway).toBe(2);
+  });
+
+  /** A missing correction is not evidence the estimate was wrong. */
+  it('leaves an event alone when no correction came back for it', () => {
+    const out = applyReconciledDates([verified('Raksha Bandhan', '2026-08-28')], [], today);
+    expect(out[0]!.date).toBe('2026-08-28');
+  });
+
+  /** Correcting a date by a month is exactly the case worth correcting — and
+   *  the corrected event may no longer be upcoming at all. */
+  it('drops an event whose corrected date falls outside the window', () => {
+    const out = applyReconciledDates(
+      [verified('Diwali', '2026-09-01')],
+      [{ index: 0, date: '2026-11-08' }],
+      today,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('drops an event corrected into the past', () => {
+    const out = applyReconciledDates(
+      [verified('Onam', '2026-08-30')],
+      [{ index: 0, date: '2026-08-20' }],
+      today,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('re-sorts once dates move, so the nearest event still leads', () => {
+    const out = applyReconciledDates(
+      [verified('Later', '2026-08-30'), verified('Sooner', '2026-09-10')],
+      [{ index: 1, date: '2026-08-25' }],
+      today,
+    );
+    expect(out.map((e) => e.name)).toEqual(['Sooner', 'Later']);
+  });
+
+  it('ignores an index that matches no event rather than throwing', () => {
+    const out = applyReconciledDates(
+      [verified('Onam', '2026-08-26')],
+      [{ index: 7, date: '2026-01-01' }],
+      today,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.date).toBe('2026-08-26');
+  });
+
+  it('keeps the first correction when an index is repeated', () => {
+    const out = applyReconciledDates(
+      [verified('Onam', '2026-09-25')],
+      [
+        { index: 0, date: '2026-08-26' },
+        { index: 0, date: '2026-09-01' },
+      ],
+      today,
+    );
+    expect(out[0]!.date).toBe('2026-08-26');
   });
 });

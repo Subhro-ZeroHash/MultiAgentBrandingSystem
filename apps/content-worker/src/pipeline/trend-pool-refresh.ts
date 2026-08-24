@@ -436,10 +436,10 @@ async function synthesizePoolItemsOnce(
   // Both empty for a category bucket, which has no calendar — the prompt is
   // then character-for-character what it was before this existed.
   const calendarBlock = calendar.length
-    ? `**Verified upcoming calendar for ${marketName(bucket.market)}** — each of these is a real ` +
-      `dated observance, confirmed against live sources. These dates are more reliable than ` +
-      `anything in the signals below, and an observance here is a genuine opportunity even if no ` +
-      `signal happens to mention it:\n${describeCalendarForPrompt(calendar)}\n`
+    ? `**Confirmed upcoming calendar for ${marketName(bucket.market)}** — each of these is a real ` +
+      `dated observance, checked against live sources for both existence and date. An observance ` +
+      `here is a genuine opportunity even if no signal below happens to mention it:` +
+      `\n${describeCalendarForPrompt(calendar)}\n`
     : '';
   const calendarInstruction = calendar.length
     ? 'A verified calendar of upcoming dated observances is given alongside the signals. Treat it ' +

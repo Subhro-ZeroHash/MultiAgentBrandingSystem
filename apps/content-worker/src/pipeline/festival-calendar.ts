@@ -36,8 +36,17 @@ import { dateGrounding, isoDateInMarket, todayInMarket } from './prompt-context.
  *      date" is a named-entity query with a real answer on real pages —
  *      precisely the shape search is built for, and the exact query the
  *      enumeration step has just made possible to write.
+ *   3. **Reconcile** (model, reading the pages). Search proves the event is
+ *      real but says nothing about whether *our* date for it is. Two
+ *      consecutive live runs placed Onam three days out and thirty-two days
+ *      out — the drift is not hypothetical, and an opportunity built on the
+ *      wrong date is worse than none, because it looks authoritative. The
+ *      pages found in step 2 almost always state the date in so many words,
+ *      so this reads them back and corrects the estimate. Cheap: one call for
+ *      the whole calendar, not one per event.
  *
- * An event that survives both is real, correctly dated, and carries live URLs.
+ * An event that survives all three is real, correctly dated, and carries live
+ * URLs.
  * An event that no targeted search corroborates is dropped: either the model
  * invented it, or it is too obscure to have coverage worth building a campaign
  * on. Same "the model proposes, search disposes" contract as
@@ -52,7 +61,12 @@ import { dateGrounding, isoDateInMarket, todayInMarket } from './prompt-context.
  */
 
 const ENUMERATE_TIMEOUT_MS = 60_000;
-const SEARCH_TIMEOUT_MS = 15_000;
+/** Higher than the 15s the trend searches use. These queries are named-entity
+ *  lookups rather than broad topic searches, and SerpApi is measurably slower
+ *  on them — three of nine timed out at 15s on the first live run, each one an
+ *  event that then had only Tavily standing between it and being dropped as
+ *  uncorroborated. */
+const SEARCH_TIMEOUT_MS = 25_000;
 const MAX_ENUMERATE_TOKENS = 4_000;
 
 /**
@@ -283,6 +297,158 @@ async function enumerateCalendarEvents(
   return filterToHorizon(value.events, today);
 }
 
+const RECONCILE_TIMEOUT_MS = 60_000;
+const MAX_RECONCILE_TOKENS = 2_000;
+/** Enough of each page for the date to appear in it; a date is stated early or
+ *  not at all, and the whole calendar's excerpts share one prompt. */
+const MAX_EXCERPT_CHARS = 300;
+const EXCERPTS_PER_EVENT = 3;
+
+const reconcileSchema = z.object({
+  events: z.array(
+    z.object({
+      index: z.number().int().min(0),
+      date: z
+        .string()
+        .trim()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected an ISO YYYY-MM-DD date'),
+    }),
+  ),
+});
+
+const RECONCILE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['events'],
+  properties: {
+    events: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['index', 'date'],
+        properties: {
+          index: {
+            type: 'integer',
+            description: 'The [N] number of the observance this is the date for.',
+          },
+          date: {
+            type: 'string',
+            description:
+              'The date the excerpts actually support, as YYYY-MM-DD. If they state a date, use ' +
+              'theirs even when it contradicts the estimate — they are live pages and the estimate ' +
+              'is a guess. If they state none, repeat the estimate unchanged. Never split the ' +
+              'difference between two dates.',
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+function describeEventsForReconcile(events: VerifiedCalendarEvent[]): string {
+  return events
+    .map((event, index) => {
+      const excerpts = event.results
+        .slice(0, EXCERPTS_PER_EVENT)
+        .map((result) => {
+          const title = result.title?.trim() || result.url;
+          const body = result.snippet.slice(0, MAX_EXCERPT_CHARS).trim();
+          return `    - ${title}${body ? `: ${body}` : ''}`;
+        })
+        .join('\n');
+      return `[${index}] ${event.name} — estimated ${event.date}\n${excerpts}`;
+    })
+    .join('\n\n');
+}
+
+/**
+ * Applies the model's corrections, then re-checks the window.
+ *
+ * Re-checking matters: a date corrected by a month can land outside the
+ * horizon, and an event that is no longer upcoming has to go — that is the
+ * whole point of correcting it. An index the model omits or invents leaves its
+ * event on the estimated date rather than dropping it, since a missing
+ * correction is not evidence the estimate was wrong.
+ *
+ * Pure and exported so the precedence rules can be pinned without a model call.
+ */
+export function applyReconciledDates(
+  events: VerifiedCalendarEvent[],
+  corrections: Array<{ index: number; date: string }>,
+  today: string,
+  horizonDays: number = CALENDAR_HORIZON_DAYS,
+): VerifiedCalendarEvent[] {
+  const byIndex = new Map<number, string>();
+  for (const { index, date } of corrections) {
+    if (index >= 0 && index < events.length && !byIndex.has(index)) byIndex.set(index, date);
+  }
+
+  return events
+    .map((event, index) => {
+      const date = byIndex.get(index) ?? event.date;
+      return { ...event, date, daysAway: daysBetween(today, date) };
+    })
+    .filter((event) => !Number.isNaN(event.daysAway))
+    .filter((event) => event.daysAway >= 0 && event.daysAway <= horizonDays)
+    .sort((a, b) => a.daysAway - b.daysAway);
+}
+
+/** Step 3 — reconciliation. Reads the corroborating pages back and corrects
+ *  any date the enumeration guessed wrong. Never throws: a failed
+ *  reconciliation leaves the estimates in place, which is where they were
+ *  before this step existed. */
+async function reconcileCalendarDates(
+  ctx: WorkerContext,
+  runId: string,
+  market: string,
+  events: VerifiedCalendarEvent[],
+  now: Date,
+): Promise<VerifiedCalendarEvent[]> {
+  const today = isoDateInMarket(market, now);
+  try {
+    const { value, cost } = await withTimeout(
+      ctx.ai.llm().generateJson<z.infer<typeof reconcileSchema>>(
+        {
+          role: 'volume',
+          system:
+            `Today is ${today} in ${marketName(market)}. You are checking dates, nothing else.\n\n` +
+            'Each observance below carries an estimated date and excerpts from live pages about ' +
+            'it. Read the excerpts and give the date they actually support. Many of these follow ' +
+            'lunar or computed calendars and shift by weeks between years, so an estimate being ' +
+            'confidently stated is no evidence it is right.\n\n' +
+            'The excerpts outrank the estimate whenever they state a date. Only when they state ' +
+            'none does the estimate stand. Return one entry per observance, using its [N] number.',
+          messages: [{ role: 'user', content: describeEventsForReconcile(events) }],
+          maxTokens: MAX_RECONCILE_TOKENS,
+          schema: RECONCILE_SCHEMA as unknown as Record<string, unknown>,
+          parse: (raw) => reconcileSchema.parse(raw),
+        },
+        { referenceId: runId },
+      ),
+      RECONCILE_TIMEOUT_MS,
+      'calendar date reconciliation',
+    );
+    await recordCost(ctx, runId, cost);
+
+    const reconciled = applyReconciledDates(events, value.events, today);
+    for (const event of reconciled) {
+      const before = events.find((e) => e.name === event.name);
+      if (before && before.date !== event.date) {
+        console.warn(
+          `[festival-calendar] run ${runId}: corrected ${event.name} from ${before.date} to ${event.date} against its sources`,
+        );
+      }
+    }
+    return reconciled;
+  } catch (error) {
+    console.warn(
+      `[festival-calendar] run ${runId}: date reconciliation failed, keeping estimated dates — ${describeError(error)}`,
+    );
+    return events;
+  }
+}
+
 /**
  * Step 2 — corroboration. Keeps an event only when a search about it by name
  * actually returns something.
@@ -349,7 +515,7 @@ async function verifyCalendarEvents(
 }
 
 /**
- * Renders the verified calendar as a dated agenda for the synthesis prompt.
+ * Renders the confirmed calendar as a dated agenda for the synthesis prompt.
  *
  * `daysAway` is spelled out rather than left as a date to subtract, because
  * that number is the whole basis of the `freshness` score and of judging
@@ -407,8 +573,13 @@ export async function loadUpcomingCalendar(
         `[festival-calendar] run ${runId}: dropped ${dropped.length} uncorroborated observance(s) — ${dropped.map((e) => e.name).join(', ')}`,
       );
     }
-    console.warn(`[festival-calendar] run ${runId}: ${verified.length} observance(s) verified`);
-    return verified;
+    if (verified.length === 0) return [];
+
+    const reconciled = await reconcileCalendarDates(ctx, runId, market, verified, now);
+    console.warn(
+      `[festival-calendar] run ${runId}: ${reconciled.length} observance(s) confirmed — ${reconciled.map((e) => `${e.name} ${e.date} (+${e.daysAway}d)`).join(', ')}`,
+    );
+    return reconciled;
   } catch (error) {
     console.error(
       `[festival-calendar] run ${runId}: calendar unavailable, falling back to search-only signals — ${describeError(error)}`,
