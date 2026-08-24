@@ -11,9 +11,10 @@ import {
   type TrendCategory,
   type TrendPoolItemDraft,
   type TrendSource,
+  marketName,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
-import { dateGrounding } from './prompt-context.js';
+import { currentMonthInIndia, dateGrounding } from './prompt-context.js';
 
 /**
  * Trend Research — Layer A (Global Pool refresh).
@@ -46,7 +47,10 @@ const SIGNAL_TYPE_FOR_CATEGORY: Record<TrendCategory, SignalType> = {
   social_trend: 'social_trend_mention',
 };
 
-export type TrendPoolBucket = { scope: 'category'; category: CategoryKey } | { scope: 'national' };
+export type TrendPoolBucket = (
+  | { scope: 'category'; category: CategoryKey }
+  | { scope: 'national' }
+) & { market: string };
 
 /**
  * The pool's queries, built from a category label instead of one brand's
@@ -62,13 +66,17 @@ export type TrendPoolBucket = { scope: 'category'; category: CategoryKey } | { s
 export function buildTrendPoolQueries(
   bucket: TrendPoolBucket,
 ): Array<{ category: TrendCategory; request: WebSearchRequest }> {
+  const place = marketName(bucket.market);
+  const month = currentMonthInIndia();
+
   if (bucket.scope === 'national') {
     return [
       {
         category: 'event_festival',
         request: {
           query:
-            'upcoming festivals, public holidays, product-launch-worthy dates and events in the next 30 days in India',
+            `upcoming festivals, public holidays, product-launch-worthy dates and events in ` +
+            `the next 30 days in ${place}, as of ${month}`,
           topic: 'news',
           recencyDays: 45,
           maxResults: RESULTS_PER_QUERY,
@@ -83,7 +91,7 @@ export function buildTrendPoolQueries(
     {
       category: 'industry_topic',
       request: {
-        query: `trending news and current topics this week relevant to ${industry} businesses in India`,
+        query: `trending news and current topics this week relevant to ${industry} businesses in ${place}, ${month}`,
         topic: 'news',
         recencyDays: 14,
         maxResults: RESULTS_PER_QUERY,
@@ -92,7 +100,7 @@ export function buildTrendPoolQueries(
     {
       category: 'social_trend',
       request: {
-        query: `trending Instagram Reels formats, audio and hashtags this week for ${industry} brands in India`,
+        query: `trending Instagram Reels formats, audio and hashtags this week for ${industry} brands in ${place}, ${month}`,
         topic: 'general',
         recencyDays: 14,
         maxResults: RESULTS_PER_QUERY,
@@ -370,8 +378,8 @@ async function synthesizePoolItemsOnce(
 ): Promise<{ items: TrendPoolItemDraft[]; cost: CostEvent }> {
   const audience =
     bucket.scope === 'national'
-      ? 'small businesses across every industry in India'
-      : `${CATEGORY_LABELS[bucket.category]} businesses in India`;
+      ? `small businesses across every industry in ${marketName(bucket.market)}`
+      : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
 
   const { value, cost } = await withRetry(
     () =>
@@ -477,7 +485,12 @@ export function resolvePoolItemSignals(
 
 export async function runTrendPoolRefresh(
   ctx: WorkerContext,
-  job: { runId: string; scope: 'category' | 'national'; category: CategoryKey | null },
+  job: {
+    runId: string;
+    scope: 'category' | 'national';
+    category: CategoryKey | null;
+    market: string;
+  },
 ): Promise<void> {
   const [run] = await ctx.db
     .select()
@@ -488,8 +501,8 @@ export async function runTrendPoolRefresh(
 
   const bucket: TrendPoolBucket =
     job.scope === 'national'
-      ? { scope: 'national' }
-      : { scope: 'category', category: job.category! };
+      ? { scope: 'national', market: job.market }
+      : { scope: 'category', category: job.category!, market: job.market };
 
   await ctx.db
     .update(schema.poolTrendRuns)

@@ -10,9 +10,10 @@ import {
   type IntelligencePoolItemDraft,
   type PoolableIntelligenceCategory,
   type TrendSource,
+  marketName,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
-import { dateGrounding } from './prompt-context.js';
+import { currentMonthInIndia, dateGrounding } from './prompt-context.js';
 
 /**
  * Intelligence Research — Layer A (Global Pool refresh).
@@ -33,8 +34,10 @@ const MAX_SYNTHESIS_TOKENS = 14_000;
 const RESULTS_PER_QUERY = 6;
 const MAX_SNIPPET_CHARS = 500;
 
-export type IntelligencePoolBucket =
-  { scope: 'category'; category: CategoryKey } | { scope: 'national' };
+export type IntelligencePoolBucket = (
+  | { scope: 'category'; category: CategoryKey }
+  | { scope: 'national' }
+) & { market: string };
 
 interface CollectedSignal {
   category: PoolableIntelligenceCategory;
@@ -50,12 +53,15 @@ interface CollectedSignal {
 export function buildIntelligencePoolQueries(
   bucket: IntelligencePoolBucket,
 ): Array<{ category: PoolableIntelligenceCategory; request: WebSearchRequest }> {
+  const place = marketName(bucket.market);
+  const month = currentMonthInIndia();
+
   if (bucket.scope === 'national') {
     return [
       {
         category: 'local',
         request: {
-          query: 'local business news economic developments opportunities in India',
+          query: `local business news economic developments opportunities in ${place}, ${month}`,
           topic: 'news',
           recencyDays: 21,
           maxResults: RESULTS_PER_QUERY,
@@ -70,7 +76,7 @@ export function buildIntelligencePoolQueries(
     {
       category: 'government_policy',
       request: {
-        query: `new government policy regulation tax changes affecting ${industry} businesses in India`,
+        query: `new government policy regulation tax changes affecting ${industry} businesses in ${place}, ${month}`,
         topic: 'news',
         recencyDays: 30,
         maxResults: RESULTS_PER_QUERY,
@@ -79,7 +85,7 @@ export function buildIntelligencePoolQueries(
     {
       category: 'industry_news',
       request: {
-        query: `${industry} industry news market developments trends this month in India`,
+        query: `${industry} industry news market developments trends in ${place}, ${month}`,
         topic: 'news',
         recencyDays: 21,
         maxResults: RESULTS_PER_QUERY,
@@ -290,8 +296,8 @@ async function synthesizePoolItemsOnce(
 ): Promise<{ items: IntelligencePoolItemDraft[]; cost: CostEvent }> {
   const audience =
     bucket.scope === 'national'
-      ? 'small businesses across every industry in India'
-      : `${CATEGORY_LABELS[bucket.category]} businesses in India`;
+      ? `small businesses across every industry in ${marketName(bucket.market)}`
+      : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
 
   const { value, cost } = await withRetry(
     () =>
@@ -361,7 +367,12 @@ export function verifyPoolSources(
 
 export async function runIntelligencePoolRefresh(
   ctx: WorkerContext,
-  job: { runId: string; scope: 'category' | 'national'; category: CategoryKey | null },
+  job: {
+    runId: string;
+    scope: 'category' | 'national';
+    category: CategoryKey | null;
+    market: string;
+  },
 ): Promise<void> {
   const [run] = await ctx.db
     .select()
@@ -372,8 +383,8 @@ export async function runIntelligencePoolRefresh(
 
   const bucket: IntelligencePoolBucket =
     job.scope === 'national'
-      ? { scope: 'national' }
-      : { scope: 'category', category: job.category! };
+      ? { scope: 'national', market: job.market }
+      : { scope: 'category', category: job.category!, market: job.market };
 
   await ctx.db
     .update(schema.poolIntelligenceRuns)

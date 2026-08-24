@@ -27,6 +27,7 @@ import type { WorkerContext } from '../context.js';
 import { dateGrounding } from './prompt-context.js';
 import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
+import { ensureBrandMarket } from './market-classifier.js';
 import { ensureFreshIntelligencePool } from './pool-loader.js';
 
 /**
@@ -585,9 +586,10 @@ export async function runIntelligenceResearch(
       `[intelligence-research] run ${run.id}: brand category resolved to '${categoryKey}'`,
     );
 
+    const market = await ensureBrandMarket(ctx, brand);
     const [categoryPool, nationalPool] = await Promise.all([
-      ensureFreshIntelligencePool(ctx, { scope: 'category', category: categoryKey }),
-      ensureFreshIntelligencePool(ctx, { scope: 'national' }),
+      ensureFreshIntelligencePool(ctx, { scope: 'category', category: categoryKey, market }),
+      ensureFreshIntelligencePool(ctx, { scope: 'national', market }),
     ]);
     const poolItems = [...categoryPool.items, ...nationalPool.items];
     console.warn(

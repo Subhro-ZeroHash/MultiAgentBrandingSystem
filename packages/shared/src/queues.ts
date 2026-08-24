@@ -144,6 +144,10 @@ export const poolRefreshJobSchema = z.object({
   runId: entityIdSchema,
   scope: poolRunScopeSchema,
   category: categoryKeySchema.nullable(),
+  /** ISO country the refresh should search for. Defaulted so a job enqueued
+   *  by an older build — or already sitting in Redis across this deploy —
+   *  still parses instead of dead-lettering the whole bucket. */
+  market: z.string().min(2).max(2).default('IN'),
 });
 export type PoolRefreshJob = z.infer<typeof poolRefreshJobSchema>;
 

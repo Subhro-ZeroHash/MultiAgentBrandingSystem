@@ -18,6 +18,7 @@ import {
   type CostEvent,
   type TrendModelScore,
   type TrendRelevanceDraft,
+  marketName,
   type TrendResearchJob,
 } from '@bmas/shared';
 import type { Queue } from 'bullmq';
@@ -25,6 +26,7 @@ import type { WorkerContext } from '../context.js';
 import { dateGrounding } from './prompt-context.js';
 import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
+import { ensureBrandMarket } from './market-classifier.js';
 import { ensureFreshTrendPool } from './pool-loader.js';
 import { researchFocusedOpportunities } from './focused-trend-research.js';
 import { triggerAutoOpportunity, type TriggerableOpportunity } from './opportunity-trigger.js';
@@ -380,12 +382,19 @@ export async function runTrendResearch(
 
   try {
     const brandContext = await getTrendContext(ctx.db, brand.id);
-    const categoryKey = await ensureBrandCategoryKey(ctx, brand);
-    console.warn(`[trend-research] run ${run.id}: brand category resolved to '${categoryKey}'`);
+    // Classified together: both key the shared pool, and neither is worth a
+    // round trip the other is already paying for.
+    const [categoryKey, market] = await Promise.all([
+      ensureBrandCategoryKey(ctx, brand),
+      ensureBrandMarket(ctx, brand),
+    ]);
+    console.warn(
+      `[trend-research] run ${run.id}: brand category resolved to '${categoryKey}' in ${marketName(market)}`,
+    );
 
     const [categoryPool, nationalPool] = await Promise.all([
-      ensureFreshTrendPool(ctx, { scope: 'category', category: categoryKey }),
-      ensureFreshTrendPool(ctx, { scope: 'national' }),
+      ensureFreshTrendPool(ctx, { scope: 'category', category: categoryKey, market }),
+      ensureFreshTrendPool(ctx, { scope: 'national', market }),
     ]);
     const poolItems = [...categoryPool.items, ...nationalPool.items];
     console.warn(

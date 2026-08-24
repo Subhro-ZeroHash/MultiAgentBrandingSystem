@@ -925,6 +925,15 @@ export const brandContexts = content.table(
      *  classification gets detected and re-run — cheaper than a dirty flag
      *  every unrelated field edit would also have to know to clear. */
     categoryKeyClassifiedFor: text('category_key_classified_for'),
+    /** ISO 3166-1 alpha-2 country the brand trades in, normalized from the
+     *  free-text `location` by the same lazy, cached classification the
+     *  category above uses. Part of the research pool's bucket key: a US
+     *  brand and an Indian brand must not share a pool of "upcoming
+     *  festivals". Null until Layer B first needs it. */
+    marketCode: text('market_code'),
+    /** The exact location text `marketCode` was classified from — same
+     *  staleness-detection trick as `categoryKeyClassifiedFor`. */
+    marketCodeClassifiedFor: text('market_code_classified_for'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1264,6 +1273,11 @@ export const poolTrendRuns = content.table(
     scope: poolRunScope('scope').notNull(),
     /** Null iff scope = 'national'. */
     category: categoryKey('category'),
+    /** ISO 3166-1 alpha-2 market this bucket covers. Part of the bucket key:
+     *  "upcoming festivals" means something different per country, so pools
+     *  must not be shared across markets. Defaulted rather than nullable so
+     *  every existing row keeps the market it was actually built for. */
+    market: text('market').notNull().default('IN'),
     status: poolRunStatus('status').notNull().default('queued'),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
@@ -1277,7 +1291,12 @@ export const poolTrendRuns = content.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('pool_trend_runs_scope_category_created_idx').on(t.scope, t.category, t.createdAt),
+    index('pool_trend_runs_scope_category_created_idx').on(
+      t.scope,
+      t.category,
+      t.market,
+      t.createdAt,
+    ),
     index('pool_trend_runs_expires_idx').on(t.expiresAt),
     // At most one active (queued/running) refresh per bucket — closes the
     // exact race `asset_edits_one_active_per_root_idx` closes in
@@ -1286,7 +1305,7 @@ export const poolTrendRuns = content.table(
     // one may actually run the refresh. The loser's insert gets a Postgres
     // 23505 the caller (pool-loader.ts) catches and polls on instead.
     uniqueIndex('pool_trend_runs_one_active_per_bucket_idx')
-      .on(t.scope, t.category)
+      .on(t.scope, t.category, t.market)
       .where(sql`${t.status} IN ('queued', 'running')`),
   ],
 );
@@ -1361,6 +1380,11 @@ export const poolIntelligenceRuns = content.table(
       .$defaultFn(() => crypto.randomUUID()),
     scope: poolRunScope('scope').notNull(),
     category: categoryKey('category'),
+    /** ISO 3166-1 alpha-2 market this bucket covers. Part of the bucket key:
+     *  "upcoming festivals" means something different per country, so pools
+     *  must not be shared across markets. Defaulted rather than nullable so
+     *  every existing row keeps the market it was actually built for. */
+    market: text('market').notNull().default('IN'),
     status: poolRunStatus('status').notNull().default('queued'),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
@@ -1369,10 +1393,15 @@ export const poolIntelligenceRuns = content.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('pool_intelligence_runs_scope_category_created_idx').on(t.scope, t.category, t.createdAt),
+    index('pool_intelligence_runs_scope_category_created_idx').on(
+      t.scope,
+      t.category,
+      t.market,
+      t.createdAt,
+    ),
     index('pool_intelligence_runs_expires_idx').on(t.expiresAt),
     uniqueIndex('pool_intelligence_runs_one_active_per_bucket_idx')
-      .on(t.scope, t.category)
+      .on(t.scope, t.category, t.market)
       .where(sql`${t.status} IN ('queued', 'running')`),
   ],
 );
