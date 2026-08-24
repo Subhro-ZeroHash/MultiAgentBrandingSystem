@@ -67,7 +67,18 @@ const ENUMERATE_TIMEOUT_MS = 60_000;
  *  event that then had only Tavily standing between it and being dropped as
  *  uncorroborated. */
 const SEARCH_TIMEOUT_MS = 25_000;
-const MAX_ENUMERATE_TOKENS = 4_000;
+/**
+ * Generous because the budget is not spent only on the answer.
+ *
+ * The orchestrator model reasons before it emits, and that reasoning is
+ * charged against the same ceiling — so a list that measures ~1,500 tokens of
+ * JSON can still be cut off mid-string, which is what happened on the third
+ * live run: truncated at position 459, inside the first event's `significance`.
+ * Retrying cannot help, since the retry gets the same budget and stops in the
+ * same place; only headroom fixes it. Same failure the GEO probe analysis hit,
+ * and the same remedy.
+ */
+const MAX_ENUMERATE_TOKENS = 8_000;
 
 /**
  * How far ahead to look, and why it is not shorter.
@@ -155,14 +166,15 @@ const ENUMERATE_SCHEMA = {
             type: 'string',
             description:
               'What people in this market actually DO for it — the customs, gifting, spending or ' +
-              'gathering behaviour a business could speak to. Not a history lesson.',
+              'gathering behaviour a business could speak to. Not a history lesson. One or two ' +
+              'sentences, at most 200 characters.',
           },
           audience: {
             type: 'string',
             description:
               'Who observes it — the whole country, one region, one faith community, one age ' +
               'group. Say so plainly; a national holiday and a regional one are not the same ' +
-              'marketing opportunity.',
+              'marketing opportunity. A short phrase, at most 100 characters.',
           },
         },
       },
