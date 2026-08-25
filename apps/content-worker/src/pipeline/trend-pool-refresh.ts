@@ -572,24 +572,22 @@ async function synthesizeCalendarPass(
         withTimeout(
           ctx.ai.llm().generateJson<{ items: TrendPoolItemDraft[] }>(
             {
-              // `volume`, not `orchestrator` — the one place the two-pass split
-              // pays off beyond fitting the deadline.
+              // Tried on `volume` and reverted — the measurement is in the
+              // commit history, and the short version is that the restraint
+              // this pass needs turned out not to be purely prompted.
               //
-              // The search pass has to decide what fourteen unrelated results
-              // even mean together, which is open-ended and worth a frontier
-              // model. This pass is handed occasions that are already
-              // established, dated and described; the judgment left is which
-              // are worth acting on and how to phrase them. That is a smaller
-              // ask, and the prompt carries the parts that actually matter —
-              // skip an occasion with nothing honest to say, keep a solemn one
-              // solemn, score reach by the audience named for it.
+              // On the same calendar, Pro left `offerText` null on five of
+              // nine occasions; Flash left it null on none, attaching
+              // "Exclusive Vishwakarma Puja Offers" to a craftsmen's blessing
+              // and "Special Eco-Range Discounts Inside" to Gandhi Jayanti.
+              // It also dropped Eid-e-Milad — the nearest occasion on the
+              // calendar, at one day out — while keeping Gandhi Jayanti at
+              // thirty-eight, so the religious observance needing the most care
+              // was the one that went missing.
               //
-              // Worth restating since it is the risk: the restraint is
-              // prompted, not emergent from model size. If output ever starts
-              // turning religious observances into discounts or flattening
-              // regional festivals to nationwide reach, this line is the first
-              // thing to put back.
-              role: 'volume',
+              // Cheaper and roughly twice as fast, and none of that is worth
+              // shipping to businesses whose customers keep these festivals.
+              role: 'orchestrator',
               system:
                 dateGrounding(bucket.market) +
                 `You are a marketing strategist turning confirmed upcoming occasions into content ` +
