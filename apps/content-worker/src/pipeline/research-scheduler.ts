@@ -1,5 +1,5 @@
 import { describeError } from '@bmas/ai';
-import { and, asc, eq, lte, schema } from '@bmas/db';
+import { and, asc, eq, lte, reapAllStalledBrandRuns, schema } from '@bmas/db';
 import { nextResearchAt, QUEUES, RESEARCH_SCHEDULER_INTERVAL_HOURS } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
@@ -132,12 +132,48 @@ async function enqueueForBrand(
  *  One brand failing to enqueue (a bad insert, a Redis blip) is logged and
  *  skipped rather than aborting the tick — the other due brands still deserve
  *  their research this round. */
+/**
+ * Backstop for runs frozen by a worker that died mid-job — see
+ * `reapAllStalledBrandRuns` in @bmas/db for the full reasoning.
+ *
+ * The API already reaps a stalled run when someone reads it, which is what
+ * spares a waiting client its seven-minute spinner. This catches the rest: a
+ * run nobody is watching (the user closed the app) is never read, so it is
+ * never reaped there and would otherwise sit non-terminal indefinitely.
+ *
+ * Nothing depends on this being prompt. Unlike a stalled *pool* run, which
+ * holds its bucket's only active-refresh slot and wedges it, a stalled
+ * per-brand run blocks nothing — the feed reads only `succeeded` runs and
+ * starting another is never gated on one finishing. So a tick interval
+ * measured in hours is the right cadence for what is really bookkeeping.
+ *
+ * Never throws: this is housekeeping attached to the tick, and it must not
+ * cost the tick the brand research it actually exists to enqueue.
+ */
+async function sweepStalledRuns(ctx: WorkerContext, now: Date): Promise<void> {
+  try {
+    const { trend, intelligence } = await reapAllStalledBrandRuns(ctx.db, now);
+    const total = trend.length + intelligence.length;
+    if (total === 0) return;
+    console.warn(
+      `[research-scheduler] reaped ${total} stalled run(s) — ${trend.length} trend, ${intelligence.length} intelligence`,
+    );
+  } catch (error) {
+    console.error(`[research-scheduler] stalled-run sweep failed: ${describeError(error)}`);
+  }
+}
+
 export async function runResearchSchedulerTick(
   ctx: WorkerContext,
   trendQueue: Queue,
   intelligenceQueue: Queue,
 ): Promise<void> {
   const now = new Date();
+
+  // Before the early return below, deliberately: most ticks find no brands
+  // due, and a sweep placed after that check would almost never run.
+  await sweepStalledRuns(ctx, now);
+
   const due = await getDueBrands(ctx, now);
 
   if (due.length === 0) {

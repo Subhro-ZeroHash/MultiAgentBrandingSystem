@@ -1,5 +1,12 @@
 import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { desc, eq, recordFeedbackSignal, schema, type Database } from '@bmas/db';
+import {
+  desc,
+  eq,
+  recordFeedbackSignal,
+  reapStalledTrendResearchRun,
+  schema,
+  type Database,
+} from '@bmas/db';
 import {
   QUEUES,
   type RequestTrendResearchInput,
@@ -76,6 +83,18 @@ export class TrendsService {
    *  near enough rows to need a database-side sort or the raw-SQL
    *  expression index it would take to put one on a jsonb field. */
   async getRun(runId: string, ownerId: string) {
+    // Reap before reading, not after. A run whose worker died mid-job is
+    // frozen non-terminal forever, and the client polls this endpoint every
+    // 1.5s for 420s before giving up with a generic timeout — seven minutes
+    // spent on something knowable now. Reaping first means this same response
+    // already carries `failed` and a real reason.
+    //
+    // Called unconditionally rather than only when the run looks stuck:
+    // `reapStalledTrendResearchRun` only touches a row that is both
+    // non-terminal and past the timeout, so there is no state where this can
+    // harm a healthy run and nothing to decide beforehand.
+    await reapStalledTrendResearchRun(this.db, runId);
+
     const [run] = await this.db
       .select()
       .from(schema.trendResearchRuns)
