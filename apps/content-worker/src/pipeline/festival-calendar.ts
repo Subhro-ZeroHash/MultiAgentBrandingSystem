@@ -502,48 +502,70 @@ export function keepCorroborated(
     .filter((event) => event.results.length > 0);
 }
 
+/**
+ * Corroborates one event, stopping at the first provider that answers.
+ *
+ * Deliberately *not* the fan-out `collectPoolSignals` uses. That one queries
+ * every provider because a topic two of them independently surface is stronger
+ * evidence than either alone — a claim about signal *strength*, which is what
+ * trend discovery is there to judge.
+ *
+ * This is not judging strength. It is a yes/no existence-and-date check, and
+ * two providers agreeing that Raksha Bandhan falls on 28 August does not make
+ * it truer than one saying so. Everything downstream reads either
+ * `results.length > 0`, `results[0]`, or the top three excerpts — all of which
+ * a single provider satisfies.
+ *
+ * Falling back rather than fanning out keeps exactly the reliability the
+ * fan-out bought: an event survives if ANY provider answers, same as before.
+ * It just stops asking once one has. On a twelve-event calendar that halves the
+ * searches, and it front-loads the provider that actually answers — SerpApi
+ * timed out on three of nine events on the first live run while Tavily returned
+ * every time, and those 25-second timeouts were being paid on every event
+ * instead of only when genuinely needed.
+ */
+async function corroborateEvent(
+  ctx: WorkerContext,
+  runId: string,
+  event: CalendarEvent,
+  market: string,
+): Promise<WebSearchResult[]> {
+  const request = buildCalendarVerificationQuery(event, market);
+
+  for (const provider of ctx.ai.configuredWebSearches()) {
+    try {
+      const { value, cost } = await withTimeout(
+        provider.search(request, { referenceId: runId }),
+        SEARCH_TIMEOUT_MS,
+        `calendar verification (${provider.provider}/${event.name})`,
+      );
+      await recordCost(ctx, runId, cost);
+      // An empty result set is an answer, not a failure — but it is not
+      // corroboration either, so fall through to the next provider rather
+      // than concluding the event is not real on one provider's silence.
+      if (value.length) return value;
+    } catch (error) {
+      console.warn(
+        `[festival-calendar] ${provider.provider} could not verify "${event.name}" in run ${runId}, trying the next provider — ${describeError(error)}`,
+      );
+    }
+  }
+  return [];
+}
+
+/** Events are still verified in parallel with each other — it is only the
+ *  providers *within* one event that are now tried in turn. */
 async function verifyCalendarEvents(
   ctx: WorkerContext,
   runId: string,
   market: string,
   events: Array<CalendarEvent & { daysAway: number }>,
 ): Promise<VerifiedCalendarEvent[]> {
-  const providers = ctx.ai.configuredWebSearches();
   const resultsByEvent = new Map<string, WebSearchResult[]>();
 
-  // One event failing must not sink the others, and one provider failing must
-  // not sink an event another provider could still corroborate — the same
-  // allSettled shape `collectPoolSignals` uses, for the same reason.
   await Promise.all(
     events.map(async (event) => {
-      const request = buildCalendarVerificationQuery(event, market);
-      const settled = await Promise.allSettled(
-        providers.map(async (provider) => {
-          const { value, cost } = await withTimeout(
-            provider.search(request, { referenceId: runId }),
-            SEARCH_TIMEOUT_MS,
-            `calendar verification (${provider.provider}/${event.name})`,
-          );
-          await recordCost(ctx, runId, cost);
-          return value;
-        }),
-      );
-
-      const results: WebSearchResult[] = [];
-      const seen = new Set<string>();
-      for (const outcome of settled) {
-        if (outcome.status === 'rejected') {
-          console.warn(
-            `[festival-calendar] verification search failed for "${event.name}" in run ${runId}: ${describeError(outcome.reason)}`,
-          );
-          continue;
-        }
-        for (const result of outcome.value) {
-          if (seen.has(result.url)) continue;
-          seen.add(result.url);
-          results.push(result);
-        }
-      }
+      const results = await corroborateEvent(ctx, runId, event, market);
       if (results.length) resultsByEvent.set(event.name, results);
     }),
   );
