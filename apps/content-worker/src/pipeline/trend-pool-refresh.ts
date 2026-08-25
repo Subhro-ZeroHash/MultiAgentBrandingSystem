@@ -572,7 +572,24 @@ async function synthesizeCalendarPass(
         withTimeout(
           ctx.ai.llm().generateJson<{ items: TrendPoolItemDraft[] }>(
             {
-              role: 'orchestrator',
+              // `volume`, not `orchestrator` — the one place the two-pass split
+              // pays off beyond fitting the deadline.
+              //
+              // The search pass has to decide what fourteen unrelated results
+              // even mean together, which is open-ended and worth a frontier
+              // model. This pass is handed occasions that are already
+              // established, dated and described; the judgment left is which
+              // are worth acting on and how to phrase them. That is a smaller
+              // ask, and the prompt carries the parts that actually matter —
+              // skip an occasion with nothing honest to say, keep a solemn one
+              // solemn, score reach by the audience named for it.
+              //
+              // Worth restating since it is the risk: the restraint is
+              // prompted, not emergent from model size. If output ever starts
+              // turning religious observances into discounts or flattening
+              // regional festivals to nationwide reach, this line is the first
+              // thing to put back.
+              role: 'volume',
               system:
                 dateGrounding(bucket.market) +
                 `You are a marketing strategist turning confirmed upcoming occasions into content ` +
