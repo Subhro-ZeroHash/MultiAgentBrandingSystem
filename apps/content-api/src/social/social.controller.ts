@@ -139,4 +139,29 @@ export class SocialController {
       body.caption,
     );
   }
+
+  /** Video's counterpart of `postToInstagram` — same shape, `videoUrl` in
+   *  place of `imageUrl`. */
+  @UseGuards(JwtAuthGuard)
+  @Post('post-reel')
+  async postReelToInstagram(
+    @Body() body: { accountId: string; assetId?: string; videoUrl?: string; caption: string },
+    @Request() req: AuthenticatedRequest,
+  ) {
+    if (!body.accountId || !body.caption) {
+      throw new BadRequestException('accountId and caption are required');
+    }
+    if (!body.assetId && !body.videoUrl) {
+      throw new BadRequestException('assetId (preferred) or videoUrl is required');
+    }
+    return this.social.postReelToInstagram(
+      body.accountId,
+      req.user.id,
+      {
+        ...(body.assetId ? { assetId: body.assetId } : {}),
+        ...(body.videoUrl ? { videoUrl: body.videoUrl } : {}),
+      },
+      body.caption,
+    );
+  }
 }

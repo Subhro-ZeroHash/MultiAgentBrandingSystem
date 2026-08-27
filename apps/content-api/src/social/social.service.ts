@@ -67,6 +67,14 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 const CONTAINER_POLL_ATTEMPTS = 10;
 const CONTAINER_POLL_INTERVAL_MS = 2000;
 
+/** Video's own ceiling, separate from the image one above: transcoding a clip
+ *  routinely takes past the 20 seconds an image container needs, so reusing
+ *  the same numbers would abandon a Reel that was still genuinely processing.
+ *  120 seconds total is generous for the short (<=20s) clips this pipeline
+ *  produces without leaving a failed request hanging indefinitely. */
+const REEL_CONTAINER_POLL_ATTEMPTS = 40;
+const REEL_CONTAINER_POLL_INTERVAL_MS = 3000;
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The metric columns a performance roll-up reads; narrower than the full row
@@ -684,6 +692,87 @@ export class SocialService {
   }
 
   /**
+   * Video's counterpart to `publicImageUrlForAsset` — same tunnel-URL
+   * necessity, same ownership join, joined through `videoGenerationJobs`
+   * instead of `generationJobs`. Requested as `raw`: there is no Reels
+   * equivalent of the `ig` letterbox rendition, since the request already
+   * asked LTX to render at a Reels-legal size rather than whatever shape a
+   * stored image happened to be.
+   */
+  private async publicVideoUrlForAsset(assetId: string, userId: string): Promise<string> {
+    const env = loadEnv();
+    if (!env.PUBLIC_ASSET_BASE_URL) {
+      throw new BadRequestException(
+        'Publishing needs PUBLIC_ASSET_BASE_URL set to a public https origin (your tunnel), because Instagram downloads the video from its own servers.',
+      );
+    }
+    if (!env.ENCRYPTION_KEY) {
+      throw new BadRequestException('Publishing needs ENCRYPTION_KEY set to sign the video link.');
+    }
+
+    const rows = await this.db
+      .select({ id: schema.videoAssets.id, ownerId: schema.brands.ownerId })
+      .from(schema.videoAssets)
+      .innerJoin(
+        schema.videoGenerationJobs,
+        eq(schema.videoAssets.jobId, schema.videoGenerationJobs.id),
+      )
+      .innerJoin(schema.brands, eq(schema.videoGenerationJobs.brandId, schema.brands.id))
+      .where(eq(schema.videoAssets.id, assetId))
+      .limit(1);
+
+    if (!rows[0]) throw new NotFoundException('Video asset not found');
+    if (rows[0].ownerId !== userId) {
+      throw new ForbiddenException('This asset belongs to another account.');
+    }
+
+    const link = buildAssetLink(env.PUBLIC_ASSET_BASE_URL, assetId, env.ENCRYPTION_KEY, {
+      variant: 'raw',
+      // A video is a multi-hundred-KB-to-multi-MB download and Meta's own
+      // Reels container processing routinely runs past a minute (see
+      // REEL_CONTAINER_POLL_ATTEMPTS below) — the default 15-minute TTL an
+      // image link uses would be needlessly short here if it were shorter,
+      // so the same constant is reused rather than picking a new number.
+    }).url;
+
+    await this.assertVideoUrlReachable(link, env.PUBLIC_ASSET_BASE_URL);
+    return link;
+  }
+
+  /** Video counterpart of `assertImageUrlReachable` — same stale-tunnel
+   *  diagnosis, checked against `video/` instead of `image/`. */
+  private async assertVideoUrlReachable(url: string, baseUrl: string): Promise<void> {
+    const staleTunnelHint =
+      `Instagram could not have downloaded the video: ${baseUrl} is not serving it. ` +
+      'That origin is almost certainly a stale tunnel — the free Cloudflare URL changes ' +
+      'every time `pnpm tunnel` restarts. Restart the tunnel and set both ' +
+      'PUBLIC_ASSET_BASE_URL and INSTAGRAM_OAUTH_REDIRECT_URI to the new hostname.';
+
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    } catch {
+      throw new BadRequestException(staleTunnelHint);
+    }
+
+    void response.body?.cancel();
+
+    if (!response.ok) {
+      throw new BadRequestException(
+        `${staleTunnelHint} (it answered ${response.status} for the signed video link)`,
+      );
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.startsWith('video/')) {
+      throw new BadRequestException(
+        `${baseUrl} answered with '${contentType || 'no content-type'}' instead of a video for ` +
+          'the signed link. If that origin is a tunnel, it is pointing somewhere other than the web app.',
+      );
+    }
+  }
+
+  /**
    * Confirms the image URL actually serves an image before Meta is asked to
    * download it.
    *
@@ -833,6 +922,99 @@ export class SocialService {
     );
 
     return { postId: published.id, success: true };
+  }
+
+  /**
+   * Publishes a generated video as a Reel. Same two-step container/publish
+   * shape `postToInstagram` uses for a photo — Graph API models every media
+   * type the same way — with three differences: `media_type: 'REELS'` and
+   * `video_url` instead of a bare image post, and its own, much longer
+   * container-ready poll (`awaitReelContainerReady`) rather than the
+   * image-tuned one, since Meta transcodes video server-side and that
+   * routinely takes past the twenty seconds an image container needs.
+   */
+  async postReelToInstagram(
+    accountId: string,
+    userId: string,
+    source: { assetId?: string; videoUrl?: string },
+    caption: string,
+  ): Promise<{ postId: string; success: boolean }> {
+    const account = await this.getAccount(accountId, userId);
+
+    const videoUrl = source.assetId
+      ? await this.publicVideoUrlForAsset(source.assetId, userId)
+      : source.videoUrl;
+
+    if (!videoUrl) {
+      throw new BadRequestException('assetId or videoUrl is required');
+    }
+
+    if (!account.igBusinessId) {
+      throw new BadRequestException('This connection has no Instagram account id; reconnect it.');
+    }
+
+    if (isTokenExpired(account.tokenExpiresAt)) {
+      await this.db
+        .update(schema.socialAccounts)
+        .set({ status: 'token_expired' as const })
+        .where(eq(schema.socialAccounts.id, account.id));
+      throw new BadRequestException(
+        `The Instagram connection for ${account.displayName} has expired. Reconnect the account and try again.`,
+      );
+    }
+
+    if (
+      !/^https?:\/\//i.test(videoUrl) ||
+      /localhost|127\.0\.0\.1|192\.168\.|10\.\d/i.test(videoUrl)
+    ) {
+      throw new BadRequestException(
+        'Instagram downloads the video from this URL, so it must be publicly reachable. A localhost or LAN address will not work.',
+      );
+    }
+
+    const token = this.getDecryptedToken(account);
+
+    const container = await this.graphPost<{ id: string }>(
+      `${account.igBusinessId}/media`,
+      { media_type: 'REELS', video_url: videoUrl, caption, access_token: token },
+      'stage the video for publishing',
+    );
+
+    await this.awaitReelContainerReady(container.id, token);
+
+    const published = await this.graphPost<{ id: string }>(
+      `${account.igBusinessId}/media_publish`,
+      { creation_id: container.id, access_token: token },
+      'publish the reel',
+    );
+
+    return { postId: published.id, success: true };
+  }
+
+  /** Video's counterpart of `awaitContainerReady` — same polling shape, the
+   *  longer ceiling `REEL_CONTAINER_POLL_ATTEMPTS`/`_INTERVAL_MS` exist for. */
+  private async awaitReelContainerReady(containerId: string, token: string): Promise<void> {
+    for (let attempt = 0; attempt < REEL_CONTAINER_POLL_ATTEMPTS; attempt++) {
+      const { status_code: status } = await this.graphGet<{ status_code?: string }>(
+        containerId,
+        { fields: 'status_code', access_token: token },
+        'check whether the video finished processing',
+      );
+
+      if (status === 'FINISHED') return;
+      if (status === 'ERROR' || status === 'EXPIRED') {
+        throw new BadRequestException(
+          `Instagram could not process the video (${status.toLowerCase()}). Reels need an MP4 or MOV, ` +
+            'under 1GB, between 3 and 90 seconds, with an aspect ratio between 0.01:1 and 10:1.',
+        );
+      }
+
+      await sleep(REEL_CONTAINER_POLL_INTERVAL_MS);
+    }
+
+    throw new BadRequestException(
+      `Instagram is still processing the video after ${(REEL_CONTAINER_POLL_ATTEMPTS * REEL_CONTAINER_POLL_INTERVAL_MS) / 1000} seconds. Try posting again in a moment.`,
+    );
   }
 
   /**

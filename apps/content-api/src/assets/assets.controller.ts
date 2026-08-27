@@ -65,7 +65,19 @@ export class AssetsController {
       .where(eq(schema.creativeAssets.id, assetId))
       .limit(1);
 
-    const storageKey = rows[0]?.storageKey;
+    // A video asset's id never collides with an image's — both are
+    // independently-generated UUIDs — so trying the image table first and
+    // falling back to video costs one extra query only on the video path,
+    // and never produces a wrong match.
+    const storageKey =
+      rows[0]?.storageKey ??
+      (
+        await this.db
+          .select({ storageKey: schema.videoAssets.storageKey })
+          .from(schema.videoAssets)
+          .where(eq(schema.videoAssets.id, assetId))
+          .limit(1)
+      )[0]?.storageKey;
     if (!storageKey) throw new NotFoundException('Asset not found');
 
     const object = await this.assetUrls.read(storageKey);
@@ -74,7 +86,11 @@ export class AssetsController {
     // bytes the signature no longer authorises.
     res.setHeader('Cache-Control', 'private, max-age=60');
 
-    if (variant === 'ig') {
+    // The `ig` rendition letterboxes an image into Instagram's aspect-ratio
+    // floor — meaningless for a video the request already asked LTX to render
+    // at a Reels-legal size, so a video is always served `raw` regardless of
+    // what the link requested.
+    if (variant === 'ig' && object.contentType.startsWith('image/')) {
       // Buffered rather than streamed: the fit depends on the source
       // dimensions, which are only known once the metadata has been read.
       const chunks: Buffer[] = [];
