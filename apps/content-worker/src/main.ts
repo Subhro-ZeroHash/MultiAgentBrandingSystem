@@ -11,11 +11,13 @@ import {
   contentPlanDirectiveJobSchema,
   contentPlanItemReplaceJobSchema,
   contentPlanSynthesisJobSchema,
+  videoGenerationJobSchema,
 } from '@bmas/shared';
 import { Queue, UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
 import { runAssetEdit } from './pipeline/asset-edit.js';
 import { runGeneration } from './pipeline/generate.js';
+import { runVideoGeneration } from './pipeline/generate-video.js';
 import {
   runInstagramInsightsSync,
   scheduleInstagramInsightsSyncTick,
@@ -94,6 +96,38 @@ generationWorker.on('failed', (job, error) => {
       : ` — retrying, ${max - attempt} left`;
   console.error(
     `[content:generation] job ${job?.id} attempt ${attempt}/${max} failed${outcome}: ${describeError(error)}`,
+  );
+});
+
+/**
+ * Video's own worker — same shape as `generationWorker` above, separate
+ * queue. Kept apart from image generation rather than merged into the same
+ * queue behind a media-type field: the two pipelines share almost nothing
+ * (see generate-video.ts's header), and a video job stuck behind a burst of
+ * image jobs (or vice versa) has no reason to wait on the other's
+ * concurrency budget.
+ */
+const videoGenerationWorker = new Worker(
+  QUEUES.videoGeneration,
+  async (job) =>
+    runVideoGeneration(ctx, videoGenerationJobSchema.parse(job.data), {
+      attempt: job.attemptsStarted || job.attemptsMade + 1,
+      maxAttempts: job.opts.attempts ?? 1,
+    }),
+  { connection: ctx.redis, concurrency: ctx.concurrency },
+);
+
+videoGenerationWorker.on('failed', (job, error) => {
+  const attempt = job?.attemptsMade ?? 0;
+  const max = job?.opts.attempts ?? 1;
+  const abandoned = error instanceof UnrecoverableError || error?.name === 'UnrecoverableError';
+  const outcome = abandoned
+    ? ' (final — not retryable)'
+    : attempt >= max
+      ? ' (final)'
+      : ` — retrying, ${max - attempt} left`;
+  console.error(
+    `[content:video] job ${job?.id} attempt ${attempt}/${max} failed${outcome}: ${describeError(error)}`,
   );
 });
 
@@ -328,6 +362,7 @@ async function shutdown(signal: string): Promise<void> {
     // Waits for in-flight generations so a deploy never abandons a paid job.
     await Promise.all([
       generationWorker.close(),
+      videoGenerationWorker.close(),
       scheduledPostPublishWorker.close(),
       trendResearchWorker.close(),
       intelligenceResearchWorker.close(),

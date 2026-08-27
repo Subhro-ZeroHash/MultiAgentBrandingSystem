@@ -12,6 +12,7 @@ import { poolRunScopeSchema } from './content/research-pool.js';
 export const QUEUES = {
   contentGeneration: 'content-generation',
   contentEdit: 'content-edit',
+  videoGeneration: 'video-generation',
   scheduledPostPublish: 'scheduled-post-publish',
   trendResearch: 'trend-research',
   intelligenceResearch: 'intelligence-research',
@@ -55,6 +56,15 @@ export const contentGenerationJobSchema = z.object({
   idempotencyKey: z.string(),
 });
 export type ContentGenerationJob = z.infer<typeof contentGenerationJobSchema>;
+
+/** Mirrors `contentGenerationJobSchema` exactly — same three fields mean the
+ *  same thing for a video job as for an image one. */
+export const videoGenerationJobSchema = z.object({
+  jobId: entityIdSchema,
+  brandId: entityIdSchema,
+  idempotencyKey: z.string(),
+});
+export type VideoGenerationJob = z.infer<typeof videoGenerationJobSchema>;
 
 /**
  * Draft or redraft a brand's marketing plan.

@@ -248,6 +248,88 @@ export const assetEdits = content.table(
   ],
 );
 
+/**
+ * Video generation's own job/asset pair — deliberately separate tables from
+ * `generation_jobs`/`creative_assets` rather than a `mediaType` discriminator
+ * bolted onto them. The two media types share almost nothing structurally:
+ * an image job carries `campaignType`/`styleTemplate`/`outputFormat` and fans
+ * out into diverse-mode variants; a video job has none of that; a video asset
+ * has `durationSeconds` where an image asset has none, and no vision-QA
+ * readback shape (there is no video-QA equivalent yet). Reusing the image
+ * tables would mean every video row carrying a pile of nullable image-only
+ * columns and vice versa. New capability, new tables — the existing ones stay
+ * exactly as stable as they were.
+ *
+ * Reuses `jobStatus` rather than declaring an identical enum: it is already
+ * exactly queued/running/succeeded/failed/cancelled, and a real second
+ * definition would just be the same five strings duplicated for no reason.
+ */
+export const videoGenerationJobs = content.table(
+  'video_generation_jobs',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    status: jobStatus('status').notNull().default('queued'),
+    stage: text('stage'),
+    /** The validated VideoGenerationRequest, stored verbatim so a job can be
+     *  replayed — same reasoning as `generationJobs.request`. */
+    request: jsonb('request').$type<Record<string, unknown>>().notNull(),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('video_generation_jobs_brand_created_idx').on(t.brandId, t.createdAt),
+    index('video_generation_jobs_status_idx').on(t.status),
+  ],
+);
+
+export const videoAssets = content.table(
+  'video_assets',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => videoGenerationJobs.id, { onDelete: 'cascade' }),
+    storageKey: text('storage_key').notNull(),
+    /** Null until the pipeline extracts one — a video needs its own thumbnail
+     *  frame the way an image asset's thumbnail is a resize of itself; a video
+     *  needs an actual decode step to produce one. */
+    thumbnailStorageKey: text('thumbnail_storage_key'),
+    width: integer('width').notNull(),
+    height: integer('height').notNull(),
+    durationSeconds: real('duration_seconds').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    /** Set when the user picks this take. Mirrors `creativeAssets.isSelected`
+     *  — kept even though nothing writes multiple takes per job yet, since a
+     *  bare boolean costs nothing to have ready for when regeneration/variant
+     *  fan-out reaches video the way it already has for images. */
+    isSelected: boolean('is_selected').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('video_assets_job_idx').on(t.jobId)],
+);
+
+export const videoGenerationJobsRelations = relations(videoGenerationJobs, ({ one, many }) => ({
+  brand: one(brands, { fields: [videoGenerationJobs.brandId], references: [brands.id] }),
+  product: one(products, { fields: [videoGenerationJobs.productId], references: [products.id] }),
+  assets: many(videoAssets),
+}));
+
+export const videoAssetsRelations = relations(videoAssets, ({ one }) => ({
+  job: one(videoGenerationJobs, { fields: [videoAssets.jobId], references: [videoGenerationJobs.id] }),
+}));
+
 export const copyPacks = content.table(
   'copy_packs',
   {

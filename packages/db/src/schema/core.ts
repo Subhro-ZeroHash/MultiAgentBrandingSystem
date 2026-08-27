@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgSchema,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -101,6 +102,9 @@ export const costEvents = core.table(
     outputTokens: integer('output_tokens'),
     cachedInputTokens: integer('cached_input_tokens'),
     imageCount: integer('image_count'),
+    /** Set instead of `imageCount` by a video provider — mirrors
+     *  `CostEvent.videoSeconds` in @bmas/shared. */
+    videoSeconds: real('video_seconds'),
     /** Micro-USD (1e-6) so the ledger stays in integers. */
     costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }).notNull(),
     latencyMs: integer('latency_ms'),

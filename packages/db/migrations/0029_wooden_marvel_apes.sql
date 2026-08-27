@@ -1,0 +1,1 @@
+ALTER TABLE "core"."cost_events" ADD COLUMN "video_seconds" real;

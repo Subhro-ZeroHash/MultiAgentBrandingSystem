@@ -33,6 +33,12 @@ const envSchema = z.object({
   /** Serves text/JSON/vision. `gemini` needs no Anthropic credential. */
   LLM_PROVIDER: z.enum(['anthropic', 'gemini']).default('gemini'),
 
+  /** Video generation. Declared here purely for startup validation and the
+   *  "three places" rule — createAiRegistryFromEnv reads process.env
+   *  directly, same as every other provider key in this schema. */
+  LTX_API_KEY: optionalText(),
+  VIDEO_PROVIDER_PRIMARY: z.enum(['ltx', 'stub']).default('stub'),
+
   /** Real-time web search for the Trend Research Agent. Declared here purely
    *  for startup validation and the "three places" rule (CLAUDE.md) —
    *  createAiRegistryFromEnv reads process.env directly, the same as every

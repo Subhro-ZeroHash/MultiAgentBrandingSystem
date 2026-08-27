@@ -10,6 +10,7 @@ import { loadEnv } from '../config/env.js';
 export const DATABASE = Symbol('DATABASE');
 export const AI_REGISTRY = Symbol('AI_REGISTRY');
 export const GENERATION_QUEUE = Symbol('GENERATION_QUEUE');
+export const VIDEO_GENERATION_QUEUE = Symbol('VIDEO_GENERATION_QUEUE');
 export const SCHEDULED_POST_PUBLISH_QUEUE = Symbol('SCHEDULED_POST_PUBLISH_QUEUE');
 export const TREND_RESEARCH_QUEUE = Symbol('TREND_RESEARCH_QUEUE');
 export const INTELLIGENCE_RESEARCH_QUEUE = Symbol('INTELLIGENCE_RESEARCH_QUEUE');
@@ -83,6 +84,10 @@ function redisConnection() {
       useFactory: () => new Queue(QUEUES.contentGeneration, { connection: redisConnection() }),
     },
     {
+      provide: VIDEO_GENERATION_QUEUE,
+      useFactory: () => new Queue(QUEUES.videoGeneration, { connection: redisConnection() }),
+    },
+    {
       provide: SCHEDULED_POST_PUBLISH_QUEUE,
       useFactory: () => new Queue(QUEUES.scheduledPostPublish, { connection: redisConnection() }),
     },
@@ -120,6 +125,7 @@ function redisConnection() {
     DATABASE,
     AI_REGISTRY,
     GENERATION_QUEUE,
+    VIDEO_GENERATION_QUEUE,
     SCHEDULED_POST_PUBLISH_QUEUE,
     TREND_RESEARCH_QUEUE,
     INTELLIGENCE_RESEARCH_QUEUE,
@@ -136,6 +142,7 @@ export class CoreModule implements OnApplicationShutdown {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
+    @Inject(VIDEO_GENERATION_QUEUE) private readonly videoGenerationQueue: Queue,
     @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly scheduledPostPublishQueue: Queue,
     @Inject(TREND_RESEARCH_QUEUE) private readonly trendResearchQueue: Queue,
     @Inject(INTELLIGENCE_RESEARCH_QUEUE) private readonly intelligenceResearchQueue: Queue,
@@ -150,6 +157,7 @@ export class CoreModule implements OnApplicationShutdown {
     await Promise.allSettled([
       closeDatabase(this.db),
       this.generationQueue.close(),
+      this.videoGenerationQueue.close(),
       this.scheduledPostPublishQueue.close(),
       this.trendResearchQueue.close(),
       this.intelligenceResearchQueue.close(),

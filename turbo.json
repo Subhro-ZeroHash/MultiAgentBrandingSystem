@@ -18,6 +18,10 @@
     "TAVILY_API_KEY",
     "SERPAPI_KEY",
     "WEB_SEARCH_PROVIDER",
+    "LTX_API_KEY",
+    "LTX_BASE_URL",
+    "VIDEO_PROVIDER_PRIMARY",
+    "VIDEO_MODEL_*",
     "GEO_*",
     "S3_*",
     "R2_*"
