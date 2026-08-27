@@ -152,11 +152,11 @@ async function enqueueForBrand(
  */
 async function sweepStalledRuns(ctx: WorkerContext, now: Date): Promise<void> {
   try {
-    const { trend, intelligence } = await reapAllStalledBrandRuns(ctx.db, now);
-    const total = trend.length + intelligence.length;
+    const { trend, intelligence, video } = await reapAllStalledBrandRuns(ctx.db, now);
+    const total = trend.length + intelligence.length + video.length;
     if (total === 0) return;
     console.warn(
-      `[research-scheduler] reaped ${total} stalled run(s) — ${trend.length} trend, ${intelligence.length} intelligence`,
+      `[research-scheduler] reaped ${total} stalled run(s) — ${trend.length} trend, ${intelligence.length} intelligence, ${video.length} video`,
     );
   } catch (error) {
     console.error(`[research-scheduler] stalled-run sweep failed: ${describeError(error)}`);

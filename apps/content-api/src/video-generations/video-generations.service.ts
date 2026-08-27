@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { eq, schema, type Database } from '@bmas/db';
+import { eq, reapStalledVideoGenerationJob, schema, type Database } from '@bmas/db';
 import { QUEUES, type VideoGenerationRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
@@ -90,6 +90,14 @@ export class VideoGenerationsService {
   }
 
   async findOne(jobId: string, ownerId: string) {
+    // See TrendsService.getRun — same reasoning: a run whose worker died
+    // mid-job is frozen non-terminal forever otherwise, and the mobile client
+    // polls this every 1.5s for up to 420s before giving up with a generic
+    // timeout. Reaping first means this same response already carries
+    // 'failed' and a real reason. Safe unconditionally — the reaper only
+    // touches a row that is both non-terminal and past its timeout.
+    await reapStalledVideoGenerationJob(this.db, jobId);
+
     const [job] = await this.db
       .select()
       .from(schema.videoGenerationJobs)

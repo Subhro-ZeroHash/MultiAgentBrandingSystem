@@ -113,6 +113,31 @@ export async function reapStalledIntelligenceRun(
   return reaped.length > 0;
 }
 
+/** Video's counterpart — added after the other two, when video_generation_jobs
+ *  didn't exist yet, for the same reason and against the same job status
+ *  enum every other job table in `content` shares. */
+export async function reapStalledVideoGenerationJob(
+  db: Database,
+  jobId: string,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const reaped = await db
+    .update(schema.videoGenerationJobs)
+    .set({ status: 'failed', error: STALLED_RUN_ERROR, finishedAt: now })
+    .where(
+      and(
+        eq(schema.videoGenerationJobs.id, jobId),
+        or(
+          eq(schema.videoGenerationJobs.status, 'queued'),
+          eq(schema.videoGenerationJobs.status, 'running'),
+        ),
+        lt(schema.videoGenerationJobs.createdAt, stalledCutoff(now)),
+      ),
+    )
+    .returning({ id: schema.videoGenerationJobs.id });
+  return reaped.length > 0;
+}
+
 /**
  * Sweeps every stalled per-brand run, whether or not anyone is reading it.
  *
@@ -124,7 +149,7 @@ export async function reapStalledIntelligenceRun(
 export async function reapAllStalledBrandRuns(
   db: Database,
   now: Date = new Date(),
-): Promise<{ trend: string[]; intelligence: string[] }> {
+): Promise<{ trend: string[]; intelligence: string[]; video: string[] }> {
   const cutoff = stalledCutoff(now);
 
   const trend = await db
@@ -155,8 +180,23 @@ export async function reapAllStalledBrandRuns(
     )
     .returning({ id: schema.intelligenceRuns.id });
 
+  const video = await db
+    .update(schema.videoGenerationJobs)
+    .set({ status: 'failed', error: STALLED_RUN_ERROR, finishedAt: now })
+    .where(
+      and(
+        or(
+          eq(schema.videoGenerationJobs.status, 'queued'),
+          eq(schema.videoGenerationJobs.status, 'running'),
+        ),
+        lt(schema.videoGenerationJobs.createdAt, cutoff),
+      ),
+    )
+    .returning({ id: schema.videoGenerationJobs.id });
+
   return {
     trend: trend.map((row) => row.id),
     intelligence: intelligence.map((row) => row.id),
+    video: video.map((row) => row.id),
   };
 }
