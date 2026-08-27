@@ -1,5 +1,8 @@
+import type { Brand } from '@bmas/db';
+import type { VideoGenerationRequest } from '@bmas/shared';
 import { describe, expect, it } from 'vitest';
-import { validateVideo } from './generate-video.js';
+import type { WorkerContext } from '../context.js';
+import { composeVideoBrief, validateVideo } from './generate-video.js';
 
 /** A minimal, real MP4 header — 'ftyp' at byte offset 4, same as any real
  *  ISO-BMFF file, followed by padding so it clears the size floor. */
@@ -36,5 +39,105 @@ describe('validateVideo', () => {
     // Providers report actual rendered duration, which can round up slightly
     // past an integer request — this must not read as a provider bug.
     expect(() => validateVideo(validMp4, 6.4, 6)).not.toThrow();
+  });
+});
+
+const brand = {
+  name: 'Zudio',
+  category: 'Mass Market Retail / Multi-Category',
+  tone: ['friendly'],
+} as unknown as Brand;
+
+const baseRequest = {
+  brandId: 'brand-1',
+  productId: 'product-1',
+  campaignType: 'generic',
+  styleTemplate: 'studio_white',
+} as unknown as VideoGenerationRequest;
+
+/** Only what composeVideoBrief actually reads: one product row off `productId`.
+ *  Same "fake the one query, not the database" approach stages.test.ts uses
+ *  for composeBrief. */
+function fakeCtx(product: { name: string; description: string | null; sellingPoints?: string[] } | null) {
+  const builder = {
+    from: () => builder,
+    where: () => builder,
+    limit: () => Promise.resolve(product ? [{ sellingPoints: [], ...product }] : []),
+  };
+  return { db: { select: () => builder } } as unknown as WorkerContext;
+}
+
+describe('composeVideoBrief', () => {
+  it('names the product and folds in its description', async () => {
+    const prompt = await composeVideoBrief(
+      fakeCtx({ name: 'Running Shoes', description: 'Lightweight daily trainer' }),
+      brand,
+      baseRequest,
+    );
+    expect(prompt).toContain('Running Shoes');
+    expect(prompt).toContain('Lightweight daily trainer');
+  });
+
+  it('includes selling points when the product has them', async () => {
+    const prompt = await composeVideoBrief(
+      fakeCtx({ name: 'Shoes', description: null, sellingPoints: ['Breathable mesh', 'Recycled sole'] }),
+      brand,
+      baseRequest,
+    );
+    expect(prompt).toContain('Breathable mesh');
+    expect(prompt).toContain('Recycled sole');
+  });
+
+  it('omits the selling-points line entirely when there are none', async () => {
+    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, baseRequest);
+    expect(prompt).not.toContain('Key selling points');
+  });
+
+  it("includes the chosen style template's art direction", async () => {
+    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, {
+      ...baseRequest,
+      styleTemplate: 'neon_gaming',
+    });
+    expect(prompt).toMatch(/neon/i);
+  });
+
+  it('states the campaign intent for the chosen campaign type', async () => {
+    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, {
+      ...baseRequest,
+      campaignType: 'festival',
+    });
+    expect(prompt).toMatch(/festival campaign/i);
+  });
+
+  /** The same fencing composeBrief gives brand.category — a mass-market
+   *  retailer's video for one specific product must not turn into an
+   *  unrelated-merchandise showcase. */
+  it("fences the brand's category as tone-only, not subject matter", async () => {
+    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, baseRequest);
+    expect(prompt).toContain(brand.category);
+    expect(prompt).toMatch(/only to judge tone/i);
+  });
+
+  it('folds in the offer and headline as mood, not as text to render', async () => {
+    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, {
+      ...baseRequest,
+      headlineText: 'Big Sale',
+      offerText: '30% off',
+    });
+    expect(prompt).toContain('Big Sale');
+    expect(prompt).toContain('30% off');
+    expect(prompt).toMatch(/not on-screen text|not displaying it as text/);
+  });
+
+  it('carries extraInstructions through verbatim when given', async () => {
+    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, {
+      ...baseRequest,
+      extraInstructions: 'Set against a rainy monsoon backdrop',
+    });
+    expect(prompt).toContain('Set against a rainy monsoon backdrop');
+  });
+
+  it('throws when the product does not exist', async () => {
+    await expect(composeVideoBrief(fakeCtx(null), brand, baseRequest)).rejects.toThrow(/not found/);
   });
 });

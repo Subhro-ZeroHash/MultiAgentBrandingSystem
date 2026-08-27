@@ -1,32 +1,41 @@
 import { z } from 'zod';
+import { campaignTypeSchema, styleTemplateSchema } from './creative.js';
 import { entityIdSchema } from '../common.js';
 
 /**
  * What a caller submits to generate a video.
  *
- * Deliberately not `creativeRequestSchema` with a `mediaType` flag: video has
- * none of the image request's vocabulary (`campaignType`, `styleTemplate`,
- * `outputFormat`, legible on-image text) and forcing it through that shape
- * would mean every video request carrying fields that mean nothing to it.
+ * Deliberately the same structured vocabulary `creativeRequestSchema` uses —
+ * `campaignType`, `styleTemplate`, `headlineText`/`offerText`/`ctaText`,
+ * `extraInstructions` — rather than a raw prompt the client writes itself.
+ * The app never shows a "describe your video" box: a video is what a Story/
+ * Reel selection on the same product-and-style form the image path already
+ * uses produces, so the worker needs the same structured intake to compose a
+ * real brief from (see `composeVideoBrief` in generate-video.ts, the video
+ * counterpart of `composeBrief`). `outputFormat` itself isn't part of it —
+ * every video is Reel-shaped by construction, there is no second format to
+ * choose between the way images have four.
  *
- * `productId` is optional, unlike the image request's required one — a video
- * needs no product to condition on; text-to-video is a complete request on
- * its own, and a product's primary photo becomes the first frame only when
- * one is given.
+ * `productId` is required, unlike an early version of this schema: a video
+ * always comes from the same "create a product, then generate" flow images
+ * do now, so there is always one to condition on and to read
+ * name/description/sellingPoints from.
  */
 export const videoGenerationRequestSchema = z.object({
   brandId: entityIdSchema,
-  /** When set, the product's primary photo becomes the video's first frame
-   *  (LTX's `image_uri`) — the video animates from an actual product shot
-   *  instead of one the model invents. */
-  productId: entityIdSchema.optional(),
-  prompt: z.string().min(1).max(1000),
+  productId: entityIdSchema,
+  campaignType: campaignTypeSchema,
+  styleTemplate: styleTemplateSchema,
+  headlineText: z.string().max(80).optional(),
+  offerText: z.string().max(40).optional(),
+  ctaText: z.string().max(40).optional(),
+  /** FR-2.4-equivalent escape hatch, same role it plays for images. */
+  extraInstructions: z.string().max(500).optional(),
   /** LTX's own ceiling. Defaults to 6s — long enough to read as a clip
    *  rather than a stinger, short enough to stay cheap while this is new. */
   durationSeconds: z.number().int().min(1).max(20).default(6),
-  /** Defaults to a vertical Reel/Story frame — the dominant shape for short
-   *  marketing video, and the one dimension pair this product already has an
-   *  established meaning for (`OUTPUT_FORMAT_DIMENSIONS.story_reel_cover`). */
+  /** A vertical Reel/Story frame — the one shape a video from this pipeline
+   *  is ever asked for, matching `OUTPUT_FORMAT_DIMENSIONS.story_reel_cover`. */
   width: z.number().int().positive().default(1080),
   height: z.number().int().positive().default(1920),
 });

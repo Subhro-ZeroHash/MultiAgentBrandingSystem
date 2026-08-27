@@ -164,8 +164,11 @@ export interface Brief {
 }
 
 /** Art direction per template (FR-2.3). Prose, not keywords: image models
- *  follow described scenes far more reliably than comma-separated tags. */
-const STYLE_DIRECTION: Record<StyleTemplate, string> = {
+ *  follow described scenes far more reliably than comma-separated tags.
+ *  Exported: generate-video.ts's composeVideoBrief reuses these verbatim —
+ *  the same style choice should read as the same style, whichever medium a
+ *  format maps to. */
+export const STYLE_DIRECTION: Record<StyleTemplate, string> = {
   festive:
     'Warm festive Indian celebration. Soft diya glow, marigold and rangoli motifs framing the edges, ' +
     'rich saturated colour, gentle golden bokeh in the background.',
@@ -216,14 +219,14 @@ const TONE_DIRECTION: Record<ToneOfVoice, string> = {
 /** `brand.tone` can hold more than one register at once (Task 7); this blends
  *  them into one direction. Falls back to `friendly` rather than emitting
  *  "undefined" if a row somehow holds a value outside the known set. */
-function toneDirection(tone: readonly string[]): string {
+export function toneDirection(tone: readonly string[]): string {
   const known = tone
     .map((value) => TONE_DIRECTION[value as ToneOfVoice])
     .filter((direction): direction is string => Boolean(direction));
   return known.length ? known.join(', ') : TONE_DIRECTION.friendly;
 }
 
-const CAMPAIGN_INTENT: Record<CampaignType, string> = {
+export const CAMPAIGN_INTENT: Record<CampaignType, string> = {
   offer: 'a limited-time promotional offer',
   launch: 'a new product launch',
   festival: 'a festival campaign',

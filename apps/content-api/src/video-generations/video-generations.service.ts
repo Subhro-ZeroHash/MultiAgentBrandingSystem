@@ -42,25 +42,27 @@ export class VideoGenerationsService {
       .limit(1);
     if (existing[0]) return existing[0];
 
-    if (request.productId) {
-      const [product] = await this.db
-        .select({ brandId: schema.products.brandId })
-        .from(schema.products)
-        .where(eq(schema.products.id, request.productId))
-        .limit(1);
-      if (!product) throw new NotFoundException(`Product ${request.productId} not found`);
-      if (product.brandId !== request.brandId) {
-        throw new BadRequestException(
-          `Product ${request.productId} does not belong to brand ${request.brandId}`,
-        );
-      }
+    // Validated here rather than left to the foreign key, same reasoning
+    // GenerationsService.enqueue gives for the identical check on images: a
+    // bad id would otherwise surface as a constraint violation deep in the
+    // worker, minutes after the client was already told 'queued'.
+    const [product] = await this.db
+      .select({ brandId: schema.products.brandId })
+      .from(schema.products)
+      .where(eq(schema.products.id, request.productId))
+      .limit(1);
+    if (!product) throw new NotFoundException(`Product ${request.productId} not found`);
+    if (product.brandId !== request.brandId) {
+      throw new BadRequestException(
+        `Product ${request.productId} does not belong to brand ${request.brandId}`,
+      );
     }
 
     const [job] = await this.db
       .insert(schema.videoGenerationJobs)
       .values({
         brandId: request.brandId,
-        productId: request.productId ?? null,
+        productId: request.productId,
         idempotencyKey,
         request,
       })

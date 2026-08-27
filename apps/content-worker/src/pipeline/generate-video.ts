@@ -1,9 +1,9 @@
 import { describeError, isPermanentFailure, withRetry, withTimeout } from '@bmas/ai';
-import { and, eq, ne, schema, sql } from '@bmas/db';
+import { and, eq, ne, schema, sql, type Brand } from '@bmas/db';
 import type { CostEvent, VideoGenerationJob, VideoGenerationRequest } from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
 import type { WorkerContext } from '../context.js';
-import { mediaTypeFor } from './stages.js';
+import { CAMPAIGN_INTENT, STYLE_DIRECTION, mediaTypeFor, toneDirection } from './stages.js';
 
 /**
  * Video generation's own pipeline, mirroring `generate.ts`'s shape at the
@@ -48,18 +48,15 @@ async function recordCost(ctx: WorkerContext, brandId: string, jobId: string, co
  * The product's primary photo, as a video conditioning frame — LTX's
  * `image_uri` takes exactly one image, so only the primary photo is used
  * (never every product photo the way image generation conditions on all of
- * them). Best-effort: a product with no photos, or a request naming no
- * product at all, generates text-to-video rather than failing the job — the
- * same "a missing reference is a degraded creative, not a failed one"
- * reasoning `loadBrandReferences` uses for images.
+ * them). Best-effort: a product with no photos yet generates text-to-video
+ * rather than failing the job — the same "a missing reference is a degraded
+ * creative, not a failed one" reasoning `loadBrandReferences` uses for images.
  */
 async function loadFirstFrame(
   ctx: WorkerContext,
   jobId: string,
-  productId: string | undefined,
+  productId: string,
 ): Promise<{ data: Buffer; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' } | undefined> {
-  if (!productId) return undefined;
-
   const [row] = await ctx.db
     .select()
     .from(schema.productImages)
@@ -76,6 +73,70 @@ async function loadFirstFrame(
     );
     return undefined;
   }
+}
+
+/**
+ * Video's counterpart to `composeBrief` — turns the same structured intake
+ * (product, style, campaign type, offer/headline/extra instructions) plus
+ * the Brand Kit into one prompt, the way `composeBrief` does for images.
+ * Reuses `STYLE_DIRECTION`/`CAMPAIGN_INTENT`/`toneDirection` verbatim: the
+ * same style choice should read as the same style whichever medium a
+ * Reel/Story selection happens to produce.
+ *
+ * Deliberately not asked to render legible on-screen text the way a poster
+ * brief does. Video-diffusion models are far less reliable at accurate text
+ * rendering than an image model, and this pipeline has no vision-QA pass to
+ * catch it getting the text wrong (see `validateVideo` below) — asking for
+ * something nobody checks is worse than not asking. `headlineText`/
+ * `offerText`/`ctaText` instead inform the mood and message the clip is
+ * building toward, the same "let this inform styling, not the subject"
+ * treatment `composeBrief` already gives `brand.category`.
+ *
+ * Deterministic templating, not an LLM call — same reasoning `composeBrief`
+ * gives for itself, and it means this owes nothing to Gemini: a brand-new
+ * video pipeline built specifically to get content generation off Gemini
+ * would be an odd place to introduce a fresh dependency on it.
+ */
+export async function composeVideoBrief(
+  ctx: WorkerContext,
+  brand: Brand,
+  request: VideoGenerationRequest,
+): Promise<string> {
+  const [product] = await ctx.db
+    .select()
+    .from(schema.products)
+    .where(eq(schema.products.id, request.productId))
+    .limit(1);
+  if (!product) throw new Error(`Product ${request.productId} not found`);
+
+  const description = product.description?.trim().replace(/[.\s]+$/, '');
+
+  const lines: Array<string | null> = [
+    `A short vertical marketing video for ${CAMPAIGN_INTENT[request.campaignType]}.`,
+    '',
+    `**Subject:** ${product.name}${description ? ` — ${description}` : ''}.`,
+    product.sellingPoints.length
+      ? `Key selling points: ${product.sellingPoints.join(', ')}. Let the motion and framing bring these out (e.g. a close pass over a material or craft detail) rather than showing them as on-screen text.`
+      : null,
+    `${product.name} is the single subject of the clip. If it is a service, trip, or experience rather ` +
+      'than a physical object, depict the experience itself — do not invent a physical object to stand in for it.',
+    '',
+    `**Brand:** ${brand.name}, tone ${toneDirection(brand.tone)}.`,
+    brand.category
+      ? `The brand's usual trade is "${brand.category}" — use this only to judge tone, not to introduce unrelated merchandise into frame.`
+      : null,
+    '',
+    `**Look and motion:** ${STYLE_DIRECTION[request.styleTemplate]}`,
+    request.headlineText?.trim()
+      ? `The headline for this campaign is "${request.headlineText.trim()}" — let it inform the mood and pacing, not on-screen text.`
+      : null,
+    request.offerText?.trim()
+      ? `The offer being promoted is "${request.offerText.trim()}" — build energy toward it rather than displaying it as text.`
+      : null,
+    request.extraInstructions?.trim() ? `Additional direction: ${request.extraInstructions.trim()}` : null,
+  ];
+
+  return lines.filter((line): line is string => line !== null).join('\n');
 }
 
 /**
@@ -146,7 +207,10 @@ export async function runVideoGeneration(
 
   try {
     await setStage('brief');
-    const firstFrame = await loadFirstFrame(ctx, job.jobId, request.productId);
+    const [prompt, firstFrame] = await Promise.all([
+      composeVideoBrief(ctx, brand, request),
+      loadFirstFrame(ctx, job.jobId, request.productId),
+    ]);
 
     await setStage('generate');
     const generator = ctx.ai.videoGenerator();
@@ -155,7 +219,7 @@ export async function runVideoGeneration(
         withTimeout(
           generator.generate(
             {
-              prompt: request.prompt,
+              prompt,
               ...(firstFrame ? { firstFrame } : {}),
               width: request.width,
               height: request.height,
