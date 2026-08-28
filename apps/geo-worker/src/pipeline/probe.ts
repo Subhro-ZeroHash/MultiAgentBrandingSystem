@@ -28,17 +28,22 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
     .limit(1);
   if (!prompt) throw new Error(`Tracked prompt ${job.promptId} not found`);
 
+  // brandId comes off the prompt's own row, not the queue payload — see
+  // content-worker's generate.ts for the identical reasoning (a producer bug
+  // or lesser Redis-level compromise could otherwise pair a promptId with a
+  // mismatched brandId and have this probe attribute one brand's data to
+  // another's).
   const [brand] = await ctx.db
     .select()
     .from(schema.brands)
-    .where(eq(schema.brands.id, job.brandId))
+    .where(eq(schema.brands.id, prompt.brandId))
     .limit(1);
-  if (!brand) throw new Error(`Brand ${job.brandId} not found`);
+  if (!brand) throw new Error(`Brand ${prompt.brandId} not found`);
 
   const competitors = await ctx.db
     .select()
     .from(schema.competitors)
-    .where(eq(schema.competitors.brandId, job.brandId));
+    .where(eq(schema.competitors.brandId, prompt.brandId));
 
   // Resume rather than restart. BullMQ retries the whole job on any failure, and
   // analysis fails far more readily than the probe does (bad key, rate limit,

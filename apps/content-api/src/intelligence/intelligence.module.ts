@@ -7,5 +7,8 @@ import { IntelligenceService } from './intelligence.service.js';
 @Module({
   controllers: [IntelligenceController, AiResearchController],
   providers: [IntelligenceService, AiResearchService],
+  // Exported for AutopilotActivityService — see TrendsModule's identical
+  // export for why.
+  exports: [IntelligenceService],
 })
 export class IntelligenceModule {}

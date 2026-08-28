@@ -1110,6 +1110,14 @@ export const automationSettings = content.table(
     /** Master switch. Off means the scheduler skips this brand entirely,
      *  whatever `approvalPolicy` says. */
     contentAutomationEnabled: boolean('content_automation_enabled').notNull().default(false),
+    /** Non-null only when content-worker's inactivity sweep is the one that
+     *  flipped `contentAutomationEnabled` off, never when the owner turned it
+     *  off themselves — that distinction is the whole point of the column.
+     *  Without it, the next login's "resume what we paused" pass would just
+     *  as happily re-enable a brand the owner deliberately disabled. Cleared
+     *  by AutomationSettingsService.updateSettings the moment anything turns
+     *  automation back on, by any path. */
+    autoPausedAt: timestamp('auto_paused_at', { withTimezone: true }),
     /** Separate from `approvalPolicy` so that moving to full autopilot does
      *  not silently grant the right to post to a live Instagram account —
      *  publishing is the one step with no undo. */

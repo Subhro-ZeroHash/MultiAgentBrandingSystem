@@ -20,6 +20,7 @@ import {
 import { DATABASE } from '../core/core.module.js';
 import { loadEnv } from '../config/env.js';
 import { buildAssetLink } from '../assets/asset-proxy.js';
+import { assertPublicHost, BlockedAddressError } from '../brand-site/net-guard.js';
 
 /**
  * Instagram API with Instagram Login. The account signs in with Instagram and
@@ -154,13 +155,10 @@ export function percentChange(before: number | null, after: number | null): numb
 
 @Injectable()
 export class SocialService {
-  private encryption: TokenEncryption | null = null;
+  private readonly encryption: TokenEncryption;
 
   constructor(@Inject(DATABASE) private readonly db: Database) {
-    const env = loadEnv();
-    if (env.ENCRYPTION_KEY) {
-      this.encryption = new TokenEncryption(env.ENCRYPTION_KEY);
-    }
+    this.encryption = new TokenEncryption(loadEnv().ENCRYPTION_KEY);
   }
 
   /** Everything the OAuth hops need, validated once so a missing value fails
@@ -271,11 +269,16 @@ export class SocialService {
 
     const tokenBody: unknown = await tokenResponse.json().catch(() => null);
     if (!tokenResponse.ok || isGraphErrorPayload(tokenBody)) {
+      // The code itself is never logged, redacted or not — it's a live,
+      // redeemable credential for as long as it's unexpired/unused, and a
+      // log line outliving that window is the common case, not the
+      // exception. Lengths are enough to tell "empty"/"got mangled in
+      // transit" apart from a genuine provider-side rejection.
       console.error(
         '[instagram-oauth-debug]',
         JSON.stringify({
-          rawCode: code,
-          cleanCode,
+          rawCodeLength: code.length,
+          cleanCodeLength: cleanCode.length,
           redirectUri,
           status: tokenResponse.status,
           body: tokenBody,
@@ -336,8 +339,7 @@ export class SocialService {
       );
     }
 
-    const encryptedToken =
-      this.encryption?.encrypt(longLived.access_token) ?? longLived.access_token;
+    const encryptedToken = this.encryption.encrypt(longLived.access_token);
     // Trust the reported lifetime when present rather than assuming 60 days;
     // the refresh job keys off this column.
     const expiresAt = new Date(Date.now() + (longLived.expires_in ?? 60 * 24 * 60 * 60) * 1000);
@@ -631,7 +633,6 @@ export class SocialService {
   }
 
   getDecryptedToken(account: SocialAccount): string {
-    if (!this.encryption) return account.pageAccessToken;
     try {
       return this.encryption.decrypt(account.pageAccessToken);
     } catch (e) {
@@ -643,6 +644,39 @@ export class SocialService {
       throw new BadRequestException(
         'The stored Instagram token could not be decrypted — ENCRYPTION_KEY has changed since it was saved. Disconnect the account and connect it again.',
       );
+    }
+  }
+
+  /**
+   * Guards a caller-supplied `imageUrl`/`videoUrl` before handing it to Meta.
+   *
+   * Only reachable on the raw-URL path — a link built from an asset id is
+   * public by construction (see buildAssetLink). Reuses net-guard.ts's
+   * `assertPublicHost` (built for the brand-site import feature) rather than
+   * a second, weaker hand-rolled check: the previous version here was a plain
+   * regex with no DNS resolution, so a hostname that merely *resolves* to a
+   * private address — or the cloud metadata address, which the regex never
+   * blocked at all — sailed straight through.
+   */
+  private async assertPubliclyReachableUrl(url: string, mediaKind: 'image' | 'video'): Promise<void> {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new BadRequestException(`${mediaKind}Url is not a valid URL.`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new BadRequestException(`${mediaKind}Url must be http or https.`);
+    }
+    try {
+      await assertPublicHost(parsed.hostname);
+    } catch (error) {
+      if (error instanceof BlockedAddressError) {
+        throw new BadRequestException(
+          `Instagram downloads the ${mediaKind} from this URL, so it must be publicly reachable. A localhost or LAN address will not work.`,
+        );
+      }
+      throw error;
     }
   }
 
@@ -892,16 +926,7 @@ export class SocialService {
       );
     }
 
-    // Only reachable on the raw-imageUrl path; a link built from an asset id is
-    // public by construction.
-    if (
-      !/^https?:\/\//i.test(imageUrl) ||
-      /localhost|127\.0\.0\.1|192\.168\.|10\.\d/i.test(imageUrl)
-    ) {
-      throw new BadRequestException(
-        'Instagram downloads the image from this URL, so it must be publicly reachable. A localhost or LAN address will not work.',
-      );
-    }
+    await this.assertPubliclyReachableUrl(imageUrl, 'image');
 
     const token = this.getDecryptedToken(account);
 
@@ -963,14 +988,7 @@ export class SocialService {
       );
     }
 
-    if (
-      !/^https?:\/\//i.test(videoUrl) ||
-      /localhost|127\.0\.0\.1|192\.168\.|10\.\d/i.test(videoUrl)
-    ) {
-      throw new BadRequestException(
-        'Instagram downloads the video from this URL, so it must be publicly reachable. A localhost or LAN address will not work.',
-      );
-    }
+    await this.assertPubliclyReachableUrl(videoUrl, 'video');
 
     const token = this.getDecryptedToken(account);
 

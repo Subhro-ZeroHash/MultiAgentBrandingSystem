@@ -68,8 +68,13 @@ export async function runPlanDirective(
     .limit(1);
   if (!directive) throw new Error(`Directive ${job.directiveId} not found`);
 
+  // brandId comes off the row, not the queue payload — see generate.ts's
+  // identical comment for why. Every downstream call below takes this
+  // corrected job instead of the original.
+  const trustedJob: ContentPlanDirectiveJob = { ...job, brandId: directive.brandId };
+
   try {
-    const reading = await readDirective(ctx, job.brandId, directive.text);
+    const reading = await readDirective(ctx, trustedJob.brandId, directive.text);
 
     await ctx.db
       .update(schema.planDirectives)
@@ -78,18 +83,18 @@ export async function runPlanDirective(
 
     switch (reading.intent) {
       case 'redirect':
-        await handleRedirect(ctx, job, directive.id, reading);
+        await handleRedirect(ctx, trustedJob, directive.id, reading);
         return;
       case 'refine':
-        await handleRefine(ctx, job, directive.id, reading);
+        await handleRefine(ctx, trustedJob, directive.id, reading);
         return;
       case 'approve':
-        await handleApprove(ctx, job, directive.id, reading);
+        await handleApprove(ctx, trustedJob, directive.id, reading);
         return;
       // A question changes nothing; the reading already contains the answer.
       case 'question':
       case 'unclear':
-        await reply(ctx, job, directive.id, reading.reply, 'applied');
+        await reply(ctx, trustedJob, directive.id, reading.reply, 'applied');
         return;
     }
   } catch (error) {
@@ -101,7 +106,7 @@ export async function runPlanDirective(
       .where(eq(schema.planDirectives.id, directive.id));
     await reply(
       ctx,
-      job,
+      trustedJob,
       directive.id,
       "I couldn't work that through just now. Try sending it again, or rephrase it.",
       'applied',

@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -52,9 +51,7 @@ export class PlanningService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   // -------------------------------------------------------------------------

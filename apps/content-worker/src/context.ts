@@ -58,11 +58,12 @@ const envSchema = z.object({
    *  as that user, matching whatever brand/post it is publishing. */
   AUTH_SECRET: z.string().min(32, 'AUTH_SECRET must be at least 32 characters'),
   /** Same key content-api's SocialService encrypts stored Instagram tokens
-   *  with. Needed here so the Instagram insights sync can decrypt a token to
-   *  call the Graph API — optional the same way SocialService treats it: an
-   *  unset key means tokens were stored in plaintext (development only), so
-   *  decryption is skipped rather than attempted. */
-  ENCRYPTION_KEY: z.string().optional(),
+   *  with — required now, matching content-api's env.ts: an unset key used
+   *  to mean tokens were silently stored in plaintext, which is exactly the
+   *  data-at-rest gap this now fails startup on instead of masking. */
+  ENCRYPTION_KEY: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes)'),
 });
 
 export interface WorkerContext {
@@ -74,7 +75,7 @@ export interface WorkerContext {
   qaRegenerationRounds: number;
   contentApiUrl: string;
   authSecret: string;
-  encryptionKey?: string;
+  encryptionKey: string;
 }
 
 export function createContext(): WorkerContext {
@@ -113,6 +114,6 @@ export function createContext(): WorkerContext {
     qaRegenerationRounds: env.QA_REGENERATION_ROUNDS,
     contentApiUrl: env.CONTENT_API_URL,
     authSecret: env.AUTH_SECRET,
-    ...(env.ENCRYPTION_KEY ? { encryptionKey: env.ENCRYPTION_KEY } : {}),
+    encryptionKey: env.ENCRYPTION_KEY,
   };
 }

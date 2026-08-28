@@ -338,7 +338,7 @@ async function syncOneMedia(
 
 async function syncOneAccount(
   ctx: WorkerContext,
-  encryption: TokenEncryption | null,
+  encryption: TokenEncryption,
   target: SyncTarget,
 ): Promise<void> {
   const { account } = target;
@@ -359,7 +359,7 @@ async function syncOneAccount(
 
   let accessToken: string;
   try {
-    accessToken = encryption ? encryption.decrypt(account.pageAccessToken) : account.pageAccessToken;
+    accessToken = encryption.decrypt(account.pageAccessToken);
   } catch (error) {
     console.error(
       `[instagram-insights-sync] ${account.displayName}: stored token could not be decrypted — ${describeError(error)}`,
@@ -413,7 +413,7 @@ export async function runInstagramInsightsSync(ctx: WorkerContext): Promise<void
 
   console.warn(`[instagram-insights-sync] tick: ${targets.length} account(s) due`);
 
-  const encryption = ctx.encryptionKey ? new TokenEncryption(ctx.encryptionKey) : null;
+  const encryption = new TokenEncryption(ctx.encryptionKey);
 
   for (const target of targets) {
     try {

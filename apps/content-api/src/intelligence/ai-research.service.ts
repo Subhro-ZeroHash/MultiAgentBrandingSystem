@@ -1,5 +1,4 @@
 import {
-  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -83,9 +82,7 @@ export class AiResearchService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   /**
@@ -107,7 +104,7 @@ export class AiResearchService {
     } catch (error) {
       // Ownership and validation failures are already the right HTTP shape;
       // only unrecognised (provider/transport) errors need translating.
-      if (error instanceof ForbiddenException || error instanceof NotFoundException) throw error;
+      if (error instanceof NotFoundException) throw error;
       throw new ServiceUnavailableException(
         `The AI provider could not answer right now — ${describeError(error)}`,
       );

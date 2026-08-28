@@ -4,6 +4,24 @@ import { SocialService } from './social.service.js';
 import { TokenEncryption } from '@bmas/shared';
 import { BadRequestException } from '@nestjs/common';
 
+// assertPublicHost does a real DNS lookup — mocked here so this suite stays
+// network-free (same reasoning CLAUDE.md gives for keeping a real Postgres/
+// Redis/provider out of it). 'localhost' resolves locally with no network
+// dependency, so the rejection test below exercises the real implementation
+// instead; only the success-path fixture needs the network call replaced.
+vi.mock('../brand-site/net-guard.js', async () => {
+  const actual = await vi.importActual<typeof import('../brand-site/net-guard.js')>(
+    '../brand-site/net-guard.js',
+  );
+  return {
+    ...actual,
+    assertPublicHost: vi.fn(async (hostname: string) => {
+      if (hostname === 'public.example.com') return;
+      return actual.assertPublicHost(hostname);
+    }),
+  };
+});
+
 /** Loose enough to keep `.mockImplementation` available on every method in
  *  the test bodies below — typing this as `Database` itself hides those
  *  vitest mock members behind Drizzle's real (non-mock) method signatures. */

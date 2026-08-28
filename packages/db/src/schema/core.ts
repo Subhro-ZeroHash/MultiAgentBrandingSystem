@@ -35,10 +35,44 @@ export const users = core.table(
     passwordHash: text('password_hash'),
     emailVerified: boolean('email_verified').notNull().default(false),
     imageUrl: text('image_url'),
+    /** Stamped on every signup/login/refresh (AuthService.issueTokenPair) —
+     *  the one signal content-worker's inactivity sweep needs to decide
+     *  whether a user's autopilot brands have gone quiet. `defaultNow()`
+     *  rather than nullable so an `ADD COLUMN` backfills every existing user
+     *  to "active as of today" instead of "never" — the alternative pauses
+     *  every current autopilot brand the moment this ships. */
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('users_email_idx').on(t.email)],
+);
+
+/** One row per issued refresh token. Only the SHA-256 hash is stored — same
+ *  discipline as `users.passwordHash` — since a refresh is just an equality
+ *  check against what the client presents, never a value we need back.
+ *  Rotated on every use (AuthService.refresh revokes the row it consumed and
+ *  inserts a new one), so a captured token is good for exactly one replay
+ *  before it's dead. Access tokens stay a short-lived, unrevocable JWT; this
+ *  table is what gives logout something real to do. */
+export const refreshTokens = core.table(
+  'refresh_tokens',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('refresh_tokens_user_idx').on(t.userId),
+    uniqueIndex('refresh_tokens_token_hash_idx').on(t.tokenHash),
+  ],
 );
 
 export const brands = core.table(

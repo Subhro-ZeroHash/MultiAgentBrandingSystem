@@ -8,5 +8,8 @@ import { TrendsService } from './trends.service.js';
   imports: [SchedulingModule],
   controllers: [TrendsController],
   providers: [TrendsService],
+  // Exported for AutopilotActivityService — resuming a paused brand on login
+  // triggers the same on-demand research this module's own controller does.
+  exports: [TrendsService],
 })
 export class TrendsModule {}

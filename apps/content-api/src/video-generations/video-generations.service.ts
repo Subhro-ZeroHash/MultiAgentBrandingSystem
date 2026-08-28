@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { eq, reapStalledVideoGenerationJob, schema, type Database } from '@bmas/db';
 import { QUEUES, type VideoGenerationRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
@@ -27,9 +27,7 @@ export class VideoGenerationsService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   async enqueue(request: VideoGenerationRequest, idempotencyKey: string, ownerId: string) {

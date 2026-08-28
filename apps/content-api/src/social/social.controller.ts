@@ -1,21 +1,19 @@
+import { Body, Controller, Delete, Get, Inject, Param, Post, Request, UseGuards } from '@nestjs/common';
 import {
-  BadRequestException,
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Inject,
-  Param,
-  Post,
-  Request,
-  UseGuards,
-} from '@nestjs/common';
-import { QUEUES } from '@bmas/shared';
+  instagramCallbackInputSchema,
+  postReelToInstagramInputSchema,
+  postToInstagramInputSchema,
+  QUEUES,
+  type InstagramCallbackInput,
+  type PostReelToInstagramInput,
+  type PostToInstagramInput,
+} from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import { SocialService } from './social.service.js';
 import { INSTAGRAM_INSIGHTS_SYNC_QUEUE } from '../core/core.module.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
+import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 
 @Controller('social')
 export class SocialController {
@@ -36,10 +34,10 @@ export class SocialController {
   // directly, with no Authorization header to attach. See the comment below
   // on why the account owner is safe to trust from the state token alone.
   @Post('auth/instagram/callback')
-  async handleInstagramCallback(@Body() body: { code?: string; state?: string }) {
-    if (!body.code || !body.state) {
-      throw new BadRequestException('code and state are required');
-    }
+  async handleInstagramCallback(
+    @Body(new ZodValidationPipe(instagramCallbackInputSchema)) rawBody: unknown,
+  ) {
+    const body = rawBody as InstagramCallbackInput;
     // The owner comes from the redeemed state, not the request: this call
     // arrives from a browser redirected by Instagram, carrying no identity.
     const account = await this.social.exchangeCodeForToken(body.code, body.state);
@@ -117,15 +115,10 @@ export class SocialController {
   @UseGuards(JwtAuthGuard)
   @Post('post')
   async postToInstagram(
-    @Body() body: { accountId: string; assetId?: string; imageUrl?: string; caption: string },
+    @Body(new ZodValidationPipe(postToInstagramInputSchema)) rawBody: unknown,
     @Request() req: AuthenticatedRequest,
   ) {
-    if (!body.accountId || !body.caption) {
-      throw new BadRequestException('accountId and caption are required');
-    }
-    if (!body.assetId && !body.imageUrl) {
-      throw new BadRequestException('assetId (preferred) or imageUrl is required');
-    }
+    const body = rawBody as PostToInstagramInput;
     const resolvedUserId = req.user.id;
     return this.social.postToInstagram(
       body.accountId,
@@ -145,15 +138,10 @@ export class SocialController {
   @UseGuards(JwtAuthGuard)
   @Post('post-reel')
   async postReelToInstagram(
-    @Body() body: { accountId: string; assetId?: string; videoUrl?: string; caption: string },
+    @Body(new ZodValidationPipe(postReelToInstagramInputSchema)) rawBody: unknown,
     @Request() req: AuthenticatedRequest,
   ) {
-    if (!body.accountId || !body.caption) {
-      throw new BadRequestException('accountId and caption are required');
-    }
-    if (!body.assetId && !body.videoUrl) {
-      throw new BadRequestException('assetId (preferred) or videoUrl is required');
-    }
+    const body = rawBody as PostReelToInstagramInput;
     return this.social.postReelToInstagram(
       body.accountId,
       req.user.id,

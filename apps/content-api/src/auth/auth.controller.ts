@@ -1,8 +1,17 @@
 import { Body, Controller, Get, Post, Request, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { loginInputSchema, signupInputSchema, type AuthUser } from '@bmas/shared';
+import {
+  loginInputSchema,
+  logoutInputSchema,
+  refreshInputSchema,
+  signupInputSchema,
+  type AuthUser,
+  type LogoutInput,
+  type RefreshInput,
+} from '@bmas/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { AuthService } from './auth.service.js';
+import { AutopilotActivityService } from './autopilot-activity.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
 /**
@@ -51,7 +60,10 @@ const AUTH_RATE_LIMIT = {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly autopilotActivity: AutopilotActivityService,
+  ) {}
 
   @Throttle(AUTH_RATE_LIMIT)
   @Post('signup')
@@ -59,25 +71,43 @@ export class AuthController {
     return this.auth.signup(body as Parameters<AuthService['signup']>[0]);
   }
 
+  // login/me are the two routes that mean "a person is looking at the app
+  // right now" — see AutopilotActivityService for why that's what resumes a
+  // brand the inactivity sweep paused, rather than the far more frequent
+  // (and far less meaningful) /auth/refresh.
   @Throttle(AUTH_RATE_LIMIT)
   @Post('login')
-  login(@Body(new ZodValidationPipe(loginInputSchema)) body: unknown) {
-    return this.auth.login(body as Parameters<AuthService['login']>[0]);
+  async login(@Body(new ZodValidationPipe(loginInputSchema)) body: unknown) {
+    const result = await this.auth.login(body as Parameters<AuthService['login']>[0]);
+    await this.autopilotActivity.recordActivity(result.user.id);
+    return result;
   }
 
-  /** Stateless JWT: nothing to invalidate server-side. Exists so the client
-   *  has a symmetric call to make and a place to hang server-side revocation
-   *  later (e.g. a token blocklist) without changing the frontend contract. */
+  /** No account-tracked throttle here (unlike signup/login): there's no email
+   *  in this body to key on, and brute-forcing a 256-bit token isn't a
+   *  rate-limiting problem — it's already covered by the global default. */
+  @Post('refresh')
+  refresh(@Body(new ZodValidationPipe(refreshInputSchema)) body: unknown) {
+    return this.auth.refresh((body as RefreshInput).refreshToken);
+  }
+
+  /** Revokes the presented refresh token so it can't be used to mint a new
+   *  session. The access token already issued keeps working until it expires
+   *  on its own (AUTH_TOKEN_TTL) — see AuthService.refresh's doc comment. */
   @Post('logout')
-  logout() {
+  async logout(@Body(new ZodValidationPipe(logoutInputSchema)) body: unknown) {
+    await this.auth.logout((body as LogoutInput).refreshToken);
     return { ok: true };
   }
 
   /** Lets the app verify a stored token on launch and recover the user it
-   *  belongs to, without re-sending credentials. */
+   *  belongs to, without re-sending credentials. Also the "cold app open with
+   *  a still-valid session" half of AutopilotActivityService's trigger —
+   *  login covers the other half, a fresh sign-in. */
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@Request() req: { user: AuthUser }) {
+  async me(@Request() req: { user: AuthUser }) {
+    await this.autopilotActivity.recordActivity(req.user.id);
     return req.user;
   }
 }

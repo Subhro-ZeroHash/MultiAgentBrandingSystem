@@ -373,12 +373,14 @@ export async function runTrendResearch(
     .limit(1);
   if (!run) throw new Error(`Trend research run ${job.runId} not found`);
 
+  // brandId comes off the row, not the queue payload — see generate.ts's
+  // identical comment for why.
   const [brand] = await ctx.db
     .select()
     .from(schema.brands)
-    .where(eq(schema.brands.id, job.brandId))
+    .where(eq(schema.brands.id, run.brandId))
     .limit(1);
-  if (!brand) throw new Error(`Brand ${job.brandId} not found`);
+  if (!brand) throw new Error(`Brand ${run.brandId} not found`);
 
   await ctx.db
     .update(schema.trendResearchRuns)

@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -55,9 +54,7 @@ export class BrandSiteService {
       .limit(1);
 
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   /**

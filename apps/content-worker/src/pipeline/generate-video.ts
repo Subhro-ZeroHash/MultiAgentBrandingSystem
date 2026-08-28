@@ -185,8 +185,10 @@ export async function runVideoGeneration(
     .limit(1);
   if (!row) throw new Error(`Video generation job ${job.jobId} not found`);
 
-  const [brand] = await ctx.db.select().from(schema.brands).where(eq(schema.brands.id, job.brandId)).limit(1);
-  if (!brand) throw new Error(`Brand ${job.brandId} not found`);
+  // brandId comes off the row, not the queue payload — see generate.ts's
+  // identical comment for why.
+  const [brand] = await ctx.db.select().from(schema.brands).where(eq(schema.brands.id, row.brandId)).limit(1);
+  if (!brand) throw new Error(`Brand ${row.brandId} not found`);
 
   const request = row.request as unknown as VideoGenerationRequest;
 

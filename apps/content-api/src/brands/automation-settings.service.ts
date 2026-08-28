@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -36,9 +35,7 @@ export class AutomationSettingsService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   /**
@@ -141,6 +138,12 @@ export class AutomationSettingsService {
         ...(scheduleChanged
           ? { nextResearchAt: nextResearchAt(frequency, current.lastResearchAt) }
           : {}),
+        // Any path that turns automation on — the owner here, or
+        // AutopilotActivityService resuming a paused brand on login — clears
+        // the inactivity-pause marker. Otherwise a brand the owner manually
+        // re-enables stays flagged as "we paused this", and the next
+        // inactivity sweep leaves it alone thinking it already has.
+        ...(turningOn ? { autoPausedAt: null } : {}),
         updatedAt: new Date(),
       })
       .where(eq(schema.automationSettings.brandId, brandId))

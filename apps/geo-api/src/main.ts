@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { config as loadDotenv } from 'dotenv';
+import helmet from 'helmet';
 import { AppModule } from './app.module.js';
 import { loadEnv } from './config/env.js';
 
@@ -17,6 +18,11 @@ loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
   const app = await NestFactory.create(AppModule);
+
+  // Same reasoning as content-api/src/main.ts: a pure JSON API serves no
+  // HTML, so CSP is locked all the way down rather than tuned for a page
+  // that shouldn't exist.
+  app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'none'"] } } }));
 
   app.setGlobalPrefix('api');
   // No global ValidationPipe: request validation goes through ZodValidationPipe

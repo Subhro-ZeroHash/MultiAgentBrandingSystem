@@ -1,3 +1,39 @@
+import { z } from 'zod';
+
+/**
+ * Request validation for SocialController's routes — added so they go
+ * through the same ZodValidationPipe every other controller in this app
+ * uses, instead of a raw `@Body()` cast plus manual presence checks.
+ */
+export const instagramCallbackInputSchema = z.object({
+  code: z.string().min(1).max(2048),
+  state: z.string().min(1).max(256),
+});
+export type InstagramCallbackInput = z.infer<typeof instagramCallbackInputSchema>;
+
+/** Instagram's own caption limit. */
+const CAPTION_MAX = 2200;
+
+export const postToInstagramInputSchema = z
+  .object({
+    accountId: z.string().min(1),
+    assetId: z.string().min(1).optional(),
+    imageUrl: z.string().url().max(2048).optional(),
+    caption: z.string().min(1).max(CAPTION_MAX),
+  })
+  .refine((v) => v.assetId ?? v.imageUrl, { message: 'assetId (preferred) or imageUrl is required' });
+export type PostToInstagramInput = z.infer<typeof postToInstagramInputSchema>;
+
+export const postReelToInstagramInputSchema = z
+  .object({
+    accountId: z.string().min(1),
+    assetId: z.string().min(1).optional(),
+    videoUrl: z.string().url().max(2048).optional(),
+    caption: z.string().min(1).max(CAPTION_MAX),
+  })
+  .refine((v) => v.assetId ?? v.videoUrl, { message: 'assetId (preferred) or videoUrl is required' });
+export type PostReelToInstagramInput = z.infer<typeof postReelToInstagramInputSchema>;
+
 /**
  * True once a stored OAuth token has passed its expiry.
  *

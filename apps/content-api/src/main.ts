@@ -5,6 +5,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { config as loadDotenv } from 'dotenv';
+import helmet from 'helmet';
 import { AppModule } from './app.module.js';
 import { loadEnv } from './config/env.js';
 
@@ -19,6 +20,11 @@ loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Every response here is JSON, never HTML the API intends to serve — CSP
+  // is locked all the way down rather than tuned for a page that shouldn't
+  // exist. helmet's other default headers (nosniff, HSTS, etc.) come free.
+  app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'none'"] } } }));
 
   // Product reference photos arrive base64 in the JSON body, so the default
   // 100kb limit would reject any real phone photo. Bounded well above the 12 MB

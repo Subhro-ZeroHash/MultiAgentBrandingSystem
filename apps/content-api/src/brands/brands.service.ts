@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -8,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { and, eq, schema, type Database } from '@bmas/db';
 import type { Queue } from 'bullmq';
+import sharp from 'sharp';
 import type { CreateBrandKitInput, CreateProductInput, UpdateBrandKitInput } from '@bmas/shared';
 import {
   DATABASE,
@@ -65,9 +65,7 @@ export class BrandsService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   /** Every brand the caller owns, oldest first so the list order is stable as
@@ -88,9 +86,7 @@ export class BrandsService {
       .limit(1);
 
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
     return brand;
   }
 
@@ -296,6 +292,18 @@ export class BrandsService {
       throw new BadRequestException('Image data is empty or not valid base64.');
     if (bytes.length > MAX_IMAGE_BYTES) {
       throw new BadRequestException('Image exceeds the maximum size (12 MB).');
+    }
+
+    // ALLOWED_MEDIA_TYPES above only checks the caller's claimed mediaType
+    // string — sharp actually decoding the bytes is the only real proof this
+    // is an image at all, same reasoning fetch-brand-assets.ts's normalise()
+    // uses for fetched assets. Rejects anything else (an HTML/script payload
+    // renamed to look like an image, a corrupt upload) before it's stored.
+    try {
+      const meta = await sharp(bytes, { failOn: 'none' }).metadata();
+      if (!meta.width || !meta.height) throw new Error('no dimensions');
+    } catch {
+      throw new BadRequestException('The uploaded file is not a valid image.');
     }
 
     const id = crypto.randomUUID();

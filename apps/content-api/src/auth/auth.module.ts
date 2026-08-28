@@ -2,13 +2,22 @@ import { Module } from '@nestjs/common';
 import { JwtModule, type JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { loadEnv } from '../config/env.js';
+import { BrandsModule } from '../brands/brands.module.js';
+import { TrendsModule } from '../trends/trends.module.js';
+import { IntelligenceModule } from '../intelligence/intelligence.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
+import { AutopilotActivityService } from './autopilot-activity.service.js';
 import { JwtStrategy } from './jwt.strategy.js';
 
 @Module({
   imports: [
     PassportModule,
+    // For AutopilotActivityService, which login/me use to resume any brand
+    // the inactivity sweep paused while this user was away.
+    BrandsModule,
+    TrendsModule,
+    IntelligenceModule,
     JwtModule.registerAsync({
       useFactory: (): JwtModuleOptions => {
         const env = loadEnv();
@@ -26,7 +35,7 @@ import { JwtStrategy } from './jwt.strategy.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [AuthService, AutopilotActivityService, JwtStrategy],
   // JwtAuthGuard is exported implicitly by being importable directly (it has
   // no injected dependencies of its own); other modules import the guard
   // class, not this module.

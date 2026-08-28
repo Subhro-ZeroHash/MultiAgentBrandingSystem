@@ -83,10 +83,14 @@ export async function runPlanItemReplace(
     return null;
   }
 
-  const context = await getPlanningContext(ctx.db, job.brandId);
+  // brandId comes off the dismissed item's own row, not the queue payload —
+  // see generate.ts's identical comment for why.
+  const brandId = dismissed.brandId;
+
+  const context = await getPlanningContext(ctx.db, brandId);
   const [siblings, rejectedHistory] = await Promise.all([
     loadSiblingTitles(ctx, dismissed.planId, dismissed.id),
-    loadRejectedTitles(ctx, job.brandId),
+    loadRejectedTitles(ctx, brandId),
   ]);
 
   const { draft, cost } = await draftReplacement(
@@ -96,7 +100,7 @@ export async function runPlanItemReplace(
     siblings,
     rejectedHistory,
   );
-  await recordCost(ctx, job.brandId, cost);
+  await recordCost(ctx, brandId, cost);
 
   const productId = draft.productIndex === null ? null : (context.products[draft.productIndex]?.id ?? null);
   const suggestedRequest: TrendSuggestedRequest = {
@@ -112,7 +116,7 @@ export async function runPlanItemReplace(
     .insert(schema.planItems)
     .values({
       planId: dismissed.planId,
-      brandId: job.brandId,
+      brandId,
       // Takes the dismissed item's place in the running order, so the plan
       // reads the way it did before rather than growing a tail of swaps.
       sequence: dismissed.sequence,
@@ -136,7 +140,7 @@ export async function runPlanItemReplace(
   if (!created) throw new Error('Replacement insert returned no row');
 
   console.warn(
-    `[plan-replace] brand ${job.brandId}: replaced "${dismissed.title}" with "${draft.title}"`,
+    `[plan-replace] brand ${brandId}: replaced "${dismissed.title}" with "${draft.title}"`,
   );
   return created.id;
 }
