@@ -23,7 +23,10 @@ export const config = {
   // asset proxy is deliberately public — see its own file), the Instagram
   // OAuth callback (a same-origin SameSite=Lax cookie should already survive
   // that redirect, but this avoids a confusing bounce through /login in the
-  // middle of connecting an account if it somehow doesn't), and Next's
-  // static/internal paths.
-  matcher: ['/((?!login|api|auth/instagram|_next/static|_next/image|favicon.ico).*)'],
+  // middle of connecting an account if it somehow doesn't), privacy/
+  // data-deletion (Meta's App Review and any visitor must load these with no
+  // session), and Next's static/internal paths.
+  matcher: [
+    '/((?!login|api|auth/instagram|privacy|data-deletion|_next/static|_next/image|favicon.ico).*)',
+  ],
 };
