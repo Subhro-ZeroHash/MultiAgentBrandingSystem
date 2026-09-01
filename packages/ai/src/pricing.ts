@@ -89,6 +89,12 @@ export const VIDEO_RATES: Record<string, Record<number, number>> = {
   'ltx-2-5-pro': { 720: 120_000, 1080: 170_000 },
   'ltx-2-3-fast': { 720: 30_000, 1080: 60_000, 1440: 120_000, 2160: 240_000 },
   'ltx-2-3-pro': { 720: 40_000, 1080: 80_000, 1440: 160_000, 2160: 320_000 },
+  // Verified against ai.google.dev/gemini-api/docs/pricing on 2026-08-31 —
+  // Veo has no 1440 tier (see gemini.video.ts's RESOLUTION_TIERS), so
+  // priceVideo's "snap to nearest tier at or above" falls straight from
+  // 1080 to nothing higher, same as LTX's own -pro rows above.
+  'veo-3.1-fast-generate-preview': { 720: 100_000, 1080: 120_000 },
+  'veo-3.1-generate-preview': { 720: 400_000, 1080: 400_000 },
 };
 
 /**

@@ -1,4 +1,12 @@
-import { describeError, isPermanentFailure, withRetry, withTimeout } from '@bmas/ai';
+import {
+  describeError,
+  isPermanentFailure,
+  withRetry,
+  withTimeout,
+  type GeneratedVideo,
+  type ProviderResult,
+  type VideoGenerateRequest,
+} from '@bmas/ai';
 import { and, eq, ne, schema, sql, type Brand } from '@bmas/db';
 import type { CostEvent, VideoGenerationJob, VideoGenerationRequest } from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
@@ -47,6 +55,59 @@ async function recordCost(
     costMicroUsd: cost.costMicroUsd,
     latencyMs: cost.latencyMs ?? null,
   });
+}
+
+/**
+ * Tries each provider in `ctx.ai.videoGeneratorFallbackChain()` in order —
+ * LTX first, then Gemini's Veo models — retrying transient failures on the
+ * same provider before moving to the next one. Same "sequential try, not
+ * simultaneous fan-out" shape as festival-calendar.ts's `corroborateEvent`:
+ * LTX is a brand-new integration with no uptime track record, so a bad day
+ * on its side should degrade to a slower/pricier provider rather than fail
+ * the job outright, and there's no benefit to this codebase's "two sources
+ * corroborate" reasoning (used for search) — a video either renders or it
+ * doesn't, there's nothing for a second provider to confirm.
+ *
+ * Every provider in the chain gets identical resolution/duration inputs; each
+ * adapter is responsible for snapping them to whatever it actually supports
+ * (see `nearestVideoResolution` in ltx.video.ts and `nearestVeoResolution` in
+ * gemini.video.ts), so a fallback never silently renders at the wrong size.
+ */
+async function generateVideoWithFallback(
+  ctx: WorkerContext,
+  request: VideoGenerateRequest,
+  jobId: string,
+  brandId: string,
+): Promise<ProviderResult<GeneratedVideo>> {
+  const chain = ctx.ai.videoGeneratorFallbackChain();
+  let lastError: unknown;
+
+  for (const [index, generator] of chain.entries()) {
+    try {
+      return await withRetry(
+        () =>
+          withTimeout(
+            generator.generate(request, { referenceId: jobId, brandId }),
+            VIDEO_TIMEOUT_MS,
+            `video:generate (${generator.provider})`,
+          ),
+        {
+          onRetry: ({ attempt, delayMs, error }) =>
+            console.warn(
+              `[content:video] job ${jobId}: ${generator.provider} attempt ${attempt} failed, retrying in ${delayMs}ms — ${describeError(error)}`,
+            ),
+        },
+      );
+    } catch (error) {
+      lastError = error;
+      const hasMore = index < chain.length - 1;
+      console.warn(
+        `[content:video] job ${jobId}: ${generator.provider} failed${hasMore ? ', falling back to the next provider' : ' — no more providers configured'} — ${describeError(error)}`,
+      );
+    }
+  }
+
+  throw lastError;
 }
 
 /**
@@ -233,29 +294,17 @@ export async function runVideoGeneration(
     ]);
 
     await setStage('generate');
-    const generator = ctx.ai.videoGenerator();
-    const { value: video, cost } = await withRetry(
-      () =>
-        withTimeout(
-          generator.generate(
-            {
-              prompt,
-              ...(firstFrame ? { firstFrame } : {}),
-              width: request.width,
-              height: request.height,
-              durationSeconds: request.durationSeconds,
-            },
-            { referenceId: job.jobId, brandId: brand.id },
-          ),
-          VIDEO_TIMEOUT_MS,
-          'video:generate',
-        ),
+    const { value: video, cost } = await generateVideoWithFallback(
+      ctx,
       {
-        onRetry: ({ attempt, delayMs, error }) =>
-          console.warn(
-            `[content:video] job ${job.jobId}: attempt ${attempt} failed, retrying in ${delayMs}ms — ${describeError(error)}`,
-          ),
+        prompt,
+        ...(firstFrame ? { firstFrame } : {}),
+        width: request.width,
+        height: request.height,
+        durationSeconds: request.durationSeconds,
       },
+      job.jobId,
+      brand.id,
     );
     await recordCost(ctx, brand.id, job.jobId, cost);
 
@@ -276,7 +325,9 @@ export async function runVideoGeneration(
         width: video.width,
         height: video.height,
         durationSeconds: video.durationSeconds,
-        provider: generator.provider,
+        // From the result, not the configured primary — a fallback run
+        // means this is whichever provider in the chain actually succeeded.
+        provider: cost.provider,
         model: video.model,
       });
 

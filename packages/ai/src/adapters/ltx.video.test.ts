@@ -33,9 +33,10 @@ describe('clampDuration', () => {
     expect(clampDuration(5.6)).toBe(6);
   });
 
-  it('floors at 1 second rather than allowing zero or negative', () => {
-    expect(clampDuration(0)).toBe(1);
-    expect(clampDuration(-5)).toBe(1);
+  it('floors at 2 seconds — LTX rejects anything shorter with a 400', () => {
+    expect(clampDuration(0)).toBe(2);
+    expect(clampDuration(-5)).toBe(2);
+    expect(clampDuration(1)).toBe(2);
   });
 
   it("caps at LTX's documented 20-second ceiling", () => {

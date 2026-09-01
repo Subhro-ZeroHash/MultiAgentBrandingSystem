@@ -5,6 +5,7 @@ import { FalImageAdapter } from './adapters/fal.image.js';
 import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
 import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
+import { GeminiVideoAdapter } from './adapters/gemini.video.js';
 import { LtxVideoAdapter } from './adapters/ltx.video.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
@@ -24,9 +25,11 @@ import type { VideoGenService } from './video.js';
 export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 
 /** `stub` draws placeholders locally — see adapters/stub.video.ts. `ltx` is
- *  the only real provider: video generation has exactly one implementation,
- *  unlike images, because it is new rather than mid-migration between two. */
-export type VideoProviderName = 'ltx' | 'stub';
+ *  the configured primary; `google` (Veo, via the same SDK/key the image
+ *  adapter already uses) is the fallback `videoGeneratorFallbackChain()`
+ *  reaches for when the primary fails, not a caller-selectable alternative
+ *  the way `imageProviderPrimary`/`imageProviderEdit` are. */
+export type VideoProviderName = 'ltx' | 'google' | 'stub';
 
 /** Which provider serves `LlmService` — text, JSON, and vision QA. */
 export type LlmProviderName = 'anthropic' | 'gemini';
@@ -155,6 +158,13 @@ export class AiRegistry {
         model: config.ltxModel,
         ...(config.ltxBaseUrl ? { baseUrl: config.ltxBaseUrl } : {}),
       }),
+      // Reuses the same GOOGLE_API_KEY/googleBaseUrl the image adapter
+      // already reads — one Gemini API key, whichever of its models a
+      // caller needs.
+      google: new GeminiVideoAdapter({
+        apiKey: config.googleApiKey,
+        ...(config.googleBaseUrl ? { baseUrl: config.googleBaseUrl } : {}),
+      }),
       stub: new StubVideoAdapter(),
     };
 
@@ -193,6 +203,27 @@ export class AiRegistry {
    *  `imageGenerator()`. */
   videoGenerator(): VideoGenService {
     return this.videos[this.config.videoProviderPrimary ?? 'ltx'];
+  }
+
+  /**
+   * The configured primary, then Gemini's Veo models if the primary fails —
+   * see generate-video.ts's `generateVideoWithFallback` for the sequential
+   * try-then-fall-through that actually consumes this (same shape as
+   * festival-calendar.ts's `corroborateEvent`, not a simultaneous fan-out
+   * like `configuredWebSearches()`: LTX is a brand-new integration with no
+   * uptime track record, so this exists to keep working through a bad day on
+   * LTX's side, not to compare two providers' output).
+   *
+   * `stub` never falls through to a real provider: it exists so local
+   * dev/tests can opt out of every real, billed call, and silently
+   * escalating a stub-configured run to a real Gemini request would defeat
+   * that. Requesting `google` as the primary returns just itself rather than
+   * duplicating it as its own fallback.
+   */
+  videoGeneratorFallbackChain(): VideoGenService[] {
+    const primary = this.config.videoProviderPrimary ?? 'ltx';
+    if (primary === 'stub' || primary === 'google') return [this.videos[primary]];
+    return [this.videos[primary], this.videos.google];
   }
 
   answerEngine(engine: AnswerEngine): AnswerEngineClient | undefined {

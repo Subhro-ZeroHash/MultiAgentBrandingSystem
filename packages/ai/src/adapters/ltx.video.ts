@@ -30,6 +30,13 @@ const DEFAULT_MODEL = 'ltx-2-5-fast';
  *  of what a caller passes. */
 const MAX_DURATION_SECONDS = 20;
 
+/** LTX rejects shorter clips with a 400 rather than silently rounding up —
+ *  confirmed live against `ltx-2-5-fast` at 720p/24fps on 2026-09-02: a
+ *  1-second request was refused, 2 seconds was accepted. Not documented on
+ *  LTX's reference pages, so this floor is only verified at that resolution;
+ *  raise it further if a higher tier turns out to need more. */
+const MIN_DURATION_SECONDS = 2;
+
 /** The exact tiers LTX prices (see VIDEO_RATES in pricing.ts) — a request for
  *  anything else is snapped to the nearest one at or above it, same "ask for
  *  at least what's needed so the fit downsamples" reasoning as
@@ -86,7 +93,7 @@ export function nearestVideoResolution(
 }
 
 export function clampDuration(seconds: number): number {
-  return Math.min(Math.max(Math.round(seconds), 1), MAX_DURATION_SECONDS);
+  return Math.min(Math.max(Math.round(seconds), MIN_DURATION_SECONDS), MAX_DURATION_SECONDS);
 }
 
 /**
