@@ -65,7 +65,14 @@ child.stderr.on('data', (chunk) => {
   process.stderr.write(text);
 
   if (claimed) return;
-  const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+  // Excludes `api.trycloudflare.com` specifically: that's Cloudflare's own
+  // control-plane endpoint, and it appears in this same stderr stream
+  // whenever the request to it fails (e.g. "Post https://api.trycloudflare.com/
+  // tunnel: context deadline exceeded") — a generic subdomain regex matched
+  // that failure message itself and wrote it into .env as if it were the
+  // assigned tunnel, which is silently wrong in a way nothing downstream
+  // catches (the app happily "starts" pointed at Cloudflare's own API).
+  const match = text.match(/https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com/i);
   if (!match) return;
 
   claimed = true;
