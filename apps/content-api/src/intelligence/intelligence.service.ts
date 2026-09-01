@@ -1,5 +1,13 @@
-import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, desc, eq, recordFeedbackSignal, schema, type Database } from '@bmas/db';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  and,
+  desc,
+  eq,
+  recordFeedbackSignal,
+  reapStalledIntelligenceRun,
+  schema,
+  type Database,
+} from '@bmas/db';
 import {
   INTELLIGENCE_STALE_AFTER_HOURS,
   QUEUES,
@@ -29,9 +37,7 @@ export class IntelligenceService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   async startResearch(brandId: string, ownerId: string) {
@@ -61,6 +67,10 @@ export class IntelligenceService {
   }
 
   async getRun(runId: string, ownerId: string) {
+    // See TrendsService.getRun — same reasoning, same seven-minute spinner
+    // this spares the client.
+    await reapStalledIntelligenceRun(this.db, runId);
+
     const [run] = await this.db
       .select()
       .from(schema.intelligenceRuns)

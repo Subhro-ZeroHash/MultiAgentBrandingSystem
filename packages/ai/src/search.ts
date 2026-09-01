@@ -44,3 +44,34 @@ export interface WebSearchService {
 
   search(req: WebSearchRequest, ctx?: ProviderContext): Promise<ProviderResult<WebSearchResult[]>>;
 }
+
+/**
+ * Drops results published outside the window the caller asked for.
+ *
+ * `recencyDays` is only ever a *request* to a provider, and providers honour
+ * it unevenly: SerpApi sent no time filter at all until it was given one, and
+ * Tavily still returns results months outside its own `days` window for some
+ * queries. A search for "upcoming festivals in the next 30 days" that comes
+ * back with a seven-month-old sale article is worse than one that comes back
+ * with less — the stale item reads as current to everything downstream.
+ *
+ * Undated results are kept rather than dropped: a missing `publishedAt` is an
+ * absence of evidence, not evidence the page is old, and dropping them would
+ * silently discard whole providers that do not date their rows. Prompts are
+ * told separately to weigh an undated signal as weaker.
+ */
+export function dropStaleResults(
+  results: WebSearchResult[],
+  recencyDays: number | undefined,
+  now: Date = new Date(),
+): WebSearchResult[] {
+  if (!recencyDays) return results;
+  const cutoff = now.getTime() - recencyDays * 24 * 60 * 60 * 1000;
+
+  return results.filter((result) => {
+    if (!result.publishedAt) return true;
+    const published = new Date(result.publishedAt).getTime();
+    // An unparseable date is treated the same as a missing one.
+    return Number.isNaN(published) || published >= cutoff;
+  });
+}

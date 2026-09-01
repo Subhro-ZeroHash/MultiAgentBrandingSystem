@@ -1,4 +1,4 @@
-import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, asc, desc, eq, schema, type Database } from '@bmas/db';
 import type { BrandPreference, PreferenceType, RecordPreferenceInput } from '@bmas/shared';
 import { DATABASE } from '../core/core.module.js';
@@ -37,9 +37,7 @@ export class BrandPreferencesService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   /**

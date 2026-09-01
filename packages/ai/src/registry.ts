@@ -5,23 +5,31 @@ import { FalImageAdapter } from './adapters/fal.image.js';
 import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
 import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
-import { OllamaLlmAdapter } from './adapters/ollama.llm.js';
+import { LtxVideoAdapter } from './adapters/ltx.video.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
 import { SerpApiSearchAdapter } from './adapters/serpapi.search.js';
 import { StubImageAdapter } from './adapters/stub.image.js';
 import { StubSearchAdapter } from './adapters/stub.search.js';
+import { StubVideoAdapter } from './adapters/stub.video.js';
 import { TavilySearchAdapter } from './adapters/tavily.search.js';
 import type { AnswerEngineClient } from './engine.js';
 import type { ImageGenService } from './image.js';
 import type { LlmService, ModelRole } from './llm.js';
 import type { WebSearchService } from './search.js';
+import type { VideoGenService } from './video.js';
 
-/** `stub` draws placeholders locally — see adapters/stub.image.ts. */
+/** `stub` draws placeholders locally — see adapters/stub.image.ts. `gemini` is
+ *  the primary content-generation provider. */
 export type ImageProviderName = 'gemini' | 'fal' | 'stub';
 
+/** `stub` draws placeholders locally — see adapters/stub.video.ts. `ltx` is
+ *  the only real provider: video generation has exactly one implementation,
+ *  unlike images, because it is new rather than mid-migration between two. */
+export type VideoProviderName = 'ltx' | 'stub';
+
 /** Which provider serves `LlmService` — text, JSON, and vision QA. */
-export type LlmProviderName = 'anthropic' | 'gemini' | 'ollama';
+export type LlmProviderName = 'anthropic' | 'gemini';
 
 /** `stub` returns fixture results locally — see adapters/stub.search.ts. */
 export type SearchProviderName = 'tavily' | 'serpapi' | 'stub';
@@ -34,16 +42,17 @@ export interface AiConfig {
   perplexityApiKey?: string;
   tavilyApiKey?: string;
   serpApiKey?: string;
+  ltxApiKey?: string;
 
   /** Local-only API host overrides; see AnthropicAdapterConfig.baseUrl. */
   anthropicBaseUrl?: string;
   googleBaseUrl?: string;
-  ollamaBaseUrl?: string;
-  ollamaModel?: string;
 
   models?: Partial<Record<ModelRole, string>>;
   geminiImageModel?: string;
   falEditModel?: string;
+  ltxModel?: string;
+  ltxBaseUrl?: string;
   /**
    * Model the Gemini *answer engine* asks during a GEO probe — distinct from
    * both the image model and the LLM role models. Grounded calls on the 3.x
@@ -57,6 +66,8 @@ export interface AiConfig {
   /** Which adapter serves each image operation. */
   imageProviderPrimary?: ImageProviderName;
   imageProviderEdit?: ImageProviderName;
+  /** Which adapter serves `videoGenerator()`. Defaults to `ltx`. */
+  videoProviderPrimary?: VideoProviderName;
   /** Which adapter serves text/JSON/vision. Defaults to `anthropic`. */
   llmProvider?: LlmProviderName;
   /** Which adapter serves `webSearch()`. Defaults to `tavily`; an unset
@@ -87,16 +98,9 @@ const GEMINI_MODELS: Record<ModelRole, string> = {
   qa: 'gemini-3.6-flash',
 };
 
-const OLLAMA_MODELS: Record<ModelRole, string> = {
-  orchestrator: 'gemma4:e4b',
-  volume: 'gemma4:e4b',
-  qa: 'gemma4:e4b',
-};
-
 const DEFAULT_MODELS: Record<LlmProviderName, Record<ModelRole, string>> = {
   anthropic: ANTHROPIC_MODELS,
   gemini: GEMINI_MODELS,
-  ollama: OLLAMA_MODELS,
 };
 
 /**
@@ -106,6 +110,7 @@ const DEFAULT_MODELS: Record<LlmProviderName, Record<ModelRole, string>> = {
 export class AiRegistry {
   private readonly llmService: LlmService;
   private readonly images: Record<ImageProviderName, ImageGenService>;
+  private readonly videos: Record<VideoProviderName, VideoGenService>;
   private readonly engines: Map<AnswerEngine, AnswerEngineClient>;
   private readonly searches: Record<SearchProviderName, WebSearchService>;
 
@@ -113,7 +118,10 @@ export class AiRegistry {
     // LLM_MODEL_* overrides are provider-agnostic strings, so they must match
     // whichever provider is selected — a Claude id under LLM_PROVIDER=gemini
     // reaches Google and 404s. Defaults are picked per provider for that reason.
-    const llmProvider = config.llmProvider ?? 'anthropic';
+    // Defaults to gemini: it's the provider with a working key across
+    // environments today, while anthropic support stays in place for whenever
+    // a working Anthropic key is available again.
+    const llmProvider = config.llmProvider ?? 'gemini';
     const models = { ...DEFAULT_MODELS[llmProvider], ...config.models };
 
     this.llmService =
@@ -123,17 +131,11 @@ export class AiRegistry {
             models,
             ...(config.googleBaseUrl ? { baseUrl: config.googleBaseUrl } : {}),
           })
-        : llmProvider === 'ollama'
-          ? new OllamaLlmAdapter({
-              baseUrl: config.ollamaBaseUrl,
-              model: config.ollamaModel,
-              models,
-            })
-          : new AnthropicLlmAdapter({
-              apiKey: config.anthropicApiKey,
-              models,
-              ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
-            });
+        : new AnthropicLlmAdapter({
+            apiKey: config.anthropicApiKey,
+            models,
+            ...(config.anthropicBaseUrl ? { baseUrl: config.anthropicBaseUrl } : {}),
+          });
 
     this.images = {
       gemini: new GeminiImageAdapter({
@@ -145,6 +147,15 @@ export class AiRegistry {
       ...(config.stubImageLatencyMs === undefined
         ? { stub: new StubImageAdapter() }
         : { stub: new StubImageAdapter({ latencyMs: config.stubImageLatencyMs }) }),
+    };
+
+    this.videos = {
+      ltx: new LtxVideoAdapter({
+        apiKey: config.ltxApiKey,
+        model: config.ltxModel,
+        ...(config.ltxBaseUrl ? { baseUrl: config.ltxBaseUrl } : {}),
+      }),
+      stub: new StubVideoAdapter(),
     };
 
     this.engines = new Map<AnswerEngine, AnswerEngineClient>([
@@ -176,6 +187,12 @@ export class AiRegistry {
   /** Targeted edits; routed separately so edits can use a specialised model. */
   imageEditor(): ImageGenService {
     return this.images[this.config.imageProviderEdit ?? 'fal'];
+  }
+
+  /** Video generation — the content pipeline's video counterpart to
+   *  `imageGenerator()`. */
+  videoGenerator(): VideoGenService {
+    return this.videos[this.config.videoProviderPrimary ?? 'ltx'];
   }
 
   answerEngine(engine: AnswerEngine): AnswerEngineClient | undefined {
@@ -223,10 +240,9 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     perplexityApiKey: env.PERPLEXITY_API_KEY,
     tavilyApiKey: env.TAVILY_API_KEY,
     serpApiKey: env.SERPAPI_KEY,
+    ltxApiKey: env.LTX_API_KEY,
     ...(env.ANTHROPIC_BASE_URL ? { anthropicBaseUrl: env.ANTHROPIC_BASE_URL } : {}),
     ...(env.GOOGLE_API_BASE_URL ? { googleBaseUrl: env.GOOGLE_API_BASE_URL } : {}),
-    ...(env.OLLAMA_BASE_URL ? { ollamaBaseUrl: env.OLLAMA_BASE_URL } : {}),
-    ...(env.OLLAMA_MODEL ? { ollamaModel: env.OLLAMA_MODEL } : {}),
     models: {
       ...(env.LLM_MODEL_ORCHESTRATOR ? { orchestrator: env.LLM_MODEL_ORCHESTRATOR } : {}),
       ...(env.LLM_MODEL_VOLUME ? { volume: env.LLM_MODEL_VOLUME } : {}),
@@ -236,8 +252,11 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     falEditModel: env.IMAGE_MODEL_FAL_EDIT,
     geminiEngineModel: env.GEO_MODEL_GEMINI,
     ...(env.IMAGE_STUB_LATENCY_MS ? { stubImageLatencyMs: Number(env.IMAGE_STUB_LATENCY_MS) } : {}),
+    ltxModel: env.VIDEO_MODEL_LTX,
+    ...(env.LTX_BASE_URL ? { ltxBaseUrl: env.LTX_BASE_URL } : {}),
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
     imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,
+    videoProviderPrimary: env.VIDEO_PROVIDER_PRIMARY as VideoProviderName | undefined,
     llmProvider: env.LLM_PROVIDER as LlmProviderName | undefined,
     searchProvider: env.WEB_SEARCH_PROVIDER as SearchProviderName | undefined,
   });

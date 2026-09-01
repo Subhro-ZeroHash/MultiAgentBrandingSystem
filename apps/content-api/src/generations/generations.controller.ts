@@ -17,8 +17,13 @@ import {
 } from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
+import { PerUserRateLimitGuard } from '../common/per-user-rate-limit.guard.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { GenerationsService } from './generations.service.js';
+
+/** Placeholder ceiling — there's no real cost-tolerance number yet, this
+ *  exists so "unlimited" isn't the default. Tune once real usage exists. */
+const generationRateLimitGuard = new PerUserRateLimitGuard(20, 3_600_000);
 
 /**
  * The idempotency key becomes a BullMQ job id and a unique DB key, so it is
@@ -42,6 +47,7 @@ function parseLimit(raw: string | undefined): number {
 export class GenerationsController {
   constructor(private readonly generations: GenerationsService) {}
 
+  @UseGuards(generationRateLimitGuard)
   @Post()
   create(
     @Request() req: AuthenticatedRequest,

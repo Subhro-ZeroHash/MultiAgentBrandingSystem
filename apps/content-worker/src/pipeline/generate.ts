@@ -108,19 +108,23 @@ export async function runGeneration(
     .limit(1);
   if (!row) throw new Error(`Generation job ${job.jobId} not found`);
 
+  // brandId comes off the row this job's own id points to, not the queue
+  // payload — a job producer bug or lesser Redis-level compromise could
+  // otherwise enqueue {jobId, brandId} with a mismatched pair and have this
+  // worker attribute one brand's generation to another's context.
   const [brand] = await ctx.db
     .select()
     .from(schema.brands)
-    .where(eq(schema.brands.id, job.brandId))
+    .where(eq(schema.brands.id, row.brandId))
     .limit(1);
-  if (!brand) throw new Error(`Brand ${job.brandId} not found`);
+  if (!brand) throw new Error(`Brand ${row.brandId} not found`);
 
   const request = row.request as unknown as CreativeRequest;
   const diverse = request.variantMode === 'diverse';
 
   // The trend read is only worth paying for in diverse mode — a uniform-mode
   // job (every scheduled campaign) never reaches the 'trend' variant.
-  const memory = await loadBrandMemory(ctx, job.brandId, diverse);
+  const memory = await loadBrandMemory(ctx, row.brandId, diverse);
 
   const stageCtx: StageContext = {
     ai: ctx.ai,
@@ -146,7 +150,7 @@ export async function runGeneration(
   // answerable from the row rather than reconstructed from today's context.
   if (memory) {
     await recordContextSnapshot(ctx.db, {
-      brandId: job.brandId,
+      brandId: row.brandId,
       agentType: 'content',
       snapshot: { ...memory, variantMode: request.variantMode ?? 'uniform' },
       usedInJobId: job.jobId,

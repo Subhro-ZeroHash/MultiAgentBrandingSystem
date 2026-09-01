@@ -8,11 +8,20 @@ import {
   poolRefreshJobSchema,
   scheduledPostPublishJobSchema,
   trendResearchJobSchema,
+  contentPlanDirectiveJobSchema,
+  contentPlanItemReplaceJobSchema,
+  contentPlanSynthesisJobSchema,
+  videoGenerationJobSchema,
 } from '@bmas/shared';
 import { Queue, UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
 import { runAssetEdit } from './pipeline/asset-edit.js';
 import { runGeneration } from './pipeline/generate.js';
+import { runVideoGeneration } from './pipeline/generate-video.js';
+import {
+  runInstagramInsightsSync,
+  scheduleInstagramInsightsSyncTick,
+} from './pipeline/instagram-insights-sync.js';
 import { runIntelligencePoolRefresh } from './pipeline/intelligence-pool-refresh.js';
 import { runIntelligenceResearch } from './pipeline/intelligence-research.js';
 import { runPoolSchedulerTick, schedulePoolSchedulerTick } from './pipeline/pool-scheduler.js';
@@ -22,13 +31,32 @@ import {
 } from './pipeline/research-scheduler.js';
 import { runScheduledPostPublish } from './pipeline/scheduled-post-publish.js';
 import { runTrendPoolRefresh } from './pipeline/trend-pool-refresh.js';
+import { runPlanDirective } from './pipeline/plan-directive.js';
+import { runPlanItemReplace } from './pipeline/plan-item-replace.js';
+import { runPlanSynthesis } from './pipeline/plan-synthesis.js';
 import { runTrendResearch } from './pipeline/trend-research.js';
 
 const ctx = createContext();
 
 // A fresh MinIO volume has no buckets, so the first upload would fail with
 // NoSuchBucket. Done at boot rather than per job so the cost is paid once.
-await ctx.storage.ensureBucket();
+//
+// Deliberately non-fatal: an unguarded await here means a misconfigured or
+// absent object-storage endpoint (e.g. R2 credentials not set up yet) throws
+// before a single queue below is registered — the whole worker, including
+// every queue that has nothing to do with storage (trend-research,
+// intelligence-research, plan synthesis, ...), silently never starts
+// consuming jobs, with no crash and no error visible short of noticing the
+// process has zero open sockets. Asset uploads still fail per-job with a
+// clear error until storage is configured; that's an acceptable, contained
+// failure — every other queue staying dead because of it is not.
+try {
+  await ctx.storage.ensureBucket();
+} catch (error) {
+  console.error(
+    `[content-worker] object storage unavailable at boot, continuing without it (asset uploads will fail until this is fixed): ${describeError(error)}`,
+  );
+}
 
 console.warn(`[content-worker] LLM provider: ${ctx.ai.llm().provider}`);
 console.warn(
@@ -68,6 +96,38 @@ generationWorker.on('failed', (job, error) => {
       : ` — retrying, ${max - attempt} left`;
   console.error(
     `[content:generation] job ${job?.id} attempt ${attempt}/${max} failed${outcome}: ${describeError(error)}`,
+  );
+});
+
+/**
+ * Video's own worker — same shape as `generationWorker` above, separate
+ * queue. Kept apart from image generation rather than merged into the same
+ * queue behind a media-type field: the two pipelines share almost nothing
+ * (see generate-video.ts's header), and a video job stuck behind a burst of
+ * image jobs (or vice versa) has no reason to wait on the other's
+ * concurrency budget.
+ */
+const videoGenerationWorker = new Worker(
+  QUEUES.videoGeneration,
+  async (job) =>
+    runVideoGeneration(ctx, videoGenerationJobSchema.parse(job.data), {
+      attempt: job.attemptsStarted || job.attemptsMade + 1,
+      maxAttempts: job.opts.attempts ?? 1,
+    }),
+  { connection: ctx.redis, concurrency: ctx.concurrency },
+);
+
+videoGenerationWorker.on('failed', (job, error) => {
+  const attempt = job?.attemptsMade ?? 0;
+  const max = job?.opts.attempts ?? 1;
+  const abandoned = error instanceof UnrecoverableError || error?.name === 'UnrecoverableError';
+  const outcome = abandoned
+    ? ' (final — not retryable)'
+    : attempt >= max
+      ? ' (final)'
+      : ` — retrying, ${max - attempt} left`;
+  console.error(
+    `[content:video] job ${job?.id} attempt ${attempt}/${max} failed${outcome}: ${describeError(error)}`,
   );
 });
 
@@ -159,6 +219,51 @@ intelligencePoolResearchWorker.on('failed', (job, error) => {
   console.error(`[intelligence-pool-refresh] job ${job?.id} failed: ${describeError(error)}`);
 });
 
+// The planning agents. Both are strategy-level LLM calls rather than image
+// work, so they are cheap to run and there is no reason to serialise them
+// beyond keeping one brand's plan writes from racing each other — which the
+// planner's own transaction already handles.
+const planSynthesisWorker = new Worker(
+  QUEUES.contentPlanSynthesis,
+  async (job) => {
+    await runPlanSynthesis(ctx, contentPlanSynthesisJobSchema.parse(job.data));
+  },
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+planSynthesisWorker.on('failed', (job, error) => {
+  console.error(`[plan] job ${job?.id} failed: ${describeError(error)}`);
+});
+
+// Concurrency 1: a directive rewrites the whole plan, and two of a brand's
+// messages processed at once would each supersede the other's plan, leaving
+// the user's earlier instruction silently discarded. Ordering is the feature
+// here, not throughput.
+const planDirectiveWorker = new Worker(
+  QUEUES.contentPlanDirective,
+  async (job) => runPlanDirective(ctx, contentPlanDirectiveJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+planDirectiveWorker.on('failed', (job, error) => {
+  console.error(`[plan-directive] job ${job?.id} failed: ${describeError(error)}`);
+});
+
+const planItemReplaceWorker = new Worker(
+  QUEUES.contentPlanItemReplace,
+  async (job) => {
+    await runPlanItemReplace(ctx, contentPlanItemReplaceJobSchema.parse(job.data));
+  },
+  // Serialised per process: two replacements for the same plan drafted at once
+  // would each be blind to the other's new item, which is exactly the
+  // duplicate this feature exists to prevent.
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+planItemReplaceWorker.on('failed', (job, error) => {
+  console.error(`[plan-replace] job ${job?.id} failed: ${describeError(error)}`);
+});
+
 // Producer-side handles for the scheduler ticks to enqueue into. Separate
 // from the Worker instances above (which only consume) — BullMQ's Queue and
 // Worker are different roles on the same queue name, and a tick needs to add
@@ -200,6 +305,26 @@ poolSchedulerWorker.on('failed', (job, error) => {
   console.error(`[pool-scheduler] tick ${job?.id} failed: ${describeError(error)}`);
 });
 
+// Self-contained tick: unlike researchScheduler/poolScheduler, this does not
+// fan out into another queue — the tick's own processor does the DB read and
+// the Instagram Graph API calls directly. See instagram-insights-sync.ts's
+// module comment for why that lives here rather than as an HTTP call back
+// into content-api.
+const instagramInsightsSyncQueue = new Queue(QUEUES.instagramInsightsSync, {
+  connection: ctx.redis,
+});
+await scheduleInstagramInsightsSyncTick(instagramInsightsSyncQueue);
+
+const instagramInsightsSyncWorker = new Worker(
+  QUEUES.instagramInsightsSync,
+  async () => runInstagramInsightsSync(ctx),
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+instagramInsightsSyncWorker.on('failed', (job, error) => {
+  console.error(`[instagram-insights-sync] tick ${job?.id} failed: ${describeError(error)}`);
+});
+
 // One provider call per job. `runAssetEdit` never rethrows (see its own
 // comment — attempts:1 is a deliberate, capped user-facing budget), so
 // 'failed' here would only ever fire on something outside that try/catch,
@@ -237,6 +362,7 @@ async function shutdown(signal: string): Promise<void> {
     // Waits for in-flight generations so a deploy never abandons a paid job.
     await Promise.all([
       generationWorker.close(),
+      videoGenerationWorker.close(),
       scheduledPostPublishWorker.close(),
       trendResearchWorker.close(),
       intelligenceResearchWorker.close(),
@@ -245,6 +371,10 @@ async function shutdown(signal: string): Promise<void> {
       researchSchedulerWorker.close(),
       poolSchedulerWorker.close(),
       contentEditWorker.close(),
+      planSynthesisWorker.close(),
+      planDirectiveWorker.close(),
+      planItemReplaceWorker.close(),
+      instagramInsightsSyncWorker.close(),
       trendResearchProducer.close(),
       intelligenceResearchProducer.close(),
       researchSchedulerQueue.close(),
@@ -252,6 +382,8 @@ async function shutdown(signal: string): Promise<void> {
       intelligencePoolResearchProducer.close(),
       poolSchedulerQueue.close(),
       contentGenerationProducer.close(),
+      scheduledPostPublishProducer.close(),
+      instagramInsightsSyncQueue.close(),
     ]);
     await closeDatabase(ctx.db);
   } catch (error) {

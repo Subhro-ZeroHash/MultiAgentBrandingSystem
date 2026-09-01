@@ -12,7 +12,17 @@ import { createStorage, type Storage } from './storage.js';
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 
+/**
+ * A `.env` file spells "not set" as `NAME=`, which reaches us as '' — but
+ * `.optional()` admits only `undefined`, so a blank line fails `.url()`
+ * validation instead of being treated as unset. Mirrors
+ * apps/content-api/src/config/env.ts's `optionalUrl`.
+ */
+const optionalUrl = () =>
+  z.preprocess((value) => (value === '' ? undefined : value), z.string().url().optional());
+
 const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   /** Image generation is the bottleneck; keep this near the provider's limit. */
@@ -26,7 +36,7 @@ const envSchema = z.object({
 
   // Object storage for generated creatives. Defaults match the MinIO container
   // in docker-compose.yml so a local checkout works without extra setup.
-  S3_ENDPOINT: z.string().url().optional(),
+  S3_ENDPOINT: optionalUrl(),
   S3_REGION: z.string().default('auto'),
   S3_BUCKET: z.string().default('bmas-assets'),
   S3_ACCESS_KEY_ID: z.string().default('bmas'),
@@ -35,7 +45,7 @@ const envSchema = z.object({
     .string()
     .default('true')
     .transform((value) => value !== 'false'),
-  S3_PUBLIC_URL: z.string().url().optional(),
+  S3_PUBLIC_URL: optionalUrl(),
 
   /** Where this process reaches content-api's HTTP API. Used only by the
    *  scheduled-post publish job, which posts through the existing
@@ -47,6 +57,13 @@ const envSchema = z.object({
    *  owner (not a fixed dev id) so the call passes content-api's JwtAuthGuard
    *  as that user, matching whatever brand/post it is publishing. */
   AUTH_SECRET: z.string().min(32, 'AUTH_SECRET must be at least 32 characters'),
+  /** Same key content-api's SocialService encrypts stored Instagram tokens
+   *  with — required now, matching content-api's env.ts: an unset key used
+   *  to mean tokens were silently stored in plaintext, which is exactly the
+   *  data-at-rest gap this now fails startup on instead of masking. */
+  ENCRYPTION_KEY: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes)'),
 });
 
 export interface WorkerContext {
@@ -58,6 +75,7 @@ export interface WorkerContext {
   qaRegenerationRounds: number;
   contentApiUrl: string;
   authSecret: string;
+  encryptionKey: string;
 }
 
 export function createContext(): WorkerContext {
@@ -73,7 +91,10 @@ export function createContext(): WorkerContext {
   const url = new URL(env.REDIS_URL);
 
   return {
-    db: createDatabase({ url: env.DATABASE_URL }),
+    // See apps/content-api/src/core/core.module.ts's identical comment —
+    // Supabase's session-pooler cap (15) is shared across every service, not
+    // per-service, so each one needs an explicit small `max`.
+    db: createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production', max: 3 }),
     ai: createAiRegistryFromEnv(),
     storage: createStorage({
       region: env.S3_REGION,
@@ -93,5 +114,6 @@ export function createContext(): WorkerContext {
     qaRegenerationRounds: env.QA_REGENERATION_ROUNDS,
     contentApiUrl: env.CONTENT_API_URL,
     authSecret: env.AUTH_SECRET,
+    encryptionKey: env.ENCRYPTION_KEY,
   };
 }

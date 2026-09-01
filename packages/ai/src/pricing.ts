@@ -69,6 +69,53 @@ export function priceImages(model: string, count: number): number {
 }
 
 /**
+ * Per-second video rates, in micro-USD, keyed by the standard resolution name
+ * ("1080" for 1080p) — LTX prices identically for a given pixel count
+ * regardless of orientation (`1920x1080` and `1080x1920` are the same rate),
+ * so one row covers both rather than doubling every entry for
+ * portrait/landscape. The number is the *short* edge of that resolution's
+ * 16:9 landscape pair (1080p is 1920x1080 — 1080 is the height, not the long
+ * edge), matching how the industry actually names these tiers.
+ *
+ * VERIFIED against docs.ltx.io/pricing directly (fetched 2026-08-27), not
+ * estimated from training data — LTX is a new integration with no prior spend
+ * to sanity-check against, so an approximate rate here would under- or
+ * over-report real cost from the very first call with nothing to catch it.
+ * Re-check before relying on this for a billing decision regardless; LTX's own
+ * pricing page is the source of truth and can move.
+ */
+export const VIDEO_RATES: Record<string, Record<number, number>> = {
+  'ltx-2-5-fast': { 720: 90_000, 1080: 130_000, 1440: 190_000, 2160: 300_000 },
+  'ltx-2-5-pro': { 720: 120_000, 1080: 170_000 },
+  'ltx-2-3-fast': { 720: 30_000, 1080: 60_000, 1440: 120_000, 2160: 240_000 },
+  'ltx-2-3-pro': { 720: 40_000, 1080: 80_000, 1440: 160_000, 2160: 320_000 },
+};
+
+/**
+ * `resolutionTier` is the standard resolution name (1080 for both `1920x1080`
+ * and `1080x1920`) — the same value `nearestVideoResolution` in ltx.video.ts
+ * resolves a request to and bills at, so a caller never needs to re-derive it
+ * from raw pixels. Falls to the nearest tier at or above the request rather
+ * than zero on an exact-match miss: resolution tiers are the fixed set LTX
+ * actually prices, so a request between two isn't a missing rate the way an
+ * unknown model id is — it is charged at the next tier up, the same way LTX
+ * itself would bill an unlisted in-between size, rather than silently
+ * reporting zero for a model that IS priced.
+ */
+export function priceVideo(model: string, resolutionTier: number, durationSeconds: number): number {
+  const rates = VIDEO_RATES[model];
+  if (!rates) return 0;
+
+  const tiers = Object.keys(rates)
+    .map(Number)
+    .sort((a, b) => a - b);
+  const tier = tiers.find((candidate) => candidate >= resolutionTier) ?? tiers[tiers.length - 1];
+  if (tier === undefined) return 0;
+
+  return Math.round(rates[tier]! * durationSeconds);
+}
+
+/**
  * Flat per-call rates in micro-USD for providers billed by the call rather
  * than by token or image — currently just web search.
  *

@@ -6,6 +6,7 @@ import {
   type CategoryKey,
   type PoolBucket,
   type PoolRunScope,
+  DEFAULT_MARKET,
 } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
@@ -46,8 +47,8 @@ interface BucketRunStatus {
   expiresAt: Date | null;
 }
 
-function bucketKey(scope: PoolRunScope, category: CategoryKey | null): string {
-  return `${scope}:${category ?? ''}`;
+function bucketKey(scope: PoolRunScope, category: CategoryKey | null, market: string): string {
+  return `${scope}:${category ?? ''}@${market}`;
 }
 
 /** Pure — which buckets need a fresh run right now, given the latest known
@@ -59,7 +60,7 @@ export function bucketsNeedingRefresh(
   now: Date,
 ): PoolBucket[] {
   return buckets.filter((bucket) => {
-    const run = latest.get(bucketKey(bucket.scope, bucket.category));
+    const run = latest.get(bucketKey(bucket.scope, bucket.category, bucket.market));
     if (!run) return true; // never populated
     if (run.status === 'failed') return true; // retry
     if (run.status !== 'succeeded') return false; // queued/running — already in flight
@@ -73,17 +74,34 @@ export function bucketsNeedingRefresh(
  *  iterating the full fixed taxonomy. */
 async function loadActiveBuckets(ctx: WorkerContext): Promise<PoolBucket[]> {
   const rows = await ctx.db
-    .selectDistinct({ categoryKey: schema.brandContexts.categoryKey })
+    .selectDistinct({
+      categoryKey: schema.brandContexts.categoryKey,
+      marketCode: schema.brandContexts.marketCode,
+    })
     .from(schema.brandContexts)
     .where(isNotNull(schema.brandContexts.categoryKey));
 
-  const categories = rows
-    .map((row) => row.categoryKey)
-    .filter((key): key is CategoryKey => key !== null);
+  const pairs = rows
+    .map((row) => ({
+      category: row.categoryKey,
+      // A brand classified into a category but not yet a market is served
+      // from the default market's pool, which is exactly what the loader
+      // falls back to — so the scheduler must keep that bucket warm too.
+      market: row.marketCode ?? DEFAULT_MARKET,
+    }))
+    .filter((pair): pair is { category: CategoryKey; market: string } => pair.category !== null);
+
+  // The national bucket is per market, not global: "upcoming festivals" is
+  // the most market-specific query the pool makes, so every market a brand
+  // actually trades in needs its own.
+  const markets = [...new Set(pairs.map((pair) => pair.market))];
+  if (markets.length === 0) markets.push(DEFAULT_MARKET);
 
   return [
-    ...categories.map((category): PoolBucket => ({ scope: 'category', category })),
-    { scope: 'national', category: null },
+    ...pairs.map(
+      ({ category, market }): PoolBucket => ({ scope: 'category', category, market }),
+    ),
+    ...markets.map((market): PoolBucket => ({ scope: 'national', category: null, market })),
   ];
 }
 
@@ -102,11 +120,12 @@ async function loadLatestTrendRuns(
             bucket.category === null
               ? isNull(schema.poolTrendRuns.category)
               : eq(schema.poolTrendRuns.category, bucket.category),
+            eq(schema.poolTrendRuns.market, bucket.market),
           ),
         )
         .orderBy(desc(schema.poolTrendRuns.createdAt))
         .limit(1);
-      return [bucketKey(bucket.scope, bucket.category), row] as const;
+      return [bucketKey(bucket.scope, bucket.category, bucket.market), row] as const;
     }),
   );
   return new Map(
@@ -132,11 +151,12 @@ async function loadLatestIntelligenceRuns(
             bucket.category === null
               ? isNull(schema.poolIntelligenceRuns.category)
               : eq(schema.poolIntelligenceRuns.category, bucket.category),
+            eq(schema.poolIntelligenceRuns.market, bucket.market),
           ),
         )
         .orderBy(desc(schema.poolIntelligenceRuns.createdAt))
         .limit(1);
-      return [bucketKey(bucket.scope, bucket.category), row] as const;
+      return [bucketKey(bucket.scope, bucket.category, bucket.market), row] as const;
     }),
   );
   return new Map(
@@ -157,27 +177,27 @@ async function enqueueTrendBucket(
   try {
     const [run] = await ctx.db
       .insert(schema.poolTrendRuns)
-      .values({ scope: bucket.scope, category: bucket.category })
+      .values({ scope: bucket.scope, category: bucket.category, market: bucket.market })
       .returning({ id: schema.poolTrendRuns.id });
     if (!run) return;
 
     await queue.add(
       QUEUES.trendPoolResearch,
-      { runId: run.id, scope: bucket.scope, category: bucket.category },
+      { runId: run.id, scope: bucket.scope, category: bucket.category, market: bucket.market },
       { jobId: run.id, attempts: 2, backoff: { type: 'exponential', delay: 5_000 } },
     );
     console.warn(
-      `[pool-scheduler] enqueued trend refresh for ${bucketKey(bucket.scope, bucket.category)} (run ${run.id})`,
+      `[pool-scheduler] enqueued trend refresh for ${bucketKey(bucket.scope, bucket.category, bucket.market)} (run ${run.id})`,
     );
   } catch (error) {
     if (isUniqueViolation(error)) {
       console.warn(
-        `[pool-scheduler] trend bucket ${bucketKey(bucket.scope, bucket.category)} already has an active refresh, skipping`,
+        `[pool-scheduler] trend bucket ${bucketKey(bucket.scope, bucket.category, bucket.market)} already has an active refresh, skipping`,
       );
       return;
     }
     console.error(
-      `[pool-scheduler] failed to enqueue trend refresh for ${bucketKey(bucket.scope, bucket.category)}: ${describeError(error)}`,
+      `[pool-scheduler] failed to enqueue trend refresh for ${bucketKey(bucket.scope, bucket.category, bucket.market)}: ${describeError(error)}`,
     );
   }
 }
@@ -190,27 +210,27 @@ async function enqueueIntelligenceBucket(
   try {
     const [run] = await ctx.db
       .insert(schema.poolIntelligenceRuns)
-      .values({ scope: bucket.scope, category: bucket.category })
+      .values({ scope: bucket.scope, category: bucket.category, market: bucket.market })
       .returning({ id: schema.poolIntelligenceRuns.id });
     if (!run) return;
 
     await queue.add(
       QUEUES.intelligencePoolResearch,
-      { runId: run.id, scope: bucket.scope, category: bucket.category },
+      { runId: run.id, scope: bucket.scope, category: bucket.category, market: bucket.market },
       { jobId: run.id, attempts: 2, backoff: { type: 'exponential', delay: 5_000 } },
     );
     console.warn(
-      `[pool-scheduler] enqueued intelligence refresh for ${bucketKey(bucket.scope, bucket.category)} (run ${run.id})`,
+      `[pool-scheduler] enqueued intelligence refresh for ${bucketKey(bucket.scope, bucket.category, bucket.market)} (run ${run.id})`,
     );
   } catch (error) {
     if (isUniqueViolation(error)) {
       console.warn(
-        `[pool-scheduler] intelligence bucket ${bucketKey(bucket.scope, bucket.category)} already has an active refresh, skipping`,
+        `[pool-scheduler] intelligence bucket ${bucketKey(bucket.scope, bucket.category, bucket.market)} already has an active refresh, skipping`,
       );
       return;
     }
     console.error(
-      `[pool-scheduler] failed to enqueue intelligence refresh for ${bucketKey(bucket.scope, bucket.category)}: ${describeError(error)}`,
+      `[pool-scheduler] failed to enqueue intelligence refresh for ${bucketKey(bucket.scope, bucket.category, bucket.market)}: ${describeError(error)}`,
     );
   }
 }

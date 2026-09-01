@@ -12,6 +12,7 @@ import { poolRunScopeSchema } from './content/research-pool.js';
 export const QUEUES = {
   contentGeneration: 'content-generation',
   contentEdit: 'content-edit',
+  videoGeneration: 'video-generation',
   scheduledPostPublish: 'scheduled-post-publish',
   trendResearch: 'trend-research',
   intelligenceResearch: 'intelligence-research',
@@ -30,7 +31,21 @@ export const QUEUES = {
   poolScheduler: 'pool-scheduler',
   geoProbe: 'geo-probe',
   geoRollup: 'geo-rollup',
+  geoPromptRefresh: 'geo-prompt-refresh',
+  /** The Marketing Planner. Synthesizes the standing plan from the Brand
+   *  Brain plus whatever the research agents have most recently found. */
+  contentPlanSynthesis: 'content-plan-synthesis',
+  /** One user steering message. Classifies it, researches when it names a new
+   *  topic, then re-plans — see plan-directive.ts. */
+  contentPlanDirective: 'content-plan-directive',
+  /** Draft one replacement for a proposal the user dismissed. Separate from
+   *  plan synthesis because it rewrites a single item rather than the plan. */
+  contentPlanItemReplace: 'content-plan-item-replace',
   geoSweep: 'geo-sweep',
+  /** The periodic tick that sweeps recently-published posts for fresh
+   *  Instagram metrics. Same shape as researchScheduler: one repeatable job,
+   *  empty payload, re-reads what's due every time it fires. */
+  instagramInsightsSync: 'instagram-insights-sync',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -41,6 +56,53 @@ export const contentGenerationJobSchema = z.object({
   idempotencyKey: z.string(),
 });
 export type ContentGenerationJob = z.infer<typeof contentGenerationJobSchema>;
+
+/** Mirrors `contentGenerationJobSchema` exactly — same three fields mean the
+ *  same thing for a video job as for an image one. */
+export const videoGenerationJobSchema = z.object({
+  jobId: entityIdSchema,
+  brandId: entityIdSchema,
+  idempotencyKey: z.string(),
+});
+export type VideoGenerationJob = z.infer<typeof videoGenerationJobSchema>;
+
+/**
+ * Draft or redraft a brand's marketing plan.
+ *
+ * `directiveId` is set when a user's steering message caused this run, so the
+ * planner can attribute the resulting plan and close the loop on the chat
+ * message that asked for it.
+ */
+export const contentPlanSynthesisJobSchema = z.object({
+  brandId: entityIdSchema,
+  directiveId: entityIdSchema.nullable().default(null),
+  /** Overrides the plan's subject. Set from a directive's topic after its
+   *  research run lands; null lets the planner choose. */
+  focus: z.string().max(300).nullable().default(null),
+  horizonDays: z.number().int().min(1).max(90).default(14),
+});
+export type ContentPlanSynthesisJob = z.infer<typeof contentPlanSynthesisJobSchema>;
+
+/** Process one message from the planning chat. */
+export const contentPlanDirectiveJobSchema = z.object({
+  directiveId: entityIdSchema,
+  brandId: entityIdSchema,
+});
+export type ContentPlanDirectiveJob = z.infer<typeof contentPlanDirectiveJobSchema>;
+
+/**
+ * Replace one dismissed proposal with a genuinely different idea.
+ *
+ * Carries only the item id: everything the replacement must avoid — the
+ * dismissed idea itself, the rest of the plan, and every proposal this brand
+ * has rejected before — is derived server-side, so a stale client cannot
+ * narrow the exclusion list by omission.
+ */
+export const contentPlanItemReplaceJobSchema = z.object({
+  planItemId: entityIdSchema,
+  brandId: entityIdSchema,
+});
+export type ContentPlanItemReplaceJob = z.infer<typeof contentPlanItemReplaceJobSchema>;
 
 /** Thin and id-only like every other job schema here — the worker re-reads
  *  the `asset_edits` row's current state rather than trusting a payload that
@@ -92,6 +154,10 @@ export const poolRefreshJobSchema = z.object({
   runId: entityIdSchema,
   scope: poolRunScopeSchema,
   category: categoryKeySchema.nullable(),
+  /** ISO country the refresh should search for. Defaulted so a job enqueued
+   *  by an older build — or already sitting in Redis across this deploy —
+   *  still parses instead of dead-lettering the whole bucket. */
+  market: z.string().min(2).max(2).default('IN'),
 });
 export type PoolRefreshJob = z.infer<typeof poolRefreshJobSchema>;
 
@@ -124,6 +190,20 @@ export const geoRollupJobSchema = z.object({
 export type GeoRollupJob = z.infer<typeof geoRollupJobSchema>;
 
 /**
+ * Regenerates a brand's suggested tracked prompts.
+ *
+ * Queued rather than done inline in geo-api because it is an LLM call, and
+ * every other model call in this system runs in a worker — the APIs enqueue.
+ * `requestedAt` travels with the job so the client can tell a finished refresh
+ * from the set that was already there, without a status table.
+ */
+export const geoPromptRefreshJobSchema = z.object({
+  brandId: entityIdSchema,
+  requestedAt: z.coerce.date(),
+});
+export type GeoPromptRefreshJob = z.infer<typeof geoPromptRefreshJobSchema>;
+
+/**
  * What the cron schedulers fire. These are orchestration jobs, not work: the
  * sweep worker turns one of these into the fan-out of probe or roll-up jobs.
  * Keeping that indirection means a cron tick carries no per-brand payload, so
@@ -132,5 +212,22 @@ export type GeoRollupJob = z.infer<typeof geoRollupJobSchema>;
 export const geoSweepJobSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('prompt'), promptId: entityIdSchema }),
   z.object({ kind: z.literal('rollup') }),
+  z.object({ kind: z.literal('prompt-suggestions') }),
 ]);
 export type GeoSweepJob = z.infer<typeof geoSweepJobSchema>;
+
+/** How often the sync sweeps for fresh Instagram metrics. Engagement numbers
+ *  don't need minute-level freshness, and this keeps Graph API usage light —
+ *  four sweeps a day is enough to see a post's engagement curve without
+ *  hammering the API every time it fires. */
+export const INSTAGRAM_INSIGHTS_SYNC_INTERVAL_HOURS = 6;
+
+/** How far back a post stays in scope for a sync sweep. Engagement on an
+ *  older post has effectively plateaued, so there is little value in an
+ *  unbounded sweep that only grows more expensive as posts accumulate. */
+export const INSTAGRAM_INSIGHTS_LOOKBACK_DAYS = 30;
+
+/** Empty payload, same reasoning as researchSchedulerTickJobSchema — the tick
+ *  re-reads which posts are due fresh every time it fires. */
+export const instagramInsightsSyncTickJobSchema = z.object({});
+export type InstagramInsightsSyncTickJob = z.infer<typeof instagramInsightsSyncTickJobSchema>;

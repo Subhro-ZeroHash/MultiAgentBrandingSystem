@@ -1,0 +1,2 @@
+ALTER TABLE "core"."users" ADD COLUMN "last_active_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "content"."automation_settings" ADD COLUMN "auto_paused_at" timestamp with time zone;

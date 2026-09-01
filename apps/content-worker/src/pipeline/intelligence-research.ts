@@ -1,5 +1,5 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
-import type { WebSearchRequest, WebSearchResult } from '@bmas/ai';
+import type { WebSearchRequest, WebSearchResult, WebSearchService } from '@bmas/ai';
 import {
   eq,
   getTrendContext,
@@ -16,6 +16,7 @@ import {
   intelligenceItemDraftSchema,
   intelligenceRelevanceSynthesisSchema,
   type CostEvent,
+  type IntelligenceCategory,
   type IntelligenceItemDraft,
   type IntelligenceModelScore,
   type IntelligenceRelevanceDraft,
@@ -24,7 +25,10 @@ import {
 } from '@bmas/shared';
 import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
+import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
+import { ensureBrandMarket } from './market-classifier.js';
 import { ensureFreshIntelligencePool } from './pool-loader.js';
 
 /**
@@ -55,6 +59,17 @@ const MAX_RELEVANCE_TOKENS = 4_000;
 const COMPETITOR_SYNTHESIS_TIMEOUT_MS = 300_000;
 const MAX_COMPETITOR_SYNTHESIS_TOKENS = 6_000;
 const RESULTS_PER_QUERY = 6;
+/**
+ * Floor for a brand-specific item's own `brandRelevance` score.
+ *
+ * Pooled items are filtered by a dedicated relevance pass; brand-specific
+ * ones are not, so without this the only gate is the search engine. Set at
+ * the point where the model is saying "this is about the right industry but
+ * not really about this business" — high enough to drop an unrelated banking
+ * acquisition that a footwear industry query happened to surface, low enough
+ * to keep a genuine sector development the brand does not appear in.
+ */
+const MIN_BRAND_RELEVANCE = 35;
 const MAX_SNIPPET_CHARS = 500;
 
 async function recordCost(
@@ -158,12 +173,20 @@ async function scoreIntelligenceRelevance(
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
+  market: string,
   poolItems: PoolIntelligenceItemRow[],
 ): Promise<{ items: IntelligenceRelevanceDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await scoreIntelligenceRelevanceOnce(ctx, runId, brand, brandContext, poolItems);
+      return await scoreIntelligenceRelevanceOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        market,
+        poolItems,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -181,6 +204,7 @@ async function scoreIntelligenceRelevanceOnce(
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
+  market: string,
   poolItems: PoolIntelligenceItemRow[],
 ): Promise<{ items: IntelligenceRelevanceDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
@@ -190,6 +214,7 @@ async function scoreIntelligenceRelevanceOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding(market) +
               'You are a business intelligence analyst judging how relevant a set of ' +
               'already-identified developments are for ONE SPECIFIC small business. The ' +
               'developments below were identified generically for the whole category/country, not ' +
@@ -259,50 +284,146 @@ export function resolveIntelligenceRelevanceDrafts(
 // ---------------------------------------------------------------------------
 
 interface CollectedSignal {
+  /** Which search provider produced these results. */
+  provider: string;
   results: WebSearchResult[];
 }
 
-/** Only searched when the brand has actually named competitors — an empty
- *  "competitor news" query against no names returns generic noise, worse
- *  than not asking at all. Same guard the old `buildIntelligenceSearchQueries`
- *  applied to its competitor branch. */
-function buildCompetitorQuery(competitors: string[]): WebSearchRequest | null {
-  const names = competitors.slice(0, 3);
-  if (names.length === 0) return null;
+/**
+ * The per-brand half of the intelligence feed.
+ *
+ * The pool covers `government_policy`, `industry_news` and `local`, but it is
+ * bucketed by a fixed taxonomy — a footwear brand lands in `fashion_apparel`,
+ * so every pooled query asks about "Fashion & Apparel" and the brand's real
+ * niche never reaches a search engine. That is the right trade for the shared
+ * layer (one search serves every fashion brand) and the wrong one for the two
+ * categories that are inherently about *this* business.
+ *
+ * So these queries use the brand's own words — its actual industry text and
+ * name — and cover the three categories the pool cannot:
+ *
+ *  - `brand_news`: previously unreachable. It was excluded from the poolable
+ *    set and never searched per-brand, so the category could not produce an
+ *    item under any circumstances.
+ *  - `competitor`: previously skipped entirely whenever a brand had named no
+ *    competitors, which is the default state. Falls back to discovering them
+ *    from the industry and market rather than going silent.
+ *  - a niche `industry_news` query, which is what makes the feed read as
+ *    footwear rather than apparel.
+ */
+export function buildBrandIntelligenceQueries(identity: {
+  brandName: string;
+  industry: string | null;
+  location: string | null;
+  competitors: string[];
+}): Array<{ category: IntelligenceCategory; request: WebSearchRequest }> {
+  const { brandName, competitors } = identity;
+  const industry = identity.industry?.trim() || null;
+  const place = identity.location?.trim() || null;
+  const where = place ? ` in ${place}` : '';
 
-  return {
-    query: `recent news announcements launches: ${names.join(', ')}`,
-    topic: 'news',
-    recencyDays: 30,
-    maxResults: RESULTS_PER_QUERY,
-  };
+  const queries: Array<{ category: IntelligenceCategory; request: WebSearchRequest }> = [
+    {
+      category: 'brand_news',
+      request: {
+        query: `"${brandName}" news announcements launches results`,
+        topic: 'news',
+        recencyDays: 30,
+        maxResults: RESULTS_PER_QUERY,
+      },
+    },
+  ];
+
+  const named = competitors.slice(0, 3);
+  queries.push({
+    category: 'competitor',
+    request: {
+      query: named.length
+        ? `recent news announcements launches: ${named.join(', ')}`
+        : // No names on file: ask who the rivals are rather than returning
+          // nothing. A brand that never filled in competitors still has them.
+          `top competitors of ${brandName}${industry ? ` ${industry}` : ''}${where} market share news`,
+      topic: 'news',
+      recencyDays: 30,
+      maxResults: RESULTS_PER_QUERY,
+    },
+  });
+
+  // The query that makes the difference between "apparel" and "footwear".
+  // Skipped when the brand has not described its industry, since without it
+  // this collapses into the pooled query it exists to improve on.
+  if (industry) {
+    queries.push({
+      category: 'industry_news',
+      request: {
+        query: `${industry} industry news market developments${where}`,
+        topic: 'news',
+        recencyDays: 30,
+        maxResults: RESULTS_PER_QUERY,
+      },
+    });
+  }
+
+  return queries;
 }
 
+/**
+ * Multi-provider fan-out for competitor search — mirrors
+ * `collectPoolSignals` in trend-pool-refresh.ts.
+ *
+ * Queries every configured provider (Tavily, SerpAPI, …) for competitor
+ * news. A development that two independent sources both surface is stronger
+ * evidence than either alone, and the synthesis LLM can see which provider
+ * flagged what. Individual provider failures are tolerated (same
+ * "one failing doesn’t sink the run" rule); all failing re-throws.
+ */
 async function collectCompetitorSignal(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
   request: WebSearchRequest,
-): Promise<CollectedSignal> {
-  const { value: results, cost } = await withRetry(() =>
-    withTimeout(
-      ctx.ai.webSearch().search(request, { brandId: brand.id, referenceId: runId }),
-      SEARCH_TIMEOUT_MS,
-      'intelligence competitor search',
-    ),
-  );
-  await recordCost(ctx, brand.id, runId, cost);
-  return { results };
+): Promise<CollectedSignal[]> {
+  const providers: WebSearchService[] = ctx.ai.configuredWebSearches();
+  const signals: CollectedSignal[] = [];
+
+  for (const provider of providers) {
+    try {
+      const { value: results, cost } = await withRetry(() =>
+        withTimeout(
+          provider.search(request, { brandId: brand.id, referenceId: runId }),
+          SEARCH_TIMEOUT_MS,
+          `intelligence competitor search (${provider.provider})`,
+        ),
+      );
+      await recordCost(ctx, brand.id, runId, cost);
+      signals.push({ provider: provider.provider, results });
+    } catch (error) {
+      console.warn(
+        `[intelligence-research] ${provider.provider}/competitor search failed for run ${runId}: ${describeError(error)}`,
+      );
+    }
+  }
+
+  if (signals.length === 0 || signals.every((s) => s.results.length === 0)) {
+    // Return a single empty-results signal so the caller can still run
+    // synthesis with "search returned nothing" rather than crashing the run.
+    return [{ provider: 'none', results: [] }];
+  }
+
+  return signals;
 }
 
-function describeCompetitorSignalForPrompt(signal: CollectedSignal): string {
-  if (signal.results.length === 0) return '## COMPETITOR NEWS\n(search returned nothing)';
+function describeCompetitorSignalForPrompt(signals: CollectedSignal[]): string {
+  const allResults = signals.flatMap((s) =>
+    s.results.map((r) => ({ result: r, provider: s.provider })),
+  );
+  if (allResults.length === 0) return '## COMPETITOR NEWS\n(search returned nothing)';
 
-  const rows = signal.results
-    .map((result, i) => {
+  const rows = allResults
+    .map(({ result, provider }, i) => {
       const date = result.publishedAt ? ` (${result.publishedAt})` : '';
       const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
-      return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
+      return `${i + 1}. [${provider}] [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
     })
     .join('\n');
 
@@ -346,9 +467,12 @@ const COMPETITOR_SYNTHESIS_SCHEMA = {
           },
           whyItMatters: {
             type: 'string',
+            // The parse below caps this at 400 characters; saying so here is
+            // what stops the model overrunning it and forcing a full retry of
+            // an otherwise-good synthesis.
             description:
               'The answer to "so what?" for THIS brand specifically. Name the concrete effect: a ' +
-              'cost, a risk, an opportunity, a decision to make.',
+              'cost, a risk, an opportunity, a decision to make. Under 400 characters.',
           },
           urgency: { enum: ['low', 'medium', 'high'] },
           score: {
@@ -405,11 +529,21 @@ async function synthesizeCompetitorItems(
   brand: Brand,
   brandContext: TrendTaskContext,
   signal: CollectedSignal,
+  category: IntelligenceCategory,
+  market: string,
 ): Promise<{ items: IntelligenceItemDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await synthesizeCompetitorItemsOnce(ctx, runId, brand, brandContext, signal);
+      return await synthesizeCompetitorItemsOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        signal,
+        category,
+        market,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -430,12 +564,28 @@ async function synthesizeCompetitorItems(
 const competitorItemDraftSchema = intelligenceItemDraftSchema.omit({ category: true });
 const competitorSynthesisSchema = z.object({ items: z.array(competitorItemDraftSchema).max(10) });
 
+/** What each per-brand query was actually asking, so the synthesis judges
+ *  results against that question rather than defaulting to competitor
+ *  framing for everything. */
+const BRAND_QUERY_BRIEF: Record<string, string> = {
+  brand_news:
+    'developments about the brand itself — its own announcements, launches, results, coverage and reputation',
+  competitor:
+    'developments at rival businesses that compete with this brand for the same customers',
+  industry_news:
+    "developments across the brand's specific industry — demand, supply, materials, pricing, regulation and channel shifts",
+  government_policy: 'policy, regulation and tax changes affecting this business',
+  local: "developments in the brand's own city or region",
+};
+
 async function synthesizeCompetitorItemsOnce(
   ctx: WorkerContext,
   runId: string,
   brand: Brand,
   brandContext: TrendTaskContext,
   signal: CollectedSignal,
+  category: IntelligenceCategory,
+  market: string,
 ): Promise<{ items: IntelligenceItemDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
     () =>
@@ -444,9 +594,14 @@ async function synthesizeCompetitorItemsOnce(
           {
             role: 'orchestrator',
             system:
-              'You are a business intelligence analyst keeping one small business owner informed ' +
-              'about their named competitors. You work ONLY from the search results you are given ' +
-              '— never invent a fact or a date that is not actually present in the results.\n\n' +
+              dateGrounding(market) +
+              'You are a business intelligence analyst keeping one small business owner ' +
+              `informed. These search results are about ${BRAND_QUERY_BRIEF[category] ?? category}. ` +
+              'You work ONLY from the search results you are given — never invent a fact or a ' +
+              'date that is not actually present in the results.\n\n' +
+              'Judge the results against that question specifically. Results drift: a search ' +
+              "about one brand returns rivals, an industry search returns one company's press " +
+              'release. Keep what genuinely answers the question asked and drop the rest.\n\n' +
               'This is NOT a content-ideas feed. The question for every item is: does the brand ' +
               'owner need to know this competitor development to run their business well? If ' +
               'nothing genuinely relevant surfaced, return fewer items — or none — rather than ' +
@@ -459,7 +614,7 @@ async function synthesizeCompetitorItemsOnce(
                   ...renderBrandContextLines(brandContext),
                   '',
                   '**Live search results:**',
-                  describeCompetitorSignalForPrompt(signal),
+                  describeCompetitorSignalForPrompt([signal]),
                   '',
                   'Produce up to 10 ranked items. `whyItMatters` must name the concrete effect on ' +
                     'THIS brand.',
@@ -495,12 +650,14 @@ async function synthesizeCompetitorItemsOnce(
   return { items, cost };
 }
 
-/** Same fabrication guard as the old `verifyIntelligenceSources`. */
+/** Same fabrication guard as the old `verifyIntelligenceSources`.
+ *  Accepts an array of signals since collectCompetitorSignal now fans out
+ *  across multiple providers. */
 export function verifyCompetitorSources(
   sources: TrendSource[],
-  signal: CollectedSignal,
+  signals: CollectedSignal[],
 ): TrendSource[] {
-  const known = new Set(signal.results.map((r) => r.url));
+  const known = new Set(signals.flatMap((s) => s.results.map((r) => r.url)));
   return sources.filter((source) => known.has(source.url));
 }
 
@@ -519,12 +676,14 @@ export async function runIntelligenceResearch(
     .limit(1);
   if (!run) throw new Error(`Intelligence research run ${job.runId} not found`);
 
+  // brandId comes off the row, not the queue payload — see generate.ts's
+  // identical comment for why.
   const [brand] = await ctx.db
     .select()
     .from(schema.brands)
-    .where(eq(schema.brands.id, job.brandId))
+    .where(eq(schema.brands.id, run.brandId))
     .limit(1);
-  if (!brand) throw new Error(`Brand ${job.brandId} not found`);
+  if (!brand) throw new Error(`Brand ${run.brandId} not found`);
 
   await ctx.db
     .update(schema.intelligenceRuns)
@@ -545,18 +704,24 @@ export async function runIntelligenceResearch(
       `[intelligence-research] run ${run.id}: brand category resolved to '${categoryKey}'`,
     );
 
+    const market = await ensureBrandMarket(ctx, brand);
     const [categoryPool, nationalPool] = await Promise.all([
-      ensureFreshIntelligencePool(ctx, { scope: 'category', category: categoryKey }),
-      ensureFreshIntelligencePool(ctx, { scope: 'national' }),
+      ensureFreshIntelligencePool(ctx, { scope: 'category', category: categoryKey, market }),
+      ensureFreshIntelligencePool(ctx, { scope: 'national', market }),
     ]);
     const poolItems = [...categoryPool.items, ...nationalPool.items];
     console.warn(
       `[intelligence-research] run ${run.id}: pool loaded — ${categoryPool.items.length} category items + ${nationalPool.items.length} national items = ${poolItems.length} total`,
     );
 
-    const competitorQuery = buildCompetitorQuery(brandContext.competitors.map((c) => c.name));
+    const brandQueries = buildBrandIntelligenceQueries({
+      brandName: brand.name,
+      industry: brandContext.identity.industry,
+      location: brandContext.identity.location,
+      competitors: brandContext.competitors.map((c) => c.name),
+    });
     console.warn(
-      `[intelligence-research] run ${run.id}: competitor search ${competitorQuery ? 'will run (named competitors present)' : 'skipped (no named competitors)'}`,
+      `[intelligence-research] run ${run.id}: ${brandQueries.length} per-brand quer${brandQueries.length === 1 ? 'y' : 'ies'} (${brandQueries.map((q) => q.category).join(', ')})`,
     );
 
     await recordContextSnapshot(ctx.db, {
@@ -567,7 +732,7 @@ export async function runIntelligenceResearch(
         categoryKey,
         poolRunIds: [categoryPool.runId, nationalPool.runId],
         poolItemCount: poolItems.length,
-        competitorQuery: competitorQuery?.query ?? null,
+        brandQueries: brandQueries.map((q) => q.request.query),
       },
     });
 
@@ -580,6 +745,7 @@ export async function runIntelligenceResearch(
               run.id,
               brand,
               brandContext,
+              market,
               poolItems,
             );
             await recordCost(ctx, brand.id, run.id, cost);
@@ -608,35 +774,69 @@ export async function runIntelligenceResearch(
             );
           })();
 
-    const competitorRows = competitorQuery
-      ? await (async () => {
-          const signal = await collectCompetitorSignal(ctx, run.id, brand, competitorQuery);
-          if (signal.results.length === 0) return [];
+    // Each category is searched and synthesised independently rather than
+    // merged into one prompt: a single synthesis over mixed brand/competitor/
+    // industry results reliably collapses onto whichever category had the
+    // loudest coverage, which is how a feed ends up with five competitor
+    // items and nothing else. One failing category is logged and skipped, not
+    // fatal — the pooled rows and the other categories still stand.
+    const brandRows = (
+      await Promise.all(
+        brandQueries.map(async ({ category, request }) => {
+          try {
+            const signals = await collectCompetitorSignal(ctx, run.id, brand, request);
+            if (!signals.some((s) => s.results.length > 0)) return [];
 
-          const { items, cost } = await synthesizeCompetitorItems(
-            ctx,
-            run.id,
-            brand,
-            brandContext,
-            signal,
-          );
-          await recordCost(ctx, brand.id, run.id, cost);
+            const mergedSignal = {
+              provider: 'merged',
+              results: signals.flatMap((s) => s.results),
+            };
+            const { items, cost } = await synthesizeCompetitorItems(
+              ctx,
+              run.id,
+              brand,
+              brandContext,
+              mergedSignal,
+              category,
+              market,
+            );
+            await recordCost(ctx, brand.id, run.id, cost);
 
-          return items.map((item) => ({
-            runId: run.id,
-            poolItemId: null,
-            category: item.category,
-            title: item.title,
-            summary: item.summary,
-            whyItMatters: item.whyItMatters,
-            urgency: item.urgency,
-            score: { ...item.score, overall: computeIntelligenceScore(item.score) },
-            sources: verifyCompetitorSources(item.sources, signal),
-          }));
-        })()
-      : [];
+            return (
+              items
+                // Pooled items are relevance-scored in a separate pass; these
+                // are not, so the model's own brandRelevance is the only thing
+                // standing between a drifted search result and the user's feed.
+                // Search drift is real here — an industry query came back with
+                // an unrelated banking acquisition — and the model scores those
+                // low while still returning them.
+                .filter((item) => item.score.brandRelevance >= MIN_BRAND_RELEVANCE)
+                .map((item) => ({
+                  runId: run.id,
+                  poolItemId: null,
+                  // The searched category wins over the model's own guess: this
+                  // query was built to answer one question, and letting the model
+                  // relabel its answer is how a category silently stays empty.
+                  category,
+                  title: item.title,
+                  summary: item.summary,
+                  whyItMatters: item.whyItMatters,
+                  urgency: item.urgency,
+                  score: { ...item.score, overall: computeIntelligenceScore(item.score) },
+                  sources: verifyCompetitorSources(item.sources, signals),
+                }))
+            );
+          } catch (error) {
+            console.warn(
+              `[intelligence-research] run ${run.id}: ${category} search failed, continuing — ${describeError(error)}`,
+            );
+            return [];
+          }
+        }),
+      )
+    ).flat();
 
-    const rows = [...pooledRows, ...competitorRows];
+    const rows = [...pooledRows, ...brandRows];
 
     // Replace rather than append — same BullMQ-redelivery reasoning as
     // trend-research.ts.
@@ -649,8 +849,23 @@ export async function runIntelligenceResearch(
         .where(eq(schema.intelligenceRuns.id, run.id));
     });
     console.warn(
-      `[intelligence-research] run ${run.id} succeeded: ${rows.length} items (${pooledRows.length} pooled + ${competitorRows.length} competitor) for ${brand.name}`,
+      `[intelligence-research] run ${run.id} succeeded: ${rows.length} items (${pooledRows.length} pooled + ${brandRows.length} brand-specific) for ${brand.name}`,
     );
+
+    // Same rule as trend research: notify only on a run that found something,
+    // and lead with the most urgent item rather than the count alone. High
+    // urgency means the window to act is closing, which is exactly the case
+    // where a push earns its interruption.
+    if (rows.length > 0) {
+      const mostUrgent = rows.reduce((top, row) =>
+        row.score.overall > top.score.overall ? row : top,
+      );
+      await notifyBrandOwner(ctx.db, brand.id, {
+        title: `${rows.length} new industry signal${rows.length === 1 ? '' : 's'}`,
+        body: mostUrgent.title,
+        data: { type: 'intelligence', runId: run.id },
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[intelligence-research] run ${run.id} failed: ${message}`);

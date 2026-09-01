@@ -7,27 +7,27 @@ import {
 
 describe('buildIntelligencePoolQueries', () => {
   it('builds government_policy and industry_news for a category bucket', () => {
-    const queries = buildIntelligencePoolQueries({ scope: 'category', category: 'finance' });
+    const queries = buildIntelligencePoolQueries({ scope: 'category', category: 'finance', market: 'IN' });
     expect(queries.map((q) => q.category)).toEqual(['government_policy', 'industry_news']);
   });
 
   it('folds the category label into every category-scoped query', () => {
-    const queries = buildIntelligencePoolQueries({ scope: 'category', category: 'technology' });
+    const queries = buildIntelligencePoolQueries({ scope: 'category', category: 'technology', market: 'IN' });
     for (const { request } of queries) {
       expect(request.query).toContain('Technology');
     }
   });
 
   it('builds a single national `local` query for the national bucket', () => {
-    const queries = buildIntelligencePoolQueries({ scope: 'national' });
+    const queries = buildIntelligencePoolQueries({ scope: 'national', market: 'IN' });
     expect(queries).toHaveLength(1);
     expect(queries[0]?.category).toBe('local');
   });
 
   it('never leaves competitor in the poolable set', () => {
     const queries = [
-      ...buildIntelligencePoolQueries({ scope: 'category', category: 'sports' }),
-      ...buildIntelligencePoolQueries({ scope: 'national' }),
+      ...buildIntelligencePoolQueries({ scope: 'category', category: 'sports', market: 'IN' }),
+      ...buildIntelligencePoolQueries({ scope: 'national', market: 'IN' }),
     ];
     expect(queries.map((q) => q.category)).not.toContain('competitor');
   });

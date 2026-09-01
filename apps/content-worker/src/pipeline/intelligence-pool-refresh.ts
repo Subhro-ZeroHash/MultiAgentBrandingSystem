@@ -1,5 +1,5 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
-import type { WebSearchRequest, WebSearchResult } from '@bmas/ai';
+import type { WebSearchRequest, WebSearchResult, WebSearchService } from '@bmas/ai';
 import { eq, schema, sql } from '@bmas/db';
 import {
   CATEGORY_LABELS,
@@ -10,8 +10,10 @@ import {
   type IntelligencePoolItemDraft,
   type PoolableIntelligenceCategory,
   type TrendSource,
+  marketName,
 } from '@bmas/shared';
 import type { WorkerContext } from '../context.js';
+import { currentMonthInMarket, dateGrounding } from './prompt-context.js';
 
 /**
  * Intelligence Research — Layer A (Global Pool refresh).
@@ -32,11 +34,14 @@ const MAX_SYNTHESIS_TOKENS = 14_000;
 const RESULTS_PER_QUERY = 6;
 const MAX_SNIPPET_CHARS = 500;
 
-export type IntelligencePoolBucket =
-  { scope: 'category'; category: CategoryKey } | { scope: 'national' };
+export type IntelligencePoolBucket = (
+  { scope: 'category'; category: CategoryKey } | { scope: 'national' }
+) & { market: string };
 
 interface CollectedSignal {
   category: PoolableIntelligenceCategory;
+  /** Which search provider produced these results. */
+  provider: string;
   request: WebSearchRequest;
   results: WebSearchResult[];
 }
@@ -47,12 +52,15 @@ interface CollectedSignal {
 export function buildIntelligencePoolQueries(
   bucket: IntelligencePoolBucket,
 ): Array<{ category: PoolableIntelligenceCategory; request: WebSearchRequest }> {
+  const place = marketName(bucket.market);
+  const month = currentMonthInMarket(bucket.market);
+
   if (bucket.scope === 'national') {
     return [
       {
         category: 'local',
         request: {
-          query: 'local business news economic developments opportunities in India',
+          query: `local business news economic developments opportunities in ${place}, ${month}`,
           topic: 'news',
           recencyDays: 21,
           maxResults: RESULTS_PER_QUERY,
@@ -67,7 +75,7 @@ export function buildIntelligencePoolQueries(
     {
       category: 'government_policy',
       request: {
-        query: `new government policy regulation tax changes affecting ${industry} businesses in India`,
+        query: `new government policy regulation tax changes affecting ${industry} businesses in ${place}, ${month}`,
         topic: 'news',
         recencyDays: 30,
         maxResults: RESULTS_PER_QUERY,
@@ -76,7 +84,7 @@ export function buildIntelligencePoolQueries(
     {
       category: 'industry_news',
       request: {
-        query: `${industry} industry news market developments trends this month in India`,
+        query: `${industry} industry news market developments trends in ${place}, ${month}`,
         topic: 'news',
         recencyDays: 21,
         maxResults: RESULTS_PER_QUERY,
@@ -103,40 +111,47 @@ async function recordCost(ctx: WorkerContext, runId: string, cost: CostEvent): P
   });
 }
 
-/** Same "one category failing doesn't sink the run, all of them failing
- *  does" logic as intelligence-research.ts's `collectIntelligenceSignals`.
- *  Single-provider (`ctx.ai.webSearch()`), matching today's behavior — the
- *  multi-provider fan-out trend pooling uses is a reasonable future
- *  improvement now that this is amortized across a whole category, but not
- *  required for the pool to work. */
+/**
+ * Multi-provider fan-out — mirrors `collectPoolSignals` in trend-pool-refresh.ts.
+ *
+ * Queries every configured search provider (Tavily, SerpAPI, …) for each
+ * category. A development that two independent sources both surface is
+ * stronger evidence than either alone, and the LLM synthesis can weigh
+ * provider corroboration when scoring `businessImpact`. "One provider/category
+ * failing doesn't sink the run, all of them failing does" — same logic as
+ * trend pooling.
+ */
 async function collectPoolSignals(
   ctx: WorkerContext,
   runId: string,
   queries: Array<{ category: PoolableIntelligenceCategory; request: WebSearchRequest }>,
 ): Promise<CollectedSignal[]> {
+  const providers: WebSearchService[] = ctx.ai.configuredWebSearches();
   const collected: CollectedSignal[] = [];
 
   for (const { category, request } of queries) {
-    try {
-      const { value: results, cost } = await withRetry(() =>
-        withTimeout(
-          ctx.ai.webSearch().search(request, { referenceId: runId }),
-          SEARCH_TIMEOUT_MS,
-          `intelligence pool search (${category})`,
-        ),
-      );
-      await recordCost(ctx, runId, cost);
-      collected.push({ category, request, results });
-    } catch (error) {
-      console.warn(
-        `[intelligence-pool-refresh] ${category} search failed for run ${runId}: ${describeError(error)}`,
-      );
+    for (const provider of providers) {
+      try {
+        const { value: results, cost } = await withRetry(() =>
+          withTimeout(
+            provider.search(request, { referenceId: runId }),
+            SEARCH_TIMEOUT_MS,
+            `intelligence pool search (${provider.provider}/${category})`,
+          ),
+        );
+        await recordCost(ctx, runId, cost);
+        collected.push({ category, provider: provider.provider, request, results });
+      } catch (error) {
+        console.warn(
+          `[intelligence-pool-refresh] ${provider.provider}/${category} search failed for run ${runId}: ${describeError(error)}`,
+        );
+      }
     }
   }
 
   if (collected.every((signal) => signal.results.length === 0)) {
     throw new Error(
-      'No search results were available to research this bucket from — every search failed or returned nothing.',
+      'No search results were available to research this bucket from — every search provider failed or returned nothing.',
     );
   }
 
@@ -150,15 +165,28 @@ const CATEGORY_LABEL: Record<PoolableIntelligenceCategory, string> = {
 };
 
 function describeSignalsForPrompt(signals: CollectedSignal[]): string {
-  return signals
-    .map(({ category, results }) => {
-      if (results.length === 0) return `## ${CATEGORY_LABEL[category]}\n(search returned nothing)`;
+  // Group by category so the prompt is still organised by topic, with
+  // provider names shown inline so the LLM can spot corroboration.
+  const byCategory = new Map<PoolableIntelligenceCategory, CollectedSignal[]>();
+  for (const signal of signals) {
+    const bucket = byCategory.get(signal.category) ?? [];
+    bucket.push(signal);
+    byCategory.set(signal.category, bucket);
+  }
 
-      const rows = results
-        .map((result, i) => {
+  return [...byCategory.entries()]
+    .map(([category, categorySignals]) => {
+      const allResults = categorySignals.flatMap((s) =>
+        s.results.map((r) => ({ result: r, provider: s.provider })),
+      );
+      if (allResults.length === 0)
+        return `## ${CATEGORY_LABEL[category]}\n(all searches returned nothing)`;
+
+      const rows = allResults
+        .map(({ result, provider }, i) => {
           const date = result.publishedAt ? ` (${result.publishedAt})` : '';
           const snippet = result.snippet.slice(0, MAX_SNIPPET_CHARS);
-          return `${i + 1}. [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
+          return `${i + 1}. [${provider}] [${result.title ?? 'Untitled'}]${date} — ${result.url}\n   ${snippet}`;
         })
         .join('\n');
 
@@ -267,8 +295,8 @@ async function synthesizePoolItemsOnce(
 ): Promise<{ items: IntelligencePoolItemDraft[]; cost: CostEvent }> {
   const audience =
     bucket.scope === 'national'
-      ? 'small businesses across every industry in India'
-      : `${CATEGORY_LABELS[bucket.category]} businesses in India`;
+      ? `small businesses across every industry in ${marketName(bucket.market)}`
+      : `${CATEGORY_LABELS[bucket.category]} businesses in ${marketName(bucket.market)}`;
 
   const { value, cost } = await withRetry(
     () =>
@@ -277,6 +305,7 @@ async function synthesizePoolItemsOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding(bucket.market) +
               `You are a business intelligence analyst keeping ${audience} informed. You work ` +
               'ONLY from the search results you are given — never invent a policy, a news item, a ' +
               'fact, or a date that is not actually present in the results.\n\n' +
@@ -337,7 +366,12 @@ export function verifyPoolSources(
 
 export async function runIntelligencePoolRefresh(
   ctx: WorkerContext,
-  job: { runId: string; scope: 'category' | 'national'; category: CategoryKey | null },
+  job: {
+    runId: string;
+    scope: 'category' | 'national';
+    category: CategoryKey | null;
+    market: string;
+  },
 ): Promise<void> {
   const [run] = await ctx.db
     .select()
@@ -348,8 +382,8 @@ export async function runIntelligencePoolRefresh(
 
   const bucket: IntelligencePoolBucket =
     job.scope === 'national'
-      ? { scope: 'national' }
-      : { scope: 'category', category: job.category! };
+      ? { scope: 'national', market: job.market }
+      : { scope: 'category', category: job.category!, market: job.market };
 
   await ctx.db
     .update(schema.poolIntelligenceRuns)

@@ -1,5 +1,6 @@
 import { ProviderError, ProviderNotConfiguredError } from '../errors.js';
 import { buildCostEvent, priceSearch } from '../pricing.js';
+import { dropStaleResults } from '../search.js';
 import type { WebSearchRequest, WebSearchResult, WebSearchService } from '../search.js';
 import type { ProviderContext, ProviderResult } from '../types.js';
 
@@ -30,6 +31,25 @@ interface SerpApiResponse {
 const MODEL = 'serpapi-search';
 const MAX_RESULTS = 20;
 
+/** Google's date filter wants US-format dates, whatever the query's locale. */
+function toGoogleDate(date: Date): string {
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${month}/${day}/${date.getUTCFullYear()}`;
+}
+
+/**
+ * Google's custom date-range filter, as SerpApi forwards it.
+ *
+ * A precise range rather than the coarser `qdr:` buckets (past day/week/
+ * month/year): a 45-day window has no `qdr` equivalent — `qdr:m` silently
+ * drops the last fortnight and `qdr:y` lets a year of stale coverage back in.
+ */
+export function buildRecencyFilter(recencyDays: number, now: Date = new Date()): string {
+  const from = new Date(now.getTime() - recencyDays * 24 * 60 * 60 * 1000);
+  return `cdr:1,cd_min:${toGoogleDate(from)},cd_max:${toGoogleDate(now)}`;
+}
+
 /**
  * Builds the query params SerpApi's Google engine expects. Exported and pure,
  * same split as buildTavilyRequestBody — testable without a network call.
@@ -40,7 +60,11 @@ const MAX_RESULTS = 20;
  * (`news_results` vs `organic_results`), which is why mapSerpApiResponse below
  * branches on it rather than merging both.
  */
-export function buildSerpApiParams(req: WebSearchRequest, apiKey: string): URLSearchParams {
+export function buildSerpApiParams(
+  req: WebSearchRequest,
+  apiKey: string,
+  now: Date = new Date(),
+): URLSearchParams {
   const params = new URLSearchParams({
     engine: 'google',
     q: req.query,
@@ -48,11 +72,33 @@ export function buildSerpApiParams(req: WebSearchRequest, apiKey: string): URLSe
     num: String(Math.min(Math.max(req.maxResults ?? 8, 1), MAX_RESULTS)),
   });
   if (req.topic === 'news') params.set('tbm', 'nws');
+  // Without this the request carried no time bound at all, so a caller asking
+  // for the last 14 days got Google's all-time ranking — which is how a query
+  // for "upcoming festivals in the next 30 days" came back with a
+  // seven-month-old Republic Day sale article as its top result. Tavily
+  // already honoured `recencyDays` via its own `days` param, so half of every
+  // search was date-bounded and half was not.
+  if (req.recencyDays) params.set('tbs', buildRecencyFilter(req.recencyDays, now));
   // SerpApi's `gl` wants a two-letter country code; a free-text locality (a
   // city name) doesn't fit it, so only a value that already looks like one is
   // forwarded — anything else is silently dropped rather than sent wrong.
   if (req.locale && /^[a-z]{2}$/i.test(req.locale)) params.set('gl', req.locale.toLowerCase());
   return params;
+}
+
+/**
+ * True for SerpApi's "no results" message, which arrives as an `error` field
+ * on an otherwise-successful 200.
+ *
+ * An empty result set is an answer, not a failure. Treating it as one meant a
+ * single provider finding nothing threw, and since the pool refresh aborts
+ * when every provider fails, one narrow query could sink an entire research
+ * run — which is exactly what happened once a tighter date range made empty
+ * results common: "No signals were collected — every search provider failed
+ * or returned nothing."
+ */
+export function isEmptyResultError(error: string): boolean {
+  return /hasn't returned any results|no results found/i.test(error);
 }
 
 /** Maps one SerpApi response into the shared result shape, branching on which
@@ -139,14 +185,16 @@ export class SerpApiSearchAdapter implements WebSearchService {
     }
 
     const body = (await response.json()) as SerpApiResponse;
-    if (body.error) {
+    if (body.error && !isEmptyResultError(body.error)) {
       // SerpApi returns 200 with an `error` field for some failure modes
       // (e.g. a malformed query) rather than a non-2xx status — checked
       // separately from the !response.ok branch above for that reason.
       throw new ProviderError(`SerpApi error: ${body.error}`, 'serpapi', { retryable: false });
     }
 
-    const results = mapSerpApiResponse(body);
+    // Belt and braces alongside the `tbs` date range above: the filter is
+    // a request to Google, this is the guarantee to our callers.
+    const results = dropStaleResults(mapSerpApiResponse(body), req.recencyDays);
     const latencyMs = Date.now() - startedAt;
 
     return {

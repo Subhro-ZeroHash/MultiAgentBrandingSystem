@@ -18,12 +18,17 @@ import {
   type CostEvent,
   type TrendModelScore,
   type TrendRelevanceDraft,
+  marketName,
   type TrendResearchJob,
 } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
+import { dateGrounding } from './prompt-context.js';
+import { notifyBrandOwner } from './push.js';
 import { ensureBrandCategoryKey } from './category-classifier.js';
+import { ensureBrandMarket } from './market-classifier.js';
 import { ensureFreshTrendPool } from './pool-loader.js';
+import { researchFocusedOpportunities } from './focused-trend-research.js';
 import { triggerAutoOpportunity, type TriggerableOpportunity } from './opportunity-trigger.js';
 
 /**
@@ -48,14 +53,13 @@ import { triggerAutoOpportunity, type TriggerableOpportunity } from './opportuni
  */
 
 // Much smaller prompt than the old full-signal synthesis (no raw search
-// results, just already-summarized pool items). Confirmed live against
-// LLM_PROVIDER=ollama that a smaller prompt does not imply a proportionally
-// shorter wall-clock time — local inference cost is dominated by model
-// load/decode speed, not prompt size, and a 120s ceiling still timed out
-// under load. Matches the 300s headroom every other locally-tested LLM call
-// in this codebase already settled on (trend-pool-refresh.ts,
-// intelligence-pool-refresh.ts) — raising this costs nothing when the
-// response is fast, and only ever matters when a request has stalled.
+// results, just already-summarized pool items). Confirmed live during
+// development that a smaller prompt does not imply a proportionally shorter
+// wall-clock time — a 120s ceiling still timed out under load. Matches the
+// 300s headroom every other LLM call in this codebase already settled on
+// (trend-pool-refresh.ts, intelligence-pool-refresh.ts) — raising this costs
+// nothing when the response is fast, and only ever matters when a request
+// has stalled.
 const RELEVANCE_TIMEOUT_MS = 300_000;
 const MAX_RELEVANCE_TOKENS = 4_000;
 
@@ -201,12 +205,21 @@ async function scoreTrendRelevance(
   brand: Brand,
   brandContext: TrendTaskContext,
   focus: string | null,
+  market: string,
   poolItems: PoolTrendItemRow[],
 ): Promise<{ items: TrendRelevanceDraft[]; cost: CostEvent }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      return await scoreTrendRelevanceOnce(ctx, runId, brand, brandContext, focus, poolItems);
+      return await scoreTrendRelevanceOnce(
+        ctx,
+        runId,
+        brand,
+        brandContext,
+        focus,
+        market,
+        poolItems,
+      );
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -225,6 +238,7 @@ async function scoreTrendRelevanceOnce(
   brand: Brand,
   brandContext: TrendTaskContext,
   focus: string | null,
+  market: string,
   poolItems: PoolTrendItemRow[],
 ): Promise<{ items: TrendRelevanceDraft[]; cost: CostEvent }> {
   const { value, cost } = await withRetry(
@@ -234,6 +248,7 @@ async function scoreTrendRelevanceOnce(
           {
             role: 'orchestrator',
             system:
+              dateGrounding(market) +
               'You are a marketing strategist judging how relevant a set of already-identified ' +
               'content opportunities are for ONE SPECIFIC small business. The opportunities below ' +
               'were identified generically for the whole category, not for this brand — your only ' +
@@ -358,12 +373,14 @@ export async function runTrendResearch(
     .limit(1);
   if (!run) throw new Error(`Trend research run ${job.runId} not found`);
 
+  // brandId comes off the row, not the queue payload — see generate.ts's
+  // identical comment for why.
   const [brand] = await ctx.db
     .select()
     .from(schema.brands)
-    .where(eq(schema.brands.id, job.brandId))
+    .where(eq(schema.brands.id, run.brandId))
     .limit(1);
-  if (!brand) throw new Error(`Brand ${job.brandId} not found`);
+  if (!brand) throw new Error(`Brand ${run.brandId} not found`);
 
   await ctx.db
     .update(schema.trendResearchRuns)
@@ -377,16 +394,52 @@ export async function runTrendResearch(
 
   try {
     const brandContext = await getTrendContext(ctx.db, brand.id);
-    const categoryKey = await ensureBrandCategoryKey(ctx, brand);
-    console.warn(`[trend-research] run ${run.id}: brand category resolved to '${categoryKey}'`);
-
-    const [categoryPool, nationalPool] = await Promise.all([
-      ensureFreshTrendPool(ctx, { scope: 'category', category: categoryKey }),
-      ensureFreshTrendPool(ctx, { scope: 'national' }),
+    // Classified together: both key the shared pool, and neither is worth a
+    // round trip the other is already paying for.
+    const [categoryKey, market] = await Promise.all([
+      ensureBrandCategoryKey(ctx, brand),
+      ensureBrandMarket(ctx, brand),
     ]);
-    const poolItems = [...categoryPool.items, ...nationalPool.items];
     console.warn(
-      `[trend-research] run ${run.id}: pool loaded — ${categoryPool.items.length} category items + ${nationalPool.items.length} national items = ${poolItems.length} total`,
+      `[trend-research] run ${run.id}: brand category resolved to '${categoryKey}' in ${marketName(market)}`,
+    );
+
+    // Settled, not all: the two buckets answer different questions, and one
+    // coming up empty is not a reason to lose the other. The national
+    // (festival/event) bucket in particular depends on a search that can
+    // legitimately return nothing for a quiet week — before this, that took
+    // the whole run down with it and the user saw "every search provider
+    // failed" on a run whose category trends were fine.
+    const [categoryResult, nationalResult] = await Promise.allSettled([
+      ensureFreshTrendPool(ctx, { scope: 'category', category: categoryKey, market }),
+      ensureFreshTrendPool(ctx, { scope: 'national', market }),
+    ]);
+    for (const [label, result] of [
+      ['category', categoryResult],
+      ['national', nationalResult],
+    ] as const) {
+      if (result.status === 'rejected') {
+        console.warn(
+          `[trend-research] run ${run.id}: ${label} pool unavailable, continuing without it — ${describeError(result.reason)}`,
+        );
+      }
+    }
+
+    const categoryPool = categoryResult.status === 'fulfilled' ? categoryResult.value : null;
+    const nationalPool = nationalResult.status === 'fulfilled' ? nationalResult.value : null;
+
+    // Both failing is still a real failure — there is nothing to score.
+    if (!categoryPool && !nationalPool) {
+      throw new Error(
+        categoryResult.status === 'rejected'
+          ? describeError(categoryResult.reason)
+          : 'No trend pool could be loaded for this brand.',
+      );
+    }
+
+    const poolItems = [...(categoryPool?.items ?? []), ...(nationalPool?.items ?? [])];
+    console.warn(
+      `[trend-research] run ${run.id}: pool loaded — ${categoryPool?.items.length ?? 0} category items + ${nationalPool?.items.length ?? 0} national items = ${poolItems.length} total`,
     );
 
     await recordContextSnapshot(ctx.db, {
@@ -395,7 +448,9 @@ export async function runTrendResearch(
       snapshot: {
         ...brandContext,
         categoryKey,
-        poolRunIds: [categoryPool.runId, nationalPool.runId],
+        poolRunIds: [categoryPool?.runId, nationalPool?.runId].filter((id): id is string =>
+          Boolean(id),
+        ),
         poolItemCount: poolItems.length,
       },
     });
@@ -410,8 +465,26 @@ export async function runTrendResearch(
       );
     }
 
-    const opportunityRows =
-      poolItems.length === 0
+    // A focus is a different question, so it takes a different path. The pool
+    // can only be re-ranked, never extended — asking it for marathons when it
+    // holds Fashion Week returns Fashion Week — so a named subject gets a real
+    // web search instead. See focused-trend-research.ts.
+    const focused = run.focus?.trim()
+      ? await researchFocusedOpportunities(ctx, {
+          runId: run.id,
+          brand,
+          brandContext,
+          focus: run.focus.trim(),
+          locationOverride: run.locationOverride,
+        })
+      : null;
+
+    // Annotated rather than inferred: the ternary produces a union of two
+    // structurally identical row types, which TS will not narrow to the
+    // auto-trigger's `TriggerableOpportunity` on its own.
+    const opportunityRows: TriggerableOpportunity[] = focused
+      ? (focused.opportunities as TriggerableOpportunity[])
+      : poolItems.length === 0
         ? []
         : await (async () => {
             console.warn(
@@ -423,6 +496,7 @@ export async function runTrendResearch(
               brand,
               brandContext,
               run.focus,
+              market,
               poolItems,
             );
             await recordCost(ctx, brand.id, run.id, cost);
@@ -477,10 +551,12 @@ export async function runTrendResearch(
 
     await ctx.db.transaction(async (tx) => {
       await tx.delete(schema.trendOpportunities).where(eq(schema.trendOpportunities.runId, run.id));
-      // Defensive: a run.id retried from before this rewrite could carry
-      // signals from the old per-brand search stage. New runs never write
-      // here any more — see this file's header.
+      // Cleared then rewritten: a pool-backed run stores no signals (the
+      // evidence lives in pool_trend_signals), while a focused run stores the
+      // results it actually searched, so its opportunities stay auditable
+      // after the pages themselves move on.
       await tx.delete(schema.trendSignals).where(eq(schema.trendSignals.runId, run.id));
+      if (focused?.signals.length) await tx.insert(schema.trendSignals).values(focused.signals);
 
       if (opportunityRows.length)
         await tx.insert(schema.trendOpportunities).values(opportunityRows);
@@ -493,6 +569,24 @@ export async function runTrendResearch(
     console.warn(
       `[trend-research] run ${run.id} succeeded: ${opportunityRows.length} opportunities for ${brand.name}`,
     );
+
+    // Only when the run actually found something. A push saying "0 new
+    // opportunities" is a notification the user cannot act on, and autopilot
+    // runs on a schedule — so the empty case would arrive on its own cadence
+    // forever and train them to ignore the channel.
+    if (opportunityRows.length > 0) {
+      const best = opportunityRows.reduce((top, row) =>
+        row.score.overall > top.score.overall ? row : top,
+      );
+      await notifyBrandOwner(ctx.db, brand.id, {
+        title: `${opportunityRows.length} new content idea${opportunityRows.length === 1 ? '' : 's'}`,
+        // Leads with the strongest idea rather than the count alone: the title
+        // already carries the number, and the specific idea is what makes it
+        // worth opening.
+        body: `Top pick: ${best.title}`,
+        data: { type: 'trend-research', runId: run.id },
+      });
+    }
 
     // Best-effort, deliberately outside the transaction and its own try/catch:
     // a failure here must never flip a successful research run to 'failed' —

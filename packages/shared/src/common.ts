@@ -100,6 +100,9 @@ export const costEventSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional(),
   cachedInputTokens: z.number().int().nonnegative().optional(),
   imageCount: z.number().int().nonnegative().optional(),
+  /** Set instead of `imageCount` by a video provider — seconds of output
+   *  produced, the unit LTX and most video APIs actually bill by. */
+  videoSeconds: z.number().nonnegative().optional(),
   /** Micro-USD to avoid float drift in the ledger. */
   costMicroUsd: z.number().int().nonnegative(),
   latencyMs: z.number().int().nonnegative().optional(),

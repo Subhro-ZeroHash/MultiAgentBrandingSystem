@@ -166,21 +166,26 @@ export class GeminiLlmAdapter implements LlmService {
     const model = this.modelFor(req.role);
     const startedAt = Date.now();
 
+    const requestPayload = {
+      model,
+      contents: GeminiLlmAdapter.contents(req.messages),
+      config: {
+        maxOutputTokens: req.maxTokens ?? 4096,
+        // responseJsonSchema requires responseMimeType and forbids the older
+        // responseSchema; it takes JSON Schema, which is what callers hold.
+        responseMimeType: 'application/json',
+        responseJsonSchema: req.schema,
+        ...(req.system ? { systemInstruction: req.system } : {}),
+        ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
+      },
+    };
+    if (process.env.GEMINI_DEBUG_DUMP_REQUEST) {
+      console.error(`[gemini-debug] request payload: ${JSON.stringify(requestPayload)}`);
+    }
+
     let response;
     try {
-      response = await this.require().models.generateContent({
-        model,
-        contents: GeminiLlmAdapter.contents(req.messages),
-        config: {
-          maxOutputTokens: req.maxTokens ?? 4096,
-          // responseJsonSchema requires responseMimeType and forbids the older
-          // responseSchema; it takes JSON Schema, which is what callers hold.
-          responseMimeType: 'application/json',
-          responseJsonSchema: req.schema,
-          ...(req.system ? { systemInstruction: req.system } : {}),
-          ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
-        },
-      });
+      response = await this.require().models.generateContent(requestPayload);
     } catch (error) {
       throw GeminiLlmAdapter.wrap(error, `json:${req.role}`);
     }

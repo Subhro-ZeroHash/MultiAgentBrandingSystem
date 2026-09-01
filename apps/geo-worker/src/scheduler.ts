@@ -14,6 +14,13 @@ import type { WorkerContext } from './context.js';
 
 const PROMPT_PREFIX = 'prompt-';
 const ROLLUP_SCHEDULER_ID = 'rollup-tick';
+// Deliberately does NOT start with `prompt-`: the cleanup loop in
+// `syncPromptSchedulers` below removes any scheduler key with that prefix it
+// doesn't recognise as a live tracked-prompt id, on the assumption every such
+// key is a per-prompt schedule. A `prompt-suggestions-tick` name collided
+// with that assumption — created here, deleted as "orphaned" on the very
+// next sync (it runs every `GEO_SCHEDULER_SYNC_MS`), silently, no error.
+const SUGGEST_PROMPTS_SCHEDULER_ID = 'suggest-prompts-tick';
 
 const TICK_JOB_OPTS = {
   // A missed tick is better than a pile of them: the next one re-reads state.
@@ -95,5 +102,24 @@ export async function ensureRollupScheduler(ctx: WorkerContext, sweepQueue: Queu
     ROLLUP_SCHEDULER_ID,
     { pattern: ctx.scheduler.rollupCron },
     { name: QUEUES.geoSweep, data: { kind: 'rollup' }, opts: TICK_JOB_OPTS },
+  );
+}
+
+/**
+ * Same shape as the roll-up tick, same cron — one daily maintenance cadence
+ * for both rather than a second env var to reason about. Unlike roll-up, this
+ * has to be discoverable independent of `tracked_prompts`: a brand that has
+ * never had a single prompt still needs autopilot to seed one, which is
+ * exactly the case `enqueueRollups`' own brand query (sourced from
+ * `tracked_prompts`) can never see.
+ */
+export async function ensurePromptSuggestionScheduler(
+  ctx: WorkerContext,
+  sweepQueue: Queue,
+): Promise<void> {
+  await sweepQueue.upsertJobScheduler(
+    SUGGEST_PROMPTS_SCHEDULER_ID,
+    { pattern: ctx.scheduler.rollupCron },
+    { name: QUEUES.geoSweep, data: { kind: 'prompt-suggestions' }, opts: TICK_JOB_OPTS },
   );
 }

@@ -10,7 +10,7 @@ import {
 import type { ScheduledPostPublishJob } from '@bmas/shared';
 import jwt from 'jsonwebtoken';
 import type { WorkerContext } from '../context.js';
-import { sendExpoPush } from './scheduled-post-hooks.js';
+import { sendExpoPush } from './push.js';
 
 /** Mints a token for the post's actual owner rather than a fixed dev id, so
  *  the call passes content-api's JwtAuthGuard as whichever user owns this

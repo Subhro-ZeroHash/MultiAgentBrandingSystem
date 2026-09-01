@@ -20,6 +20,7 @@ import type {
   BrandCompetitor,
   IntelligencePoolScore,
   IntelligenceScore,
+  PlanEvidence,
   PreferenceValue,
   TrendPoolScore,
   TrendScore,
@@ -246,6 +247,88 @@ export const assetEdits = content.table(
       .where(sql`${t.status} IN ('queued', 'running')`),
   ],
 );
+
+/**
+ * Video generation's own job/asset pair — deliberately separate tables from
+ * `generation_jobs`/`creative_assets` rather than a `mediaType` discriminator
+ * bolted onto them. The two media types share almost nothing structurally:
+ * an image job carries `campaignType`/`styleTemplate`/`outputFormat` and fans
+ * out into diverse-mode variants; a video job has none of that; a video asset
+ * has `durationSeconds` where an image asset has none, and no vision-QA
+ * readback shape (there is no video-QA equivalent yet). Reusing the image
+ * tables would mean every video row carrying a pile of nullable image-only
+ * columns and vice versa. New capability, new tables — the existing ones stay
+ * exactly as stable as they were.
+ *
+ * Reuses `jobStatus` rather than declaring an identical enum: it is already
+ * exactly queued/running/succeeded/failed/cancelled, and a real second
+ * definition would just be the same five strings duplicated for no reason.
+ */
+export const videoGenerationJobs = content.table(
+  'video_generation_jobs',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    status: jobStatus('status').notNull().default('queued'),
+    stage: text('stage'),
+    /** The validated VideoGenerationRequest, stored verbatim so a job can be
+     *  replayed — same reasoning as `generationJobs.request`. */
+    request: jsonb('request').$type<Record<string, unknown>>().notNull(),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('video_generation_jobs_brand_created_idx').on(t.brandId, t.createdAt),
+    index('video_generation_jobs_status_idx').on(t.status),
+  ],
+);
+
+export const videoAssets = content.table(
+  'video_assets',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => videoGenerationJobs.id, { onDelete: 'cascade' }),
+    storageKey: text('storage_key').notNull(),
+    /** Null until the pipeline extracts one — a video needs its own thumbnail
+     *  frame the way an image asset's thumbnail is a resize of itself; a video
+     *  needs an actual decode step to produce one. */
+    thumbnailStorageKey: text('thumbnail_storage_key'),
+    width: integer('width').notNull(),
+    height: integer('height').notNull(),
+    durationSeconds: real('duration_seconds').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    /** Set when the user picks this take. Mirrors `creativeAssets.isSelected`
+     *  — kept even though nothing writes multiple takes per job yet, since a
+     *  bare boolean costs nothing to have ready for when regeneration/variant
+     *  fan-out reaches video the way it already has for images. */
+    isSelected: boolean('is_selected').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('video_assets_job_idx').on(t.jobId)],
+);
+
+export const videoGenerationJobsRelations = relations(videoGenerationJobs, ({ one, many }) => ({
+  brand: one(brands, { fields: [videoGenerationJobs.brandId], references: [brands.id] }),
+  product: one(products, { fields: [videoGenerationJobs.productId], references: [products.id] }),
+  assets: many(videoAssets),
+}));
+
+export const videoAssetsRelations = relations(videoAssets, ({ one }) => ({
+  job: one(videoGenerationJobs, { fields: [videoAssets.jobId], references: [videoGenerationJobs.id] }),
+}));
 
 export const copyPacks = content.table(
   'copy_packs',
@@ -500,6 +583,108 @@ export const scheduledPostsRelations = relations(scheduledPosts, ({ one }) => ({
     references: [socialAccounts.id],
   }),
 }));
+
+/**
+ * One sync attempt's worth of Instagram metrics for one published post.
+ * Append-only, same reasoning as `geo.probe_runs`: the sync runs repeatedly
+ * over a post's tracked lifetime, and each pull is retained rather than
+ * overwritten, so engagement growth over time is visible and a failed pull is
+ * data (via `error`) rather than a silent gap. `raw` keeps the full Graph API
+ * response so a metric this table doesn't have a column for yet is not lost.
+ */
+export const postInsights = content.table(
+  'post_insights',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /**
+     * Nullable: performance is tracked for every post on the connected
+     * account, not just the ones this app published. A post made from the
+     * Instagram app has no scheduled_posts row to point at, and restricting
+     * this table to app-published posts is what left it permanently empty —
+     * the brand's actual posting history was invisible to the feedback loop.
+     * Set when the post did originate here, so post-level feedback can still
+     * be attributed back to the campaign that produced it.
+     */
+    scheduledPostId: text('scheduled_post_id').references(() => scheduledPosts.id, {
+      onDelete: 'set null',
+    }),
+    /** The Instagram media this row measures. The stable identity here —
+     *  `scheduledPostId` is absent for anything posted outside the app. */
+    igMediaId: text('ig_media_id').notNull(),
+    /** Which connection this was read through; a brand may reconnect or swap
+     *  accounts, and metrics should not silently merge across them. */
+    socialAccountId: text('social_account_id').references(() => socialAccounts.id, {
+      onDelete: 'cascade',
+    }),
+    /** Denormalized from scheduledPosts for per-brand queries without a join. */
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    likeCount: integer('like_count'),
+    commentsCount: integer('comments_count'),
+    reach: integer('reach'),
+    saved: integer('saved'),
+    /** Post caption and permalink, kept so analysis and the UI don't need a
+     *  second Graph call to say *which* post a number belongs to. */
+    caption: text('caption'),
+    permalink: text('permalink'),
+    mediaType: text('media_type'),
+    postedAt: timestamp('posted_at', { withTimezone: true }),
+    raw: jsonb('raw').$type<Record<string, unknown>>(),
+    /** Set when the fetch itself failed; the typed columns above are null in
+     *  that case. Mirrors probe_runs.error. */
+    error: text('error'),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('post_insights_scheduled_post_fetched_idx').on(t.scheduledPostId, t.fetchedAt),
+    index('post_insights_brand_fetched_idx').on(t.brandId, t.fetchedAt),
+    /** Reads are "latest metrics for this media", so the sweep can upsert one
+     *  row per media per run without scanning. */
+    index('post_insights_media_fetched_idx').on(t.igMediaId, t.fetchedAt),
+  ],
+);
+
+/**
+ * Individual comments on a brand's Instagram posts — the raw community
+ * response, stored verbatim so analysis can run over it later without
+ * re-fetching (Instagram pages comments, and old ones fall out of easy reach).
+ *
+ * Readable with the `instagram_business_basic` scope the connection already
+ * carries; no `manage_comments` grant is needed just to read them.
+ */
+export const postComments = content.table(
+  'post_comments',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** Instagram's own comment id. Unique so a re-sync updates the existing
+     *  row rather than accumulating a copy per sweep. */
+    igCommentId: text('ig_comment_id').notNull(),
+    igMediaId: text('ig_media_id').notNull(),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    socialAccountId: text('social_account_id').references(() => socialAccounts.id, {
+      onDelete: 'cascade',
+    }),
+    text: text('text'),
+    username: text('username'),
+    likeCount: integer('like_count'),
+    /** When the comment was posted, per Instagram — not when we read it. */
+    commentedAt: timestamp('commented_at', { withTimezone: true }),
+    raw: jsonb('raw').$type<Record<string, unknown>>(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('post_comments_ig_comment_id_idx').on(t.igCommentId),
+    index('post_comments_media_idx').on(t.igMediaId),
+    index('post_comments_brand_commented_idx').on(t.brandId, t.commentedAt),
+  ],
+);
 
 /** One Expo push token per device registration; upserted so re-registering the
  *  same device (reinstall, token refresh) doesn't accumulate duplicates. */
@@ -822,6 +1007,15 @@ export const brandContexts = content.table(
      *  classification gets detected and re-run — cheaper than a dirty flag
      *  every unrelated field edit would also have to know to clear. */
     categoryKeyClassifiedFor: text('category_key_classified_for'),
+    /** ISO 3166-1 alpha-2 country the brand trades in, normalized from the
+     *  free-text `location` by the same lazy, cached classification the
+     *  category above uses. Part of the research pool's bucket key: a US
+     *  brand and an Indian brand must not share a pool of "upcoming
+     *  festivals". Null until Layer B first needs it. */
+    marketCode: text('market_code'),
+    /** The exact location text `marketCode` was classified from — same
+     *  staleness-detection trick as `categoryKeyClassifiedFor`. */
+    marketCodeClassifiedFor: text('market_code_classified_for'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -916,6 +1110,14 @@ export const automationSettings = content.table(
     /** Master switch. Off means the scheduler skips this brand entirely,
      *  whatever `approvalPolicy` says. */
     contentAutomationEnabled: boolean('content_automation_enabled').notNull().default(false),
+    /** Non-null only when content-worker's inactivity sweep is the one that
+     *  flipped `contentAutomationEnabled` off, never when the owner turned it
+     *  off themselves — that distinction is the whole point of the column.
+     *  Without it, the next login's "resume what we paused" pass would just
+     *  as happily re-enable a brand the owner deliberately disabled. Cleared
+     *  by AutomationSettingsService.updateSettings the moment anything turns
+     *  automation back on, by any path. */
+    autoPausedAt: timestamp('auto_paused_at', { withTimezone: true }),
     /** Separate from `approvalPolicy` so that moving to full autopilot does
      *  not silently grant the right to post to a live Instagram account —
      *  publishing is the one step with no undo. */
@@ -1161,6 +1363,11 @@ export const poolTrendRuns = content.table(
     scope: poolRunScope('scope').notNull(),
     /** Null iff scope = 'national'. */
     category: categoryKey('category'),
+    /** ISO 3166-1 alpha-2 market this bucket covers. Part of the bucket key:
+     *  "upcoming festivals" means something different per country, so pools
+     *  must not be shared across markets. Defaulted rather than nullable so
+     *  every existing row keeps the market it was actually built for. */
+    market: text('market').notNull().default('IN'),
     status: poolRunStatus('status').notNull().default('queued'),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
@@ -1174,7 +1381,12 @@ export const poolTrendRuns = content.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('pool_trend_runs_scope_category_created_idx').on(t.scope, t.category, t.createdAt),
+    index('pool_trend_runs_scope_category_created_idx').on(
+      t.scope,
+      t.category,
+      t.market,
+      t.createdAt,
+    ),
     index('pool_trend_runs_expires_idx').on(t.expiresAt),
     // At most one active (queued/running) refresh per bucket — closes the
     // exact race `asset_edits_one_active_per_root_idx` closes in
@@ -1183,7 +1395,7 @@ export const poolTrendRuns = content.table(
     // one may actually run the refresh. The loser's insert gets a Postgres
     // 23505 the caller (pool-loader.ts) catches and polls on instead.
     uniqueIndex('pool_trend_runs_one_active_per_bucket_idx')
-      .on(t.scope, t.category)
+      .on(t.scope, t.category, t.market)
       .where(sql`${t.status} IN ('queued', 'running')`),
   ],
 );
@@ -1258,6 +1470,11 @@ export const poolIntelligenceRuns = content.table(
       .$defaultFn(() => crypto.randomUUID()),
     scope: poolRunScope('scope').notNull(),
     category: categoryKey('category'),
+    /** ISO 3166-1 alpha-2 market this bucket covers. Part of the bucket key:
+     *  "upcoming festivals" means something different per country, so pools
+     *  must not be shared across markets. Defaulted rather than nullable so
+     *  every existing row keeps the market it was actually built for. */
+    market: text('market').notNull().default('IN'),
     status: poolRunStatus('status').notNull().default('queued'),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
@@ -1266,10 +1483,15 @@ export const poolIntelligenceRuns = content.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('pool_intelligence_runs_scope_category_created_idx').on(t.scope, t.category, t.createdAt),
+    index('pool_intelligence_runs_scope_category_created_idx').on(
+      t.scope,
+      t.category,
+      t.market,
+      t.createdAt,
+    ),
     index('pool_intelligence_runs_expires_idx').on(t.expiresAt),
     uniqueIndex('pool_intelligence_runs_one_active_per_bucket_idx')
-      .on(t.scope, t.category)
+      .on(t.scope, t.category, t.market)
       .where(sql`${t.status} IN ('queued', 'running')`),
   ],
 );
@@ -1369,6 +1591,255 @@ export const aiResearchQueriesRelations = relations(aiResearchQueries, ({ one })
   brand: one(brands, { fields: [aiResearchQueries.brandId], references: [brands.id] }),
 }));
 
+// ---------------------------------------------------------------------------
+// Marketing Plan
+//
+// The layer above `trend_opportunities`. An opportunity is a single reactive
+// idea ("post about Diwali"); a plan is the standing answer to "what are we
+// doing over the next few weeks, and why" — the thing a marketing team would
+// keep on a whiteboard. It is synthesized from the Brand Brain, the newest
+// trend opportunities, competitor intelligence, and GEO visibility, so it can
+// justify itself with evidence rather than restating the brand kit.
+//
+// Exactly one plan per brand is `active` at a time. Revising never edits in
+// place: the planner writes a new plan and marks the previous one
+// `superseded`, so "why were we doing that last week" stays answerable and a
+// user can see what their own steering actually changed.
+// ---------------------------------------------------------------------------
+
+export const planStatus = content.enum('plan_status', [
+  'draft',
+  'active',
+  /** Replaced by a newer plan — kept for history, never shown as current. */
+  'superseded',
+]);
+
+/**
+ * Why this plan exists in the shape it does.
+ *
+ * `scheduled` plans come from the autonomous loop; `directive` plans were
+ * produced because the user steered. Stored rather than inferred from the
+ * presence of a directive id, because a directive can also *refine* a plan
+ * that a schedule originally created.
+ */
+export const planOrigin = content.enum('plan_origin', ['scheduled', 'directive', 'manual']);
+
+export const marketingPlans = content.table(
+  'marketing_plans',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    status: planStatus('status').notNull().default('draft'),
+    origin: planOrigin('origin').notNull().default('scheduled'),
+    /** How far ahead this plan reaches. Drives the item spacing, and is what
+     *  the user is really choosing when they ask for "a plan for this month". */
+    horizonDays: integer('horizon_days').notNull().default(14),
+    /** One line the user actually reads first: what this plan is trying to
+     *  move — "own the marathon-season conversation in Delhi". */
+    headline: text('headline').notNull(),
+    /** The reasoning, in the planner's own words, citing what it saw. This is
+     *  the difference between a plan and a list. */
+    rationale: text('rationale').notNull(),
+    /** The current theme in the user's language, e.g. "100m dash, Delhi".
+     *  Set from a directive when the user redirects; null when the planner
+     *  chose the focus itself. */
+    focus: text('focus'),
+    /** What the planner read, so a plan can be explained after the sources
+     *  themselves have rotated out of the pool. */
+    evidence: jsonb('evidence').$type<PlanEvidence>().notNull().default({
+      opportunityIds: [],
+      intelligenceItemIds: [],
+      notes: [],
+      geoScoreAtPlanning: null,
+    }),
+    /** The plan this one replaced, newest-first chain. */
+    supersedesId: text('supersedes_id').references((): AnyPgColumn => marketingPlans.id, {
+      onDelete: 'set null',
+    }),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('marketing_plans_brand_created_idx').on(t.brandId, t.createdAt),
+    // The only hot query: this brand's current plan.
+    index('marketing_plans_brand_status_idx').on(t.brandId, t.status),
+    // At most ONE active plan per brand, enforced by the database rather than
+    // by the planner's transaction alone.
+    //
+    // `installPlan` reads the current active plan and then inserts the new
+    // one. Two planners running concurrently for the same brand — a scheduled
+    // refresh landing while the user steers, say — can both read the same
+    // "previous" and both insert, leaving two rows claiming to be current.
+    // Every reader here uses `limit(1)`, so the second plan would not error;
+    // it would silently disappear, taking its proposed items out of the inbox
+    // with it. A partial unique index turns that race into a failed
+    // transaction that rolls back and retries, which is the outcome we want.
+    uniqueIndex('marketing_plans_one_active_per_brand_idx')
+      .on(t.brandId)
+      .where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * Nothing is generated from a plan item until it is `approved`.
+ *
+ * That is the whole point of the status column: the planner may propose
+ * freely, because proposing costs one model call for the whole plan, while
+ * generating costs image spend per item. `proposed -> approved` is the only
+ * transition a human makes, and it is the only one that spends money.
+ */
+export const planItemStatus = content.enum('plan_item_status', [
+  'proposed',
+  'approved',
+  'rejected',
+  /** Generation enqueued; `generationJobId` is set. */
+  'generating',
+  'ready',
+  'scheduled',
+  'published',
+  'failed',
+]);
+
+export const planItems = content.table(
+  'plan_items',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    planId: text('plan_id')
+      .notNull()
+      .references(() => marketingPlans.id, { onDelete: 'cascade' }),
+    /** Denormalized from the plan so the inbox can scope by brand without a
+     *  join on every read. */
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** Position in the plan, 0-based. Ordering is editorial, not chronological
+     *  — an item can be undated. */
+    sequence: integer('sequence').notNull(),
+    title: text('title').notNull(),
+    /** Why this specific post, in one or two sentences the user can argue with. */
+    rationale: text('rationale').notNull(),
+    contentType: trendContentType('content_type').notNull(),
+    /** Prefills the generation request on approval. Same shape the trend
+     *  engine already uses, so approval reuses that path untouched. */
+    suggestedRequest: jsonb('suggested_request').$type<TrendSuggestedRequest>().notNull(),
+    productId: text('product_id').references(() => products.id, { onDelete: 'set null' }),
+    /** The opportunity this item was built on, when it came from one. */
+    opportunityId: text('opportunity_id').references(() => trendOpportunities.id, {
+      onDelete: 'set null',
+    }),
+    /** When the plan intends this to go out. Null means "sometime in the
+     *  horizon" — the planner does not always have a reason to pick a day. */
+    plannedFor: timestamp('planned_for', { withTimezone: true }),
+    status: planItemStatus('status').notNull().default('proposed'),
+    generationJobId: text('generation_job_id').references(() => generationJobs.id, {
+      onDelete: 'set null',
+    }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('plan_items_plan_seq_idx').on(t.planId, t.sequence),
+    // Backs the approval inbox: this brand's items awaiting a human.
+    index('plan_items_brand_status_idx').on(t.brandId, t.status),
+  ],
+);
+
+/**
+ * The steering conversation (the chat).
+ *
+ * A user redirects the whole plan by saying so in plain language — "focus on
+ * the 100m dash in Delhi instead" — and that single message is the entire
+ * interface. Each message is a row; the agent's replies are rows too, so the
+ * panel is just this table in order.
+ *
+ * `status` tracks the work one user message set off, because a redirect is not
+ * instant: it researches the new topic first, then re-plans. The user watches
+ * that happen rather than waiting on a spinner with no explanation.
+ */
+export const directiveRole = content.enum('directive_role', ['user', 'agent']);
+
+export const directiveIntent = content.enum('directive_intent', [
+  /** Change what the plan is about. Triggers research, then a new plan. */
+  'redirect',
+  /** Keep the subject, change the treatment — tone, channel, cadence. */
+  'refine',
+  /** "Yes, do it" — approves the current plan's proposed items. */
+  'approve',
+  /** A question about the plan; answered without changing it. */
+  'question',
+  'unclear',
+]);
+
+export const directiveStatus = content.enum('directive_status', [
+  'pending',
+  'researching',
+  'planning',
+  'applied',
+  'failed',
+]);
+
+export const planDirectives = content.table(
+  'plan_directives',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** The plan this message was said *about*. Null for a message sent before
+     *  any plan exists, which is a legitimate way to start one. */
+    planId: text('plan_id').references((): AnyPgColumn => marketingPlans.id, {
+      onDelete: 'set null',
+    }),
+    role: directiveRole('role').notNull(),
+    text: text('text').notNull(),
+    /** Only set on user rows, and only once classified. */
+    intent: directiveIntent('intent'),
+    status: directiveStatus('status').notNull().default('pending'),
+    /** The plan this directive produced, once it has produced one. */
+    resultingPlanId: text('resulting_plan_id').references((): AnyPgColumn => marketingPlans.id, {
+      onDelete: 'set null',
+    }),
+    /** The directed research run this directive kicked off, so the panel can
+     *  show "researching the 100m dash in Delhi" against real progress. */
+    researchRunId: text('research_run_id').references((): AnyPgColumn => trendResearchRuns.id, {
+      onDelete: 'set null',
+    }),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('plan_directives_brand_created_idx').on(t.brandId, t.createdAt)],
+);
+
+export const marketingPlansRelations = relations(marketingPlans, ({ one, many }) => ({
+  brand: one(brands, { fields: [marketingPlans.brandId], references: [brands.id] }),
+  items: many(planItems),
+}));
+
+export const planItemsRelations = relations(planItems, ({ one }) => ({
+  plan: one(marketingPlans, { fields: [planItems.planId], references: [marketingPlans.id] }),
+  opportunity: one(trendOpportunities, {
+    fields: [planItems.opportunityId],
+    references: [trendOpportunities.id],
+  }),
+}));
+
+export type MarketingPlanRow = typeof marketingPlans.$inferSelect;
+export type NewMarketingPlanRow = typeof marketingPlans.$inferInsert;
+export type PlanItemRow = typeof planItems.$inferSelect;
+export type NewPlanItemRow = typeof planItems.$inferInsert;
+export type PlanDirectiveRow = typeof planDirectives.$inferSelect;
+export type NewPlanDirectiveRow = typeof planDirectives.$inferInsert;
+
 export type IntelligenceRunRow = typeof intelligenceRuns.$inferSelect;
 export type NewIntelligenceRunRow = typeof intelligenceRuns.$inferInsert;
 export type IntelligenceItemRow = typeof intelligenceItems.$inferSelect;
@@ -1415,5 +1886,9 @@ export type ScheduledCampaign = typeof scheduledCampaigns.$inferSelect;
 export type NewScheduledCampaign = typeof scheduledCampaigns.$inferInsert;
 export type ScheduledPost = typeof scheduledPosts.$inferSelect;
 export type NewScheduledPost = typeof scheduledPosts.$inferInsert;
+export type PostInsightRow = typeof postInsights.$inferSelect;
+export type NewPostInsightRow = typeof postInsights.$inferInsert;
+export type PostCommentRow = typeof postComments.$inferSelect;
+export type NewPostCommentRow = typeof postComments.$inferInsert;
 export type PushToken = typeof pushTokens.$inferSelect;
 export type NewPushToken = typeof pushTokens.$inferInsert;

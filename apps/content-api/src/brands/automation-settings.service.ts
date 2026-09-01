@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -36,9 +35,7 @@ export class AutomationSettingsService {
       .where(eq(schema.brands.id, brandId))
       .limit(1);
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
-    if (brand.ownerId !== ownerId) {
-      throw new ForbiddenException('This brand belongs to another account.');
-    }
+    if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
   }
 
   /**
@@ -102,8 +99,15 @@ export class AutomationSettingsService {
     await this.assertBrandOwned(brandId, ownerId);
     const current = await this.ensureSettings(brandId);
 
-    const frequency = input.trendFrequency ?? current.trendFrequency;
     const enabled = input.contentAutomationEnabled ?? current.contentAutomationEnabled;
+    // Turning autopilot on with no explicit cadence in the same request means
+    // "run every day" — the frontend has no cadence picker (see brain.tsx),
+    // so without this every brand would inherit the column default ('weekly')
+    // the moment autopilot is switched on, leaving research stale for up to a
+    // week with nobody around to notice. A request that does specify
+    // trendFrequency (e.g. a future settings screen) still wins outright.
+    const turningOn = enabled && !current.contentAutomationEnabled;
+    const frequency = input.trendFrequency ?? (turningOn ? 'daily' : current.trendFrequency);
     const policy = input.approvalPolicy ?? current.approvalPolicy;
     const autoPublish = input.autoPublishEnabled ?? current.autoPublishEnabled;
     const autoTriggerOpportunities =
@@ -121,7 +125,7 @@ export class AutomationSettingsService {
 
     const scheduleChanged =
       (input.trendFrequency !== undefined && input.trendFrequency !== current.trendFrequency) ||
-      (enabled && !current.contentAutomationEnabled);
+      turningOn;
 
     const [updated] = await this.db
       .update(schema.automationSettings)
@@ -134,6 +138,12 @@ export class AutomationSettingsService {
         ...(scheduleChanged
           ? { nextResearchAt: nextResearchAt(frequency, current.lastResearchAt) }
           : {}),
+        // Any path that turns automation on — the owner here, or
+        // AutopilotActivityService resuming a paused brand on login — clears
+        // the inactivity-pause marker. Otherwise a brand the owner manually
+        // re-enables stays flagged as "we paused this", and the next
+        // inactivity sweep leaves it alone thinking it already has.
+        ...(turningOn ? { autoPausedAt: null } : {}),
         updatedAt: new Date(),
       })
       .where(eq(schema.automationSettings.brandId, brandId))

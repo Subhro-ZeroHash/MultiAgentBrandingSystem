@@ -190,18 +190,92 @@ export function poolExpiresAt(kind: keyof typeof POOL_CADENCE_HOURS, finishedAt:
   return new Date(finishedAt.getTime() + POOL_CADENCE_HOURS[kind] * 3_600_000);
 }
 
+/**
+ * The market a pool bucket covers, as an ISO 3166-1 alpha-2 code.
+ *
+ * Part of the bucket key, not a display detail: "upcoming festivals" and
+ * "trending this week" mean entirely different things in India and the US, so
+ * two brands in different countries must not share a pool. Before this, every
+ * query was hardcoded to India and a US brand was served Indian festivals.
+ *
+ * Stored as a plain string rather than an enum — the set of countries is
+ * open-ended and adding one should not require a migration.
+ */
+export const DEFAULT_MARKET = 'IN';
+
+/** Display name for prompts and search queries. Falls back to the code itself
+ *  for anything unmapped, which reads acceptably in a query ("festivals in
+ *  PT") and never blocks a market from working. */
+const MARKET_NAMES: Record<string, string> = {
+  IN: 'India',
+  US: 'the United States',
+  GB: 'the United Kingdom',
+  AE: 'the United Arab Emirates',
+  AU: 'Australia',
+  CA: 'Canada',
+  SG: 'Singapore',
+  DE: 'Germany',
+  FR: 'France',
+  JP: 'Japan',
+  BR: 'Brazil',
+  ZA: 'South Africa',
+  NZ: 'New Zealand',
+  NG: 'Nigeria',
+  BD: 'Bangladesh',
+  PK: 'Pakistan',
+  LK: 'Sri Lanka',
+  NP: 'Nepal',
+};
+
+export function marketName(code: string): string {
+  return MARKET_NAMES[code.toUpperCase()] ?? code.toUpperCase();
+}
+
+/** The IANA timezone a market's "today" should be read in, so a run just after
+ *  midnight UTC does not date itself to the previous day in the market it is
+ *  actually about. UTC for anything unmapped — wrong by at most a few hours,
+ *  where guessing a region could be wrong by a day. */
+const MARKET_TIMEZONES: Record<string, string> = {
+  IN: 'Asia/Kolkata',
+  US: 'America/New_York',
+  GB: 'Europe/London',
+  AE: 'Asia/Dubai',
+  AU: 'Australia/Sydney',
+  CA: 'America/Toronto',
+  SG: 'Asia/Singapore',
+  DE: 'Europe/Berlin',
+  FR: 'Europe/Paris',
+  JP: 'Asia/Tokyo',
+  BR: 'America/Sao_Paulo',
+  ZA: 'Africa/Johannesburg',
+  NZ: 'Pacific/Auckland',
+  NG: 'Africa/Lagos',
+  BD: 'Asia/Dhaka',
+  PK: 'Asia/Karachi',
+  LK: 'Asia/Colombo',
+  NP: 'Asia/Kathmandu',
+};
+
+export function marketTimeZone(code: string): string {
+  return MARKET_TIMEZONES[code.toUpperCase()] ?? 'UTC';
+}
+
 /** Every category bucket plus the one national bucket each kind needs
  *  (`event_festival` for trends, `local` for intelligence) — the fixed,
- *  enumerable set of buckets the pool scheduler refreshes. Exported so the
- *  scheduler and any future admin/debug view describe the same bucket list. */
+ *  enumerable set of buckets the pool scheduler refreshes, per market.
+ *  Exported so the scheduler and any future admin/debug view describe the
+ *  same bucket list. */
 export interface PoolBucket {
   scope: PoolRunScope;
   category: z.infer<typeof categoryKeySchema> | null;
+  market: string;
 }
 
-export function allPoolBuckets(): PoolBucket[] {
+export function allPoolBuckets(market: string = DEFAULT_MARKET): PoolBucket[] {
   return [
-    ...categoryKeySchema.options.map((category): PoolBucket => ({ scope: 'category', category })),
-    { scope: 'national', category: null },
+    ...categoryKeySchema.options.map(
+      (category): PoolBucket => ({ scope: 'category', category, market }),
+    ),
+    { scope: 'national', category: null, market },
   ];
 }

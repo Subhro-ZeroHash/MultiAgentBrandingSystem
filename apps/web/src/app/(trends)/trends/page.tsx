@@ -6,11 +6,10 @@
  *
  * The first interactive page in this app — Studio and GEO are still
  * placeholders — so this also establishes the pattern the next real page
- * will likely copy: `contentApi` from `src/lib/api.ts` for fetches, an
- * `x-user-id: dev-user` header (matches `DEV_OWNER_ID` on content-api; no
- * auth exists yet, see CLAUDE.md's "deliberate gaps"), and 3s polling while
- * a run is in flight (the same cadence generations.controller.ts's own
- * comment describes for the create screen).
+ * will likely copy: `contentApi` from `src/lib/api.ts` for fetches (the
+ * caller's JWT is attached automatically, see lib/api.ts's AuthProvider
+ * integration), and 3s polling while a run is in flight (the same cadence
+ * generations.controller.ts's own comment describes for the create screen).
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -22,7 +21,6 @@ import type {
 } from '@bmas/shared';
 import { contentApi, ApiError } from '@/lib/api';
 
-const DEV_HEADERS = { 'x-user-id': 'dev-user' };
 const RUN_POLL_MS = 3000;
 
 interface BrandSummary {
@@ -86,10 +84,7 @@ function RecommendedContent({ jobRefs }: { jobRefs: TrendOpportunity['generation
     const poll = async () => {
       for (const ref of jobRefs) {
         try {
-          const job = await contentApi.get<GenerationJobStatus>(
-            `/generations/${ref.jobId}`,
-            DEV_HEADERS,
-          );
+          const job = await contentApi.get<GenerationJobStatus>(`/generations/${ref.jobId}`);
           if (!cancelled) setJobs((prev) => ({ ...prev, [ref.jobId]: job }));
         } catch {
           // A single job's poll failing shouldn't blank out the others.
@@ -188,7 +183,7 @@ export default function TrendsPage() {
 
   useEffect(() => {
     contentApi
-      .get<BrandSummary[]>('/brands', DEV_HEADERS)
+      .get<BrandSummary[]>('/brands')
       .then((list) => {
         setBrands(list);
         if (list[0]) setBrandId(list[0].id);
@@ -198,7 +193,7 @@ export default function TrendsPage() {
 
   const loadSettings = useCallback((id: string) => {
     contentApi
-      .get<AutomationSettings>(`/brands/${id}/automation-settings`, DEV_HEADERS)
+      .get<AutomationSettings>(`/brands/${id}/automation-settings`)
       .then(setSettings)
       .catch(() => setSettings(null));
   }, []);
@@ -207,7 +202,6 @@ export default function TrendsPage() {
     try {
       const run = await contentApi.get<TrendResearchRun & { opportunities: TrendOpportunity[] }>(
         `/brands/${id}/trend-research/${runId}`,
-        DEV_HEADERS,
       );
       setActiveRun(run);
     } catch (err) {
@@ -218,7 +212,7 @@ export default function TrendsPage() {
   const loadRuns = useCallback(
     (id: string) => {
       contentApi
-        .get<TrendResearchRun[]>(`/brands/${id}/trend-research`, DEV_HEADERS)
+        .get<TrendResearchRun[]>(`/brands/${id}/trend-research`)
         .then((list) => {
           setRuns(list);
           if (list[0]) void loadRun(id, list[0].id);
@@ -251,7 +245,7 @@ export default function TrendsPage() {
     setStarting(true);
     setError(null);
     try {
-      await contentApi.post(`/brands/${brandId}/trend-research`, {}, DEV_HEADERS);
+      await contentApi.post(`/brands/${brandId}/trend-research`, {});
       loadRuns(brandId);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to start research');
@@ -276,7 +270,6 @@ export default function TrendsPage() {
       const updated = await contentApi.patch<AutomationSettings>(
         `/brands/${brandId}/automation-settings`,
         { [field]: next },
-        DEV_HEADERS,
       );
       setSettings(updated);
     } catch (err) {

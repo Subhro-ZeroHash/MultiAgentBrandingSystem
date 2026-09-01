@@ -1,8 +1,10 @@
 import { Controller, Get, Inject } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { AiRegistry } from '@bmas/ai';
 import { sql, type Database } from '@bmas/db';
 import { AI_REGISTRY, DATABASE } from '../core/core.module.js';
 
+@SkipThrottle()
 @Controller('health')
 export class HealthController {
   constructor(

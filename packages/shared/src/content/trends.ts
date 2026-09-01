@@ -38,8 +38,16 @@ import { campaignTypeSchema, outputFormatSchema, styleTemplateSchema } from './c
  * an existing shape, not a migration and an app-wide type change. This union
  * is the one place that has to grow when a provider is added; the database
  * column stays `text`.
+ *
+ * `calendar` is the one member that is not a search provider. It marks an
+ * observance the model enumerated and a targeted search then corroborated
+ * (see `festival-calendar.ts`) — evidence about a *future* dated event, which
+ * no search provider can supply directly, since ranking pages by relevance
+ * cannot answer "what is coming up". It is a distinct source rather than being
+ * laundered as a Tavily result because its provenance is genuinely different,
+ * and a signal's provenance is the thing this column exists to record.
  */
-export const signalSourceSchema = z.enum(['tavily', 'serpapi']);
+export const signalSourceSchema = z.enum(['tavily', 'serpapi', 'calendar']);
 export type SignalSource = z.infer<typeof signalSourceSchema>;
 
 /**
@@ -64,8 +72,8 @@ export const signalTypeSchema = z.enum([
 export type SignalType = z.infer<typeof signalTypeSchema>;
 
 /** `title` is nullish rather than merely nullable because it is filled by a
- *  model, not by us: a small local model constrained by Ollama's JSON-Schema
- *  grammar routinely *omits* an optional-looking string field instead of
+ *  model, not by us: a model constrained by JSON-Schema grammar routinely
+ *  *omits* an optional-looking string field instead of
  *  emitting `null` for it, which a bare `.nullable()` rejects with
  *  "expected string, received undefined" and — since the adapter marks schema
  *  mismatches retryable — burns the whole research run on a missing headline.

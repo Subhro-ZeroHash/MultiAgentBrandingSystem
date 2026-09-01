@@ -24,3 +24,7 @@ export {
 // The Context Manager: task-specific brand context assembly, shared by
 // content-api (via BrandContextService) and content-worker (directly).
 export * from './context/context-manager.js';
+
+// Stalled-run reaping, shared for the same reason: content-api reaps on read
+// so a polling client gets a real failure, content-worker sweeps on its tick.
+export * from './runs/stalled-runs.js';

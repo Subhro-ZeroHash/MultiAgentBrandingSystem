@@ -1,34 +1,57 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildTrendPoolQueries,
+  calendarEventsToSignals,
   clipPoolItemCounts,
+  describeSignalsForPrompt,
   resolvePoolItemSignals,
 } from './trend-pool-refresh.js';
+import type { VerifiedCalendarEvent } from './festival-calendar.js';
 
 describe('buildTrendPoolQueries', () => {
   it('builds two category-scoped queries for a category bucket', () => {
-    const queries = buildTrendPoolQueries({ scope: 'category', category: 'fashion_apparel' });
+    const queries = buildTrendPoolQueries({
+      scope: 'category',
+      category: 'fashion_apparel',
+      market: 'IN',
+    });
     expect(queries.map((q) => q.category)).toEqual(['industry_topic', 'social_trend']);
   });
 
   it('folds the category label into every category-scoped query', () => {
-    const queries = buildTrendPoolQueries({ scope: 'category', category: 'food_beverage' });
+    const queries = buildTrendPoolQueries({
+      scope: 'category',
+      category: 'food_beverage',
+      market: 'IN',
+    });
     for (const { request } of queries) {
       expect(request.query).toContain('Food & Beverage');
     }
   });
 
-  it('builds a single national query for the festival/event bucket', () => {
-    const queries = buildTrendPoolQueries({ scope: 'national' });
+  it('builds a single national query, industry-agnostic', () => {
+    const queries = buildTrendPoolQueries({ scope: 'national', market: 'IN' });
     expect(queries).toHaveLength(1);
     expect(queries[0]?.category).toBe('event_festival');
     expect(queries[0]?.request.query).not.toMatch(/Technology|Fashion|Food/);
   });
 
+  /**
+   * The national query used to ask search which festivals were coming up.
+   * Search cannot answer that — no page is a calendar — so it returned
+   * whatever sale listicle ranked best, which is where the Republic Day result
+   * came from. `festival-calendar.ts` owns that question now, and this query
+   * is left to what search is genuinely good at.
+   */
+  it('no longer asks search to enumerate upcoming festivals', () => {
+    const query = buildTrendPoolQueries({ scope: 'national', market: 'IN' })[0]!.request.query;
+    expect(query).not.toMatch(/upcoming festivals|public holidays|next 30 days/i);
+  });
+
   it('never asserts a country via `locale` — geography lives in the query text', () => {
     const queries = [
-      ...buildTrendPoolQueries({ scope: 'category', category: 'sports' }),
-      ...buildTrendPoolQueries({ scope: 'national' }),
+      ...buildTrendPoolQueries({ scope: 'category', category: 'sports', market: 'IN' }),
+      ...buildTrendPoolQueries({ scope: 'national', market: 'IN' }),
     ];
     for (const { request } of queries) {
       expect(request.locale).toBeUndefined();
@@ -41,10 +64,19 @@ describe('buildTrendPoolQueries', () => {
 describe('clipPoolItemCounts', () => {
   const item = (n: number) => ({ title: `item ${n}` });
 
-  it('drops items beyond the fifteenth', () => {
+  it('drops items beyond the fifteenth by default', () => {
     const raw = { items: Array.from({ length: 20 }, (_unused, i) => item(i)) };
     const clipped = clipPoolItemCounts(raw) as { items: unknown[] };
     expect(clipped.items).toHaveLength(15);
+  });
+
+  /** The national bucket asks for fewer, because generating more was blowing
+   *  Gemini's own server-side deadline once the calendar landed. The clip has
+   *  to follow the ask, or the prompt and the parser disagree. */
+  it('honours a lower limit when the caller sets one', () => {
+    const raw = { items: Array.from({ length: 20 }, (_unused, i) => item(i)) };
+    const clipped = clipPoolItemCounts(raw, 10) as { items: unknown[] };
+    expect(clipped.items).toHaveLength(10);
   });
 
   it('leaves a within-bounds payload untouched', () => {
@@ -122,5 +154,166 @@ describe('resolvePoolItemSignals', () => {
       [...signals, duplicateUrlSignal],
     );
     expect(resolved?.sources).toHaveLength(1);
+  });
+});
+
+/**
+ * The bug this exists to prevent: every pool query was hardcoded to India, so
+ * a brand in New York was researched against Indian festivals and Indian
+ * industry news. Geography has to come from the bucket's market.
+ */
+describe('buildTrendPoolQueries across markets', () => {
+  it("names the brand's own market, not a hardcoded one", () => {
+    const us = buildTrendPoolQueries({ scope: 'national', market: 'US' });
+    expect(us[0]!.request.query).toContain('the United States');
+    expect(us[0]!.request.query).not.toContain('India');
+  });
+
+  it('scopes category queries to the market too', () => {
+    const gb = buildTrendPoolQueries({ scope: 'category', category: 'sports', market: 'GB' });
+    for (const { request } of gb) {
+      expect(request.query).toContain('the United Kingdom');
+      expect(request.query).not.toContain('India');
+    }
+  });
+
+  /** An unmapped code still has to produce a usable query rather than
+   *  throwing or silently falling back to the wrong country. */
+  it('degrades to the bare code for an unmapped market', () => {
+    const pt = buildTrendPoolQueries({ scope: 'national', market: 'PT' });
+    expect(pt[0]!.request.query).toContain('PT');
+    expect(pt[0]!.request.query).not.toContain('India');
+  });
+
+  /** Search engines rank evergreen pages highly; dating the query is what
+   *  biases them toward live coverage. */
+  it('dates the query so the engine returns current coverage', () => {
+    const now = new Date();
+    const month = new Intl.DateTimeFormat('en-IN', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'Asia/Kolkata',
+    }).format(now);
+    const queries = buildTrendPoolQueries({ scope: 'national', market: 'IN' });
+    expect(queries[0]!.request.query).toContain(month);
+  });
+});
+
+/**
+ * Calendar events reach synthesis as signals, so an observance can carry a
+ * pool item even when no search result mentions it — the case the old
+ * search-only national bucket could never produce.
+ */
+describe('calendarEventsToSignals', () => {
+  const verified = (over: Partial<VerifiedCalendarEvent> = {}): VerifiedCalendarEvent => ({
+    name: 'Raksha Bandhan',
+    date: '2026-08-28',
+    kind: 'religious',
+    significance: 'Siblings exchange gifts and sweets.',
+    audience: 'observed across northern and western India',
+    daysAway: 4,
+    results: [
+      {
+        url: 'https://a.example/rb',
+        title: 'Raksha Bandhan 2026',
+        snippet: '',
+        publishedAt: '2026-08-20',
+      },
+      { url: 'https://b.example/rb', title: 'Gifting guide', snippet: '', publishedAt: null },
+    ],
+    ...over,
+  });
+
+  it('emits one signal per event, not one per corroborating page', () => {
+    const signals = calendarEventsToSignals([verified()]);
+    expect(signals).toHaveLength(1);
+  });
+
+  it('carries the event name and date into the title', () => {
+    const [signal] = calendarEventsToSignals([verified()]);
+    expect(signal!.title).toContain('Raksha Bandhan');
+    expect(signal!.title).toContain('2026-08-28');
+  });
+
+  it('marks the source as the calendar, distinct from a search provider', () => {
+    const [signal] = calendarEventsToSignals([verified()]);
+    expect(signal!.source).toBe('calendar');
+    expect(signal!.signalType).toBe('event_proximity');
+  });
+
+  /** Every signal must carry a source URL; the top corroborating page is it. */
+  it('takes its source URL from the best corroborating page', () => {
+    const [signal] = calendarEventsToSignals([verified()]);
+    expect(signal!.sourceUrl).toBe('https://a.example/rb');
+  });
+
+  /** `publishedAt` means "when this evidence was written". Quietly putting a
+   *  future event date in it would misreport every downstream recency check. */
+  it("reports the page's own date, never the event's", () => {
+    const [signal] = calendarEventsToSignals([verified()]);
+    expect(signal!.publishedAt).toBe('2026-08-20');
+  });
+
+  it('scores a nearer event stronger than a distant one', () => {
+    const [near] = calendarEventsToSignals([verified({ daysAway: 2 })]);
+    const [far] = calendarEventsToSignals([verified({ daysAway: 40 })]);
+    expect(near!.strength).toBeGreaterThan(far!.strength);
+  });
+
+  /** An event six weeks out is still a real planning opportunity, so strength
+   *  is floored rather than decaying toward nothing. */
+  it('keeps a distant event meaningfully strong', () => {
+    const [far] = calendarEventsToSignals([verified({ daysAway: 45 })]);
+    expect(far!.strength).toBeGreaterThanOrEqual(40);
+  });
+
+  it('skips an event with no corroborating page rather than emitting a sourceless signal', () => {
+    expect(calendarEventsToSignals([verified({ results: [] })])).toHaveLength(0);
+  });
+
+  it('contributes nothing for a bucket with no calendar', () => {
+    expect(calendarEventsToSignals([])).toHaveLength(0);
+  });
+});
+
+/**
+ * Synthesis runs as two calls over two slices of one signal array, and both
+ * return indexes that `resolvePoolItemSignals` resolves against the whole of
+ * it. If the second slice numbered itself from zero, its items would silently
+ * attach to the calendar's sources instead of their own — wrong citations on
+ * plausible-looking items, which nothing downstream could detect.
+ */
+describe('describeSignalsForPrompt', () => {
+  const signal = (title: string) => ({
+    id: `id-${title}`,
+    source: 'tavily',
+    signalType: 'news_mention' as const,
+    title,
+    snippet: 'body',
+    strength: 50,
+    sourceUrl: `https://example.com/${title}`,
+    publishedAt: null,
+  });
+
+  it('numbers from zero by default', () => {
+    expect(describeSignalsForPrompt([signal('a'), signal('b')])).toMatch(/^\[0\]/);
+  });
+
+  it('numbers from the offset it is given', () => {
+    const text = describeSignalsForPrompt([signal('a'), signal('b')], 11);
+    expect(text).toContain('[11]');
+    expect(text).toContain('[12]');
+    expect(text).not.toContain('[0]');
+  });
+
+  /** The two slices together must cover 0..n-1 exactly once, with no gap and
+   *  no repeat — that is what makes one shared resolution correct. */
+  it('produces a contiguous numbering across both slices', () => {
+    const calendar = [signal('c1'), signal('c2')];
+    const search = [signal('s1'), signal('s2'), signal('s3')];
+    const combined =
+      describeSignalsForPrompt(calendar) + '\n' + describeSignalsForPrompt(search, calendar.length);
+    const indexes = [...combined.matchAll(/^\[(\d+)\]/gm)].map((m) => Number(m[1]));
+    expect(indexes).toEqual([0, 1, 2, 3, 4]);
   });
 });

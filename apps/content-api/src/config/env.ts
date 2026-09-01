@@ -31,10 +31,13 @@ const envSchema = z.object({
   GOOGLE_API_KEY: optionalText(),
   FAL_KEY: optionalText(),
   /** Serves text/JSON/vision. `gemini` needs no Anthropic credential. */
-  LLM_PROVIDER: z.enum(['anthropic', 'gemini', 'ollama']).default('anthropic'),
-  /** Local Ollama server (development only). Defaults to localhost:11434. */
-  OLLAMA_BASE_URL: optionalUrl(),
-  OLLAMA_MODEL: optionalText(),
+  LLM_PROVIDER: z.enum(['anthropic', 'gemini']).default('gemini'),
+
+  /** Video generation. Declared here purely for startup validation and the
+   *  "three places" rule — createAiRegistryFromEnv reads process.env
+   *  directly, same as every other provider key in this schema. */
+  LTX_API_KEY: optionalText(),
+  VIDEO_PROVIDER_PRIMARY: z.enum(['ltx', 'stub']).default('stub'),
 
   /** Real-time web search for the Trend Research Agent. Declared here purely
    *  for startup validation and the "three places" rule (CLAUDE.md) —
@@ -65,7 +68,16 @@ const envSchema = z.object({
    *  and secret, which are NOT the same values as the Meta/Facebook app's. */
   INSTAGRAM_APP_ID: optionalText(),
   INSTAGRAM_APP_SECRET: optionalText(),
-  ENCRYPTION_KEY: optionalText(),
+  /** Encrypts Instagram access tokens at rest (AES-256-GCM via
+   *  TokenEncryption) and signs the asset links Instagram fetches images/
+   *  videos from. Required rather than optional — it used to be, and a
+   *  missing key made SocialService silently store real Instagram tokens in
+   *  plaintext with no warning. Same "fail at startup, not silently" pattern
+   *  AUTH_SECRET already uses below. */
+  ENCRYPTION_KEY: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes). Generate one with: ' +
+      "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""),
   /** Must be HTTPS and match the dashboard exactly; Instagram Login rejects
    *  plain-http redirects, including on localhost. */
   INSTAGRAM_OAUTH_REDIRECT_URI: optionalUrl(),
@@ -93,8 +105,11 @@ const envSchema = z.object({
         'AUTH_SECRET is still the placeholder from .env.example, which is public. ' +
         'Generate a real one: openssl rand -hex 32',
     }),
-  /** How long an issued token stays valid, in `jsonwebtoken` expiresIn format. */
-  AUTH_TOKEN_TTL: z.string().default('30d'),
+  /** How long an issued access token stays valid, in `jsonwebtoken` expiresIn
+   *  format. Short on purpose — a session's real lifetime now comes from its
+   *  refresh token (see `core.refresh_tokens`), which is revocable; this only
+   *  bounds how long a stolen access token stays useful after that. */
+  AUTH_TOKEN_TTL: z.string().default('15m'),
 });
 
 export type Env = z.infer<typeof envSchema>;

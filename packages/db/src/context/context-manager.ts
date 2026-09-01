@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { ApprovalPolicy, BrandCompetitor, SiteAnalysis, TrendFrequency } from '@bmas/shared';
 import type { Database } from '../client.js';
 import * as schema from '../schema/index.js';
@@ -48,6 +48,15 @@ const RECENT_FEEDBACK_DAYS = 90;
 /** Row caps. A prompt that grows with account age eventually degrades the
  *  output and always costs more; these bound both. */
 const MAX_PRODUCTS = 12;
+/** How many recent research runs the planner reaches back through for
+ *  evidence. Two: enough that a plan drafted right after a quiet run still has
+ *  material, few enough that it is not planning around last month's news. */
+const MAX_PLANNING_RUNS = 2;
+/** Caps on what reaches the planner's prompt. These are the biggest lever on
+ *  its input cost, and past roughly this many the model starts averaging
+ *  across ideas instead of choosing between them. */
+const MAX_PLANNING_OPPORTUNITIES = 12;
+const MAX_PLANNING_INTELLIGENCE = 8;
 const MAX_RECENT_TOPICS = 15;
 const MAX_LEARNED = 8;
 const MAX_REJECTED_PATTERNS = 6;
@@ -659,6 +668,215 @@ function trimSnapshot(snapshot: Record<string, unknown>): Record<string, unknown
   };
 }
 
+// ---------------------------------------------------------------------------
+// 5. Planning context — what the Marketing Planner reads
+// ---------------------------------------------------------------------------
+
+/** One live opportunity, flattened for the planner's prompt. */
+export interface ContextOpportunity {
+  id: string;
+  title: string;
+  summary: string;
+  recommendation: string;
+  contentType: string;
+  actionTier: string;
+  productId: string | null;
+  score: number;
+}
+
+/** One piece of competitor/market intelligence worth planning around. */
+export interface ContextIntelligence {
+  id: string;
+  title: string;
+  summary: string;
+  /** The planner's most useful field: the analyst's own reason this matters,
+   *  rather than the raw finding. */
+  whyItMatters: string;
+  category: string;
+  urgency: string;
+}
+
+/**
+ * Everything the Marketing Planner is handed.
+ *
+ * Deliberately a superset of `TrendTaskContext` rather than its own parallel
+ * loader: a plan is a judgment about the same business the trend agent studies,
+ * and duplicating the identity loaders is how the two silently drift into
+ * describing the brand differently. What planning adds is the *outside* view —
+ * what the research agents have actually found, and how visible the brand
+ * currently is — because a plan that cannot cite evidence is just an opinion.
+ */
+export interface PlanningTaskContext extends TrendTaskContext {
+  /** Newest un-actioned opportunities, best-scoring first. */
+  opportunities: ContextOpportunity[];
+  intelligence: ContextIntelligence[];
+  /** Latest GEO visibility score, or null if the brand has never been probed. */
+  geoScore: number | null;
+  /** Headline of the plan currently in force, so a revision can acknowledge
+   *  what it is replacing instead of silently contradicting it. */
+  currentPlanHeadline: string | null;
+  /** Titles already proposed by the active plan — never propose them again. */
+  currentPlanTitles: string[];
+}
+
+export async function getPlanningContext(
+  db: Database,
+  brandId: string,
+): Promise<PlanningTaskContext> {
+  const [base, opportunities, intelligence, geoScore, currentPlan] = await Promise.all([
+    getTrendContext(db, brandId),
+    loadLiveOpportunities(db, brandId),
+    loadLiveIntelligence(db, brandId),
+    loadLatestGeoScore(db, brandId),
+    loadActivePlanSummary(db, brandId),
+  ]);
+
+  return {
+    ...base,
+    opportunities,
+    intelligence,
+    geoScore,
+    currentPlanHeadline: currentPlan?.headline ?? null,
+    currentPlanTitles: currentPlan?.titles ?? [],
+  };
+}
+
+/** Opportunities are per-run, so this reaches through the brand's runs rather
+ *  than filtering opportunities directly — they carry no brandId of their own. */
+async function loadLiveOpportunities(
+  db: Database,
+  brandId: string,
+): Promise<ContextOpportunity[]> {
+  const runs = await db
+    .select({ id: schema.trendResearchRuns.id })
+    .from(schema.trendResearchRuns)
+    .where(eq(schema.trendResearchRuns.brandId, brandId))
+    .orderBy(desc(schema.trendResearchRuns.createdAt))
+    .limit(MAX_PLANNING_RUNS);
+  if (runs.length === 0) return [];
+
+  const rows = await db
+    .select({
+      id: schema.trendOpportunities.id,
+      title: schema.trendOpportunities.title,
+      summary: schema.trendOpportunities.summary,
+      recommendation: schema.trendOpportunities.recommendation,
+      contentType: schema.trendOpportunities.contentType,
+      actionTier: schema.trendOpportunities.actionTier,
+      productId: schema.trendOpportunities.productId,
+      score: schema.trendOpportunities.score,
+      createdAt: schema.trendOpportunities.createdAt,
+    })
+    .from(schema.trendOpportunities)
+    .where(
+      and(
+        inArray(
+          schema.trendOpportunities.runId,
+          runs.map((r) => r.id),
+        ),
+        // 'ignored' stays ignored — re-proposing something the user already
+        // dismissed is the fastest way to lose their trust in the whole feed —
+        // and 'working_on' is already being acted on, so planning it again
+        // would duplicate work in flight.
+        inArray(schema.trendOpportunities.status, ['new', 'saved']),
+      ),
+    )
+    .orderBy(desc(schema.trendOpportunities.createdAt))
+    .limit(MAX_PLANNING_OPPORTUNITIES);
+
+  return rows
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      summary: r.summary,
+      recommendation: r.recommendation,
+      contentType: String(r.contentType),
+      actionTier: String(r.actionTier),
+      productId: r.productId,
+      score: typeof r.score?.overall === 'number' ? r.score.overall : 0,
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+async function loadLiveIntelligence(
+  db: Database,
+  brandId: string,
+): Promise<ContextIntelligence[]> {
+  const runs = await db
+    .select({ id: schema.intelligenceRuns.id })
+    .from(schema.intelligenceRuns)
+    .where(eq(schema.intelligenceRuns.brandId, brandId))
+    .orderBy(desc(schema.intelligenceRuns.createdAt))
+    .limit(MAX_PLANNING_RUNS);
+  if (runs.length === 0) return [];
+
+  const rows = await db
+    .select({
+      id: schema.intelligenceItems.id,
+      title: schema.intelligenceItems.title,
+      summary: schema.intelligenceItems.summary,
+      whyItMatters: schema.intelligenceItems.whyItMatters,
+      category: schema.intelligenceItems.category,
+      urgency: schema.intelligenceItems.urgency,
+    })
+    .from(schema.intelligenceItems)
+    .where(
+      inArray(
+        schema.intelligenceItems.runId,
+        runs.map((r) => r.id),
+      ),
+    )
+    .orderBy(desc(schema.intelligenceItems.createdAt))
+    .limit(MAX_PLANNING_INTELLIGENCE);
+
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    summary: r.summary,
+    whyItMatters: r.whyItMatters,
+    category: String(r.category),
+    urgency: String(r.urgency),
+  }));
+}
+
+/** GEO's own tables, read-only and best-effort: visibility is useful context
+ *  for a plan but never a reason to fail one, and the two products deploy
+ *  independently (CLAUDE.md rule 4). */
+async function loadLatestGeoScore(db: Database, brandId: string): Promise<number | null> {
+  try {
+    const [row] = await db
+      .select({ score: schema.visibilitySnapshots.geoScore })
+      .from(schema.visibilitySnapshots)
+      .where(eq(schema.visibilitySnapshots.brandId, brandId))
+      .orderBy(desc(schema.visibilitySnapshots.periodStart))
+      .limit(1);
+    return row?.score ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadActivePlanSummary(
+  db: Database,
+  brandId: string,
+): Promise<{ headline: string; titles: string[] } | null> {
+  const [plan] = await db
+    .select({ id: schema.marketingPlans.id, headline: schema.marketingPlans.headline })
+    .from(schema.marketingPlans)
+    .where(
+      and(eq(schema.marketingPlans.brandId, brandId), eq(schema.marketingPlans.status, 'active')),
+    )
+    .limit(1);
+  if (!plan) return null;
+
+  const items = await db
+    .select({ title: schema.planItems.title })
+    .from(schema.planItems)
+    .where(eq(schema.planItems.planId, plan.id));
+
+  return { headline: plan.headline, titles: items.map((i) => i.title) };
+}
+
 /**
  * Records what an agent was actually handed (Rule 8).
  *
@@ -858,6 +1076,9 @@ export const CONTEXT_LIMITS = {
   RECENT_TREND_DAYS,
   RECENT_FEEDBACK_DAYS,
   MAX_PRODUCTS,
+  MAX_PLANNING_RUNS,
+  MAX_PLANNING_OPPORTUNITIES,
+  MAX_PLANNING_INTELLIGENCE,
   MAX_RECENT_TOPICS,
   MAX_LEARNED,
   MAX_REJECTED_PATTERNS,

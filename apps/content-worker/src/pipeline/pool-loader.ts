@@ -52,19 +52,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export type PoolBucketInput = { scope: 'category'; category: CategoryKey } | { scope: 'national' };
+export type PoolBucketInput = (
+  | { scope: 'category'; category: CategoryKey }
+  | { scope: 'national' }
+) & {
+  /** ISO country the bucket covers. Part of the key, so two brands in
+   *  different markets never share a pool — see PoolBucket in @bmas/shared. */
+  market: string;
+};
 
 function bucketColumns(bucket: PoolBucketInput): {
   scope: PoolRunScope;
   category: CategoryKey | null;
+  market: string;
 } {
   return bucket.scope === 'national'
-    ? { scope: 'national', category: null }
-    : { scope: 'category', category: bucket.category };
+    ? { scope: 'national', category: null, market: bucket.market }
+    : { scope: 'category', category: bucket.category, market: bucket.market };
 }
 
-function bucketLabel(scope: PoolRunScope, category: CategoryKey | null): string {
-  return category ? `${scope}:${category}` : scope;
+function bucketLabel(scope: PoolRunScope, category: CategoryKey | null, market: string): string {
+  return `${category ? `${scope}:${category}` : scope}@${market}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +88,7 @@ async function findFreshTrendRun(
   ctx: WorkerContext,
   scope: PoolRunScope,
   category: CategoryKey | null,
+  market: string,
 ): Promise<TrendPoolResult | null> {
   const [run] = await ctx.db
     .select({ id: schema.poolTrendRuns.id })
@@ -90,6 +99,7 @@ async function findFreshTrendRun(
         category === null
           ? isNull(schema.poolTrendRuns.category)
           : eq(schema.poolTrendRuns.category, category),
+        eq(schema.poolTrendRuns.market, market),
         eq(schema.poolTrendRuns.status, 'succeeded'),
         gte(schema.poolTrendRuns.expiresAt, new Date()),
       ),
@@ -113,6 +123,7 @@ async function reapStalledTrendRun(
   ctx: WorkerContext,
   scope: PoolRunScope,
   category: CategoryKey | null,
+  market: string,
   label: string,
 ): Promise<boolean> {
   const cutoff = new Date(Date.now() - STALLED_RUN_TIMEOUT_MS);
@@ -129,6 +140,7 @@ async function reapStalledTrendRun(
         category === null
           ? isNull(schema.poolTrendRuns.category)
           : eq(schema.poolTrendRuns.category, category),
+        eq(schema.poolTrendRuns.market, market),
         or(eq(schema.poolTrendRuns.status, 'queued'), eq(schema.poolTrendRuns.status, 'running')),
         lt(schema.poolTrendRuns.createdAt, cutoff),
       ),
@@ -147,10 +159,10 @@ export async function ensureFreshTrendPool(
   ctx: WorkerContext,
   bucket: PoolBucketInput,
 ): Promise<TrendPoolResult> {
-  const { scope, category } = bucketColumns(bucket);
-  const label = bucketLabel(scope, category);
+  const { scope, category, market } = bucketColumns(bucket);
+  const label = bucketLabel(scope, category, market);
 
-  const fresh = await findFreshTrendRun(ctx, scope, category);
+  const fresh = await findFreshTrendRun(ctx, scope, category, market);
   if (fresh) {
     console.warn(
       `[pool-loader] trend pool '${label}' is fresh (run ${fresh.runId}, ${fresh.items.length} items) — reusing, no search needed`,
@@ -162,19 +174,19 @@ export async function ensureFreshTrendPool(
   try {
     const [inserted] = await ctx.db
       .insert(schema.poolTrendRuns)
-      .values({ scope, category })
+      .values({ scope, category, market })
       .returning({ id: schema.poolTrendRuns.id });
     if (!inserted) throw new Error('Insert returned no row');
     runId = inserted.id;
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
-    if (await reapStalledTrendRun(ctx, scope, category, label)) {
+    if (await reapStalledTrendRun(ctx, scope, category, market, label)) {
       return ensureFreshTrendPool(ctx, bucket);
     }
     console.warn(
       `[pool-loader] trend pool '${label}' is already being refreshed elsewhere — waiting...`,
     );
-    return pollForFreshTrendRun(ctx, scope, category);
+    return pollForFreshTrendRun(ctx, scope, category, market);
   }
 
   console.warn(
@@ -182,9 +194,9 @@ export async function ensureFreshTrendPool(
   );
   // Propagates on failure — Layer B should fail loudly rather than proceed
   // with no data when its bucket's refresh genuinely fails.
-  await runTrendPoolRefresh(ctx, { runId, scope, category });
+  await runTrendPoolRefresh(ctx, { runId, scope, category, market });
 
-  const result = await findFreshTrendRun(ctx, scope, category);
+  const result = await findFreshTrendRun(ctx, scope, category, market);
   if (!result) throw new Error(`Pool trend refresh ${runId} did not produce a fresh run`);
   return result;
 }
@@ -193,10 +205,11 @@ async function pollForFreshTrendRun(
   ctx: WorkerContext,
   scope: PoolRunScope,
   category: CategoryKey | null,
+  market: string,
 ): Promise<TrendPoolResult> {
   const deadline = Date.now() + POOL_BACKFILL_POLL_TIMEOUT_MS;
   for (;;) {
-    const fresh = await findFreshTrendRun(ctx, scope, category);
+    const fresh = await findFreshTrendRun(ctx, scope, category, market);
     if (fresh) return fresh;
 
     const [latest] = await ctx.db
@@ -208,6 +221,7 @@ async function pollForFreshTrendRun(
           category === null
             ? isNull(schema.poolTrendRuns.category)
             : eq(schema.poolTrendRuns.category, category),
+          eq(schema.poolTrendRuns.market, market),
         ),
       )
       .orderBy(desc(schema.poolTrendRuns.createdAt))
@@ -219,7 +233,7 @@ async function pollForFreshTrendRun(
       // The run outlived our poll window but not yet STALLED_RUN_TIMEOUT_MS —
       // still reap it if it has now crossed that line, so the *next* caller
       // (rather than every caller forever) doesn't hit the same wait.
-      await reapStalledTrendRun(ctx, scope, category, bucketLabel(scope, category));
+      await reapStalledTrendRun(ctx, scope, category, market, bucketLabel(scope, category, market));
       throw new Error('Timed out waiting for a concurrent trend pool refresh to finish');
     }
     await sleep(POOL_BACKFILL_POLL_INTERVAL_MS);
@@ -239,6 +253,7 @@ async function findFreshIntelligenceRun(
   ctx: WorkerContext,
   scope: PoolRunScope,
   category: CategoryKey | null,
+  market: string,
 ): Promise<IntelligencePoolResult | null> {
   const [run] = await ctx.db
     .select({ id: schema.poolIntelligenceRuns.id })
@@ -249,6 +264,7 @@ async function findFreshIntelligenceRun(
         category === null
           ? isNull(schema.poolIntelligenceRuns.category)
           : eq(schema.poolIntelligenceRuns.category, category),
+        eq(schema.poolIntelligenceRuns.market, market),
         eq(schema.poolIntelligenceRuns.status, 'succeeded'),
         gte(schema.poolIntelligenceRuns.expiresAt, new Date()),
       ),
@@ -269,6 +285,7 @@ async function reapStalledIntelligenceRun(
   ctx: WorkerContext,
   scope: PoolRunScope,
   category: CategoryKey | null,
+  market: string,
   label: string,
 ): Promise<boolean> {
   const cutoff = new Date(Date.now() - STALLED_RUN_TIMEOUT_MS);
@@ -285,6 +302,7 @@ async function reapStalledIntelligenceRun(
         category === null
           ? isNull(schema.poolIntelligenceRuns.category)
           : eq(schema.poolIntelligenceRuns.category, category),
+        eq(schema.poolIntelligenceRuns.market, market),
         or(
           eq(schema.poolIntelligenceRuns.status, 'queued'),
           eq(schema.poolIntelligenceRuns.status, 'running'),
@@ -306,10 +324,10 @@ export async function ensureFreshIntelligencePool(
   ctx: WorkerContext,
   bucket: PoolBucketInput,
 ): Promise<IntelligencePoolResult> {
-  const { scope, category } = bucketColumns(bucket);
-  const label = bucketLabel(scope, category);
+  const { scope, category, market } = bucketColumns(bucket);
+  const label = bucketLabel(scope, category, market);
 
-  const fresh = await findFreshIntelligenceRun(ctx, scope, category);
+  const fresh = await findFreshIntelligenceRun(ctx, scope, category, market);
   if (fresh) {
     console.warn(
       `[pool-loader] intelligence pool '${label}' is fresh (run ${fresh.runId}, ${fresh.items.length} items) — reusing, no search needed`,
@@ -321,27 +339,27 @@ export async function ensureFreshIntelligencePool(
   try {
     const [inserted] = await ctx.db
       .insert(schema.poolIntelligenceRuns)
-      .values({ scope, category })
+      .values({ scope, category, market })
       .returning({ id: schema.poolIntelligenceRuns.id });
     if (!inserted) throw new Error('Insert returned no row');
     runId = inserted.id;
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
-    if (await reapStalledIntelligenceRun(ctx, scope, category, label)) {
+    if (await reapStalledIntelligenceRun(ctx, scope, category, market, label)) {
       return ensureFreshIntelligencePool(ctx, bucket);
     }
     console.warn(
       `[pool-loader] intelligence pool '${label}' is already being refreshed elsewhere — waiting...`,
     );
-    return pollForFreshIntelligenceRun(ctx, scope, category);
+    return pollForFreshIntelligenceRun(ctx, scope, category, market);
   }
 
   console.warn(
     `[pool-loader] intelligence pool '${label}' is stale/missing — running inline refresh (run ${runId})`,
   );
-  await runIntelligencePoolRefresh(ctx, { runId, scope, category });
+  await runIntelligencePoolRefresh(ctx, { runId, scope, category, market });
 
-  const result = await findFreshIntelligenceRun(ctx, scope, category);
+  const result = await findFreshIntelligenceRun(ctx, scope, category, market);
   if (!result) throw new Error(`Pool intelligence refresh ${runId} did not produce a fresh run`);
   return result;
 }
@@ -350,10 +368,11 @@ async function pollForFreshIntelligenceRun(
   ctx: WorkerContext,
   scope: PoolRunScope,
   category: CategoryKey | null,
+  market: string,
 ): Promise<IntelligencePoolResult> {
   const deadline = Date.now() + POOL_BACKFILL_POLL_TIMEOUT_MS;
   for (;;) {
-    const fresh = await findFreshIntelligenceRun(ctx, scope, category);
+    const fresh = await findFreshIntelligenceRun(ctx, scope, category, market);
     if (fresh) return fresh;
 
     const [latest] = await ctx.db
@@ -365,6 +384,7 @@ async function pollForFreshIntelligenceRun(
           category === null
             ? isNull(schema.poolIntelligenceRuns.category)
             : eq(schema.poolIntelligenceRuns.category, category),
+          eq(schema.poolIntelligenceRuns.market, market),
         ),
       )
       .orderBy(desc(schema.poolIntelligenceRuns.createdAt))
@@ -373,7 +393,7 @@ async function pollForFreshIntelligenceRun(
       throw new Error(`Concurrent intelligence pool refresh for this bucket failed`);
     }
     if (Date.now() >= deadline) {
-      await reapStalledIntelligenceRun(ctx, scope, category, bucketLabel(scope, category));
+      await reapStalledIntelligenceRun(ctx, scope, category, market, bucketLabel(scope, category, market));
       throw new Error('Timed out waiting for a concurrent intelligence pool refresh to finish');
     }
     await sleep(POOL_BACKFILL_POLL_INTERVAL_MS);

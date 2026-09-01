@@ -11,11 +11,18 @@ import type { CostEvent, Sentiment } from '@bmas/shared';
  * and re-run against stored `answer_text` before shipping.
  */
 
+/** See the `maxTokens` comment at the call site — an answer naming several
+ *  brands needs more than the adapter's default to serialise. */
+const MAX_ANALYSIS_TOKENS = 8_000;
+
 const ANALYSIS_SCHEMA = {
   type: 'object',
   properties: {
     brandMentioned: { type: 'boolean' },
-    summary: { type: 'string' },
+    summary: {
+      type: 'string',
+      description: 'What the answer said about this space, in 2-3 sentences. Under 400 characters.',
+    },
     mentions: {
       type: 'array',
       items: {
@@ -25,7 +32,10 @@ const ANALYSIS_SCHEMA = {
           entityType: { type: 'string', enum: ['brand', 'competitor'] },
           position: { type: 'integer' },
           sentiment: { type: 'string', enum: ['positive', 'neutral', 'negative'] },
-          excerpt: { type: 'string' },
+          excerpt: {
+            type: 'string',
+            description: 'The shortest quote showing how this entity was described. Under 200 characters.',
+          },
           citedUrl: { type: ['string', 'null'] },
         },
         required: ['entityName', 'entityType', 'position', 'sentiment', 'excerpt', 'citedUrl'],
@@ -101,6 +111,14 @@ export async function analyzeAnswer(
     system,
     schema: ANALYSIS_SCHEMA as unknown as Record<string, unknown>,
     messages: [{ role: 'user', content: prompt }],
+    // Left unset this fell back to the adapter's 4096 default, which an
+    // answer naming several brands overruns: the response is cut mid-string
+    // and fails to parse as JSON. The retry is worthless in that case, since
+    // the same prompt gets the same budget and truncates again — which is why
+    // probes were failing repeatedly rather than recovering. Bounding the
+    // fields above does most of the work; this is the headroom for an answer
+    // that legitimately names a lot of competitors.
+    maxTokens: MAX_ANALYSIS_TOKENS,
     parse: (raw) => raw as AnalysisResult,
   });
 
