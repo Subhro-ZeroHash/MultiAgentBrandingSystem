@@ -64,7 +64,10 @@ interface JobResponse {
 /** Snaps to the nearest LTX resolution tier whose long edge is at or above
  *  what was asked — never down, so a request never renders smaller than what
  *  it asked for. Same tier lookup `priceVideo` bills against. */
-export function nearestVideoResolution(width: number, height: number): { width: number; height: number; tier: number } {
+export function nearestVideoResolution(
+  width: number,
+  height: number,
+): { width: number; height: number; tier: number } {
   const longEdge = Math.max(width, height);
   const portrait = height > width;
 
@@ -178,12 +181,16 @@ export class LtxVideoAdapter implements VideoGenService {
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      throw new ProviderError(`ltx.${operation}: HTTP ${response.status} — ${body.slice(0, 300)}`, 'ltx', {
-        // 4xx other than 408/429 is a bad request/key and will never succeed
-        // on retry; LTX's own error.type on a failed job is checked
-        // separately once a job is actually parsed, not here.
-        retryable: response.status === 408 || response.status === 429 || response.status >= 500,
-      });
+      throw new ProviderError(
+        `ltx.${operation}: HTTP ${response.status} — ${body.slice(0, 300)}`,
+        'ltx',
+        {
+          // 4xx other than 408/429 is a bad request/key and will never succeed
+          // on retry; LTX's own error.type on a failed job is checked
+          // separately once a job is actually parsed, not here.
+          retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+        },
+      );
     }
 
     return (await response.json()) as T;
@@ -218,9 +225,13 @@ export class LtxVideoAdapter implements VideoGenService {
         signal: controller.signal,
       });
       if (!put.ok) {
-        throw new ProviderError(`ltx.upload: PUT to signed URL failed with HTTP ${put.status}`, 'ltx', {
-          retryable: put.status >= 500,
-        });
+        throw new ProviderError(
+          `ltx.upload: PUT to signed URL failed with HTTP ${put.status}`,
+          'ltx',
+          {
+            retryable: put.status >= 500,
+          },
+        );
       }
     } catch (error) {
       throw LtxVideoAdapter.wrap(error, 'upload');
@@ -334,9 +345,13 @@ export class LtxVideoAdapter implements VideoGenService {
     try {
       const response = await fetch(url, { signal: controller.signal });
       if (!response.ok) {
-        throw new ProviderError(`ltx.download: HTTP ${response.status} fetching result video`, 'ltx', {
-          retryable: response.status >= 500,
-        });
+        throw new ProviderError(
+          `ltx.download: HTTP ${response.status} fetching result video`,
+          'ltx',
+          {
+            retryable: response.status >= 500,
+          },
+        );
       }
       return Buffer.from(await response.arrayBuffer());
     } catch (error) {

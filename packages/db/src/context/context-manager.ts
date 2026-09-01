@@ -743,10 +743,7 @@ export async function getPlanningContext(
 
 /** Opportunities are per-run, so this reaches through the brand's runs rather
  *  than filtering opportunities directly — they carry no brandId of their own. */
-async function loadLiveOpportunities(
-  db: Database,
-  brandId: string,
-): Promise<ContextOpportunity[]> {
+async function loadLiveOpportunities(db: Database, brandId: string): Promise<ContextOpportunity[]> {
   const runs = await db
     .select({ id: schema.trendResearchRuns.id })
     .from(schema.trendResearchRuns)
@@ -798,10 +795,7 @@ async function loadLiveOpportunities(
     .sort((a, b) => b.score - a.score);
 }
 
-async function loadLiveIntelligence(
-  db: Database,
-  brandId: string,
-): Promise<ContextIntelligence[]> {
+async function loadLiveIntelligence(db: Database, brandId: string): Promise<ContextIntelligence[]> {
   const runs = await db
     .select({ id: schema.intelligenceRuns.id })
     .from(schema.intelligenceRuns)

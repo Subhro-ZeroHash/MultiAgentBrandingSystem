@@ -129,7 +129,9 @@ async function recordCompetitiveSignal(
   presenceRate: number,
   promptsProbed: number,
 ): Promise<void> {
-  const competitorMentions = periodMentions.filter((mention) => mention.entityType === 'competitor');
+  const competitorMentions = periodMentions.filter(
+    (mention) => mention.entityType === 'competitor',
+  );
   if (competitorMentions.length === 0) return;
 
   const countsByName = new Map<string, number>();

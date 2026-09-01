@@ -17,7 +17,11 @@ describe('dropStaleResults', () => {
    * days" surfaced a seven-month-old Republic Day sale as current.
    */
   it('drops results published before the window', () => {
-    const kept = dropStaleResults([at('2026-01-09T00:00:00Z'), at('2026-08-20T00:00:00Z')], 45, now);
+    const kept = dropStaleResults(
+      [at('2026-01-09T00:00:00Z'), at('2026-08-20T00:00:00Z')],
+      45,
+      now,
+    );
     expect(kept).toHaveLength(1);
     expect(kept[0]!.publishedAt).toBe('2026-08-20T00:00:00Z');
   });

@@ -80,7 +80,9 @@ export class VideoGenerationsService {
         },
       );
     } catch (error) {
-      await this.db.delete(schema.videoGenerationJobs).where(eq(schema.videoGenerationJobs.id, job.id));
+      await this.db
+        .delete(schema.videoGenerationJobs)
+        .where(eq(schema.videoGenerationJobs.id, job.id));
       throw error;
     }
 
@@ -114,7 +116,9 @@ export class VideoGenerationsService {
       assets.map(async (asset) => ({
         ...asset,
         url: await this.assetUrls.sign(asset.storageKey),
-        thumbnailUrl: asset.thumbnailStorageKey ? await this.assetUrls.sign(asset.thumbnailStorageKey) : null,
+        thumbnailUrl: asset.thumbnailStorageKey
+          ? await this.assetUrls.sign(asset.thumbnailStorageKey)
+          : null,
       })),
     );
 

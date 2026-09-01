@@ -1,9 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  NotFoundException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
 import type { AiRegistry } from '@bmas/ai';
 import {

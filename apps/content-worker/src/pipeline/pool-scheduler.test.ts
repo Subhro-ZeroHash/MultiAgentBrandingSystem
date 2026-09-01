@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { bucketsNeedingRefresh } from './pool-scheduler.js';
 
-const categoryBucket = { scope: 'category' as const, category: 'technology' as const, market: 'IN' };
+const categoryBucket = {
+  scope: 'category' as const,
+  category: 'technology' as const,
+  market: 'IN',
+};
 const nationalBucket = { scope: 'national' as const, category: null, market: 'IN' };
 
 describe('bucketsNeedingRefresh', () => {
@@ -73,7 +77,7 @@ describe('bucketsNeedingRefresh across markets', () => {
   const now = new Date('2026-01-01T12:00:00Z');
   const usBucket = { scope: 'category' as const, category: 'technology' as const, market: 'US' };
 
-  it('does not treat another market\'s fresh run as covering this one', () => {
+  it("does not treat another market's fresh run as covering this one", () => {
     const latest = new Map([
       [
         'category:technology@IN',

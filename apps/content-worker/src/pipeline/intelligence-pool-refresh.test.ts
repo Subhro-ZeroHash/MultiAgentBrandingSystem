@@ -7,12 +7,20 @@ import {
 
 describe('buildIntelligencePoolQueries', () => {
   it('builds government_policy and industry_news for a category bucket', () => {
-    const queries = buildIntelligencePoolQueries({ scope: 'category', category: 'finance', market: 'IN' });
+    const queries = buildIntelligencePoolQueries({
+      scope: 'category',
+      category: 'finance',
+      market: 'IN',
+    });
     expect(queries.map((q) => q.category)).toEqual(['government_policy', 'industry_news']);
   });
 
   it('folds the category label into every category-scoped query', () => {
-    const queries = buildIntelligencePoolQueries({ scope: 'category', category: 'technology', market: 'IN' });
+    const queries = buildIntelligencePoolQueries({
+      scope: 'category',
+      category: 'technology',
+      market: 'IN',
+    });
     for (const { request } of queries) {
       expect(request.query).toContain('Technology');
     }

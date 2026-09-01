@@ -1,4 +1,14 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Request, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { videoGenerationRequestSchema, type VideoGenerationRequest } from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
@@ -35,7 +45,11 @@ export class VideoGenerationsController {
         'Idempotency-Key header is required and must be 8–128 characters of [A-Za-z0-9._-]',
       );
     }
-    return this.videoGenerations.enqueue(body as VideoGenerationRequest, idempotencyKey, req.user.id);
+    return this.videoGenerations.enqueue(
+      body as VideoGenerationRequest,
+      idempotencyKey,
+      req.user.id,
+    );
   }
 
   @Get(':id')

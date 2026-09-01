@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { and, asc, desc, eq, inArray, recordFeedbackSignal, schema, type Database } from '@bmas/db';
 import {
   QUEUES,
@@ -66,10 +60,7 @@ export class PlanningService {
       .select()
       .from(schema.marketingPlans)
       .where(
-        and(
-          eq(schema.marketingPlans.brandId, brandId),
-          eq(schema.marketingPlans.status, 'active'),
-        ),
+        and(eq(schema.marketingPlans.brandId, brandId), eq(schema.marketingPlans.status, 'active')),
       )
       .orderBy(desc(schema.marketingPlans.createdAt))
       .limit(1);
@@ -160,10 +151,7 @@ export class PlanningService {
       .select({ id: schema.marketingPlans.id })
       .from(schema.marketingPlans)
       .where(
-        and(
-          eq(schema.marketingPlans.brandId, brandId),
-          eq(schema.marketingPlans.status, 'active'),
-        ),
+        and(eq(schema.marketingPlans.brandId, brandId), eq(schema.marketingPlans.status, 'active')),
       )
       .limit(1);
 
@@ -240,9 +228,7 @@ export class PlanningService {
       ...(item.suggestedRequest.headlineText
         ? { headlineText: item.suggestedRequest.headlineText }
         : {}),
-      ...(item.suggestedRequest.offerText
-        ? { offerText: item.suggestedRequest.offerText }
-        : {}),
+      ...(item.suggestedRequest.offerText ? { offerText: item.suggestedRequest.offerText } : {}),
       ...(item.suggestedRequest.extraInstructions
         ? { extraInstructions: item.suggestedRequest.extraInstructions }
         : {}),
@@ -416,10 +402,7 @@ export class PlanningService {
       .select({ id: schema.marketingPlans.id })
       .from(schema.marketingPlans)
       .where(
-        and(
-          eq(schema.marketingPlans.brandId, brandId),
-          eq(schema.marketingPlans.status, 'active'),
-        ),
+        and(eq(schema.marketingPlans.brandId, brandId), eq(schema.marketingPlans.status, 'active')),
       )
       .limit(1);
 

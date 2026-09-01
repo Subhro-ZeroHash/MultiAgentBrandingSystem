@@ -41,11 +41,13 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** A running Express + TypeScript service connected to Postgres via Drizzle, with the full schema migrated.
 
 **Deliverables:**
+
 - Initialized TypeScript project, Express server with a `/health` endpoint returning `{ status: "ok" }`.
 - Drizzle schema and a successful migration creating all tables in Section 3.
 - `.env.example` documenting: `DATABASE_URL`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `PORT`.
 
 **Acceptance criteria:**
+
 - `GET /health` returns 200.
 - Migration runs cleanly against a fresh Postgres database.
 - All tables in Section 3 exist with the specified columns and foreign keys.
@@ -57,11 +59,13 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Prove the run loop against ONE engine end-to-end.
 
 **Deliverables:**
+
 - An `EngineAdapter` interface (Section 4).
 - A `chatgpt` adapter calling the OpenAI API, returning the normalized `EngineResponse`.
 - A function `runPrompt(promptId, engine)` that executes one prompt against one engine and persists a `runs` row plus raw response.
 
 **Acceptance criteria:**
+
 - Given a seeded client and prompt, calling `runPrompt(prompt, 'chatgpt')` stores a `runs` row with non-null `raw_response` and `text`.
 - Adapter errors (rate limit, timeout) are caught and stored as a run with `status = 'error'` and an `error_message`; they never crash the process.
 
@@ -72,6 +76,7 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Turn raw answers into structured mention/citation data.
 
 **Deliverables:**
+
 - A `parseResponse(run, client, competitors)` function using an LLM extraction call (NOT regex) that returns:
   - `clientMentioned: boolean`
   - `clientPosition: number | null` (ordinal within the answer)
@@ -81,6 +86,7 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 - Persistence of parsed output into `mentions` and `citations` tables.
 
 **Acceptance criteria:**
+
 - For a controlled answer that names the client, `clientMentioned = true` and `clientPosition` is set.
 - For an answer that does not name the client, `clientMentioned = false`.
 - Citations pointing at a client domain are flagged `isClient = true`.
@@ -93,10 +99,12 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Compute the metrics that drive the dashboard.
 
 **Deliverables:**
+
 - An `aggregateClient(clientId, windowStart, windowEnd)` function computing SoV, average position, mentions, citations, cited pages, and per-engine breakdown.
 - Writing an aggregated `snapshots` row per client per run cycle.
 
 **Acceptance criteria:**
+
 - SoV, average position, and per-engine counts match hand-computed values on a seeded fixture dataset.
 - A snapshot row is created per aggregation cycle and is queryable as a time series.
 
@@ -107,10 +115,12 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Validate the adapter abstraction by adding a second engine with zero changes to core loop code.
 
 **Deliverables:**
+
 - A `gemini` adapter implementing `EngineAdapter`, calling the Gemini API, returning normalized `EngineResponse`.
 - Runner and parser work with `gemini` with no modification to their signatures.
 
 **Acceptance criteria:**
+
 - `runPrompt(prompt, 'gemini')` persists a valid run.
 - Adding Gemini required NO edits to runner, parser, or aggregation logic — only a new adapter file and a registry entry.
 
@@ -121,10 +131,12 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Automate recurring runs so the time series accumulates.
 
 **Deliverables:**
+
 - A scheduled job that, per active client, runs every prompt against every enabled engine, parses, and aggregates into a snapshot.
 - Configurable cadence per client (`daily` | `weekly`).
 
 **Acceptance criteria:**
+
 - Triggering the scheduler produces runs, mentions, citations, and exactly one snapshot per client for that cycle.
 - A failing engine call for one prompt does not abort the whole cycle.
 
@@ -135,12 +147,14 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Expose aggregated data to the frontend.
 
 **Deliverables (endpoints):**
+
 - `GET /api/clients/:id/overview` → latest snapshot: visibility score, SoV, mentions, citations, cited pages, per-engine distribution.
 - `GET /api/clients/:id/trends?metric=&from=&to=` → time series for a metric.
 - `GET /api/clients/:id/prompts` → per-prompt latest results (mentioned?, position, engines).
 - `GET /api/clients/:id/competitors` → competitive SoV table.
 
 **Acceptance criteria:**
+
 - Each endpoint returns correct data for a seeded client and 404s for unknown clients.
 - All endpoints are tenant-scoped (a client cannot read another tenant's data).
 
@@ -151,12 +165,14 @@ Build milestones in order. Each milestone has explicit acceptance criteria that 
 **Goal:** Visual parity with the reference SaaS dashboards.
 
 **Deliverables:**
+
 - Overview page: visibility gauge (0–100 + band), SoV card, referral/mentions cards, per-engine distribution bars.
 - Trends page: line charts for mentions / citations / cited pages over time.
 - Prompt table: prompt, mentioned?, position, per-engine.
 - Competitors view: SoV comparison.
 
 **Acceptance criteria:**
+
 - Dashboard renders live from the REST API for a seeded client.
 - Gauge band and score are derived from the documented formula (Section 5), not hardcoded.
 
@@ -248,11 +264,11 @@ export interface EngineCitation {
 }
 
 export interface EngineResponse {
-  text: string;                 // normalized answer text
-  citations: EngineCitation[];  // may be empty if engine returns none
+  text: string; // normalized answer text
+  citations: EngineCitation[]; // may be empty if engine returns none
   model: EngineName;
-  raw: unknown;                 // full provider payload, stored as jsonb
-  timestamp: string;            // ISO 8601
+  raw: unknown; // full provider payload, stored as jsonb
+  timestamp: string; // ISO 8601
 }
 
 export interface EngineAdapter {
@@ -262,6 +278,7 @@ export interface EngineAdapter {
 ```
 
 Rules:
+
 - Adapters MUST normalize output to `EngineResponse`. No provider-specific shapes leak upward.
 - Adapters MUST throw on hard failure; the runner catches and records `status='error'`.
 - A registry maps `EngineName -> EngineAdapter`. Adding an engine = new adapter file + registry entry. Nothing else.
@@ -308,6 +325,7 @@ The parser calls an LLM with a strict instruction to return ONLY JSON matching:
 ```
 
 Rules:
+
 - Instruct the model to output JSON only, no prose, no markdown fences. Parse defensively (strip fences if present).
 - Client/competitor identity is matched by name AND domain (pass both into the prompt).
 - On parse failure, store the run as parsed with empty results and log; never crash.

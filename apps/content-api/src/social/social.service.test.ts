@@ -74,9 +74,9 @@ describe('SocialService - Instagram Posting Logic', () => {
         }),
       }));
 
-      await expect(
-        service.postToInstagram('acc-1', 'user-1', {}, 'Test caption'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.postToInstagram('acc-1', 'user-1', {}, 'Test caption')).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('throws BadRequestException if the social account token is expired', async () => {
@@ -213,7 +213,11 @@ describe('SocialService - Instagram Posting Logic', () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
         const urlStr = url.toString();
         // Container creation
-        if (urlStr.includes('/media') && init?.method === 'POST' && !urlStr.includes('/media_publish')) {
+        if (
+          urlStr.includes('/media') &&
+          init?.method === 'POST' &&
+          !urlStr.includes('/media_publish')
+        ) {
           return new Response(JSON.stringify({ id: 'container-999' }), { status: 200 });
         }
         // Container status poll

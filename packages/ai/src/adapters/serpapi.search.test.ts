@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildSerpApiParams,
-  isEmptyResultError,
-  mapSerpApiResponse,
-} from './serpapi.search.js';
+import { buildSerpApiParams, isEmptyResultError, mapSerpApiResponse } from './serpapi.search.js';
 
 describe('buildSerpApiParams', () => {
   it('carries the query through unchanged', () => {

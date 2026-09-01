@@ -68,9 +68,7 @@ const promptRefreshWorker = new Worker(
   async (job) => {
     const { brandId } = geoPromptRefreshJobSchema.parse(job.data);
     const { retired, created } = await regenerateSuggestedPrompts(ctx, brandId);
-    console.warn(
-      `[prompt-refresh] brand ${brandId}: retired ${retired}, created ${created}`,
-    );
+    console.warn(`[prompt-refresh] brand ${brandId}: retired ${retired}, created ${created}`);
   },
   // One brand's refresh at a time. Two concurrent refreshes of the SAME brand
   // would each draft against the other's soon-to-be-retired set and then both

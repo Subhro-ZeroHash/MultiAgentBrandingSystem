@@ -4,7 +4,9 @@ import type { NextConfig } from 'next';
 // React Refresh — the production build doesn't, so this only relaxes CSP for
 // local development, never for what actually ships.
 const scriptSrc =
-  process.env.NODE_ENV === 'production' ? "script-src 'self'" : "script-src 'self' 'unsafe-eval' 'unsafe-inline'";
+  process.env.NODE_ENV === 'production'
+    ? "script-src 'self'"
+    : "script-src 'self' 'unsafe-eval' 'unsafe-inline'";
 
 // Same fallbacks src/lib/api.ts already uses — Next doesn't read the
 // monorepo-root .env (only apps/web's own), so these vars are routinely unset

@@ -18,7 +18,10 @@ describe('validateVideo', () => {
   });
 
   it('rejects a file too small to be a real video, likely a truncated download', () => {
-    const truncated = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x20]), Buffer.from('ftypisom')]);
+    const truncated = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x20]),
+      Buffer.from('ftypisom'),
+    ]);
     expect(() => validateVideo(truncated, 6, 6)).toThrow(/truncated/);
   });
 
@@ -58,7 +61,9 @@ const baseRequest = {
 /** Only what composeVideoBrief actually reads: one product row off `productId`.
  *  Same "fake the one query, not the database" approach stages.test.ts uses
  *  for composeBrief. */
-function fakeCtx(product: { name: string; description: string | null; sellingPoints?: string[] } | null) {
+function fakeCtx(
+  product: { name: string; description: string | null; sellingPoints?: string[] } | null,
+) {
   const builder = {
     from: () => builder,
     where: () => builder,
@@ -80,7 +85,11 @@ describe('composeVideoBrief', () => {
 
   it('includes selling points when the product has them', async () => {
     const prompt = await composeVideoBrief(
-      fakeCtx({ name: 'Shoes', description: null, sellingPoints: ['Breathable mesh', 'Recycled sole'] }),
+      fakeCtx({
+        name: 'Shoes',
+        description: null,
+        sellingPoints: ['Breathable mesh', 'Recycled sole'],
+      }),
       brand,
       baseRequest,
     );
@@ -89,7 +98,11 @@ describe('composeVideoBrief', () => {
   });
 
   it('omits the selling-points line entirely when there are none', async () => {
-    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, baseRequest);
+    const prompt = await composeVideoBrief(
+      fakeCtx({ name: 'Shoes', description: null }),
+      brand,
+      baseRequest,
+    );
     expect(prompt).not.toContain('Key selling points');
   });
 
@@ -113,7 +126,11 @@ describe('composeVideoBrief', () => {
    *  retailer's video for one specific product must not turn into an
    *  unrelated-merchandise showcase. */
   it("fences the brand's category as tone-only, not subject matter", async () => {
-    const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, baseRequest);
+    const prompt = await composeVideoBrief(
+      fakeCtx({ name: 'Shoes', description: null }),
+      brand,
+      baseRequest,
+    );
     expect(prompt).toContain(brand.category);
     expect(prompt).toMatch(/only to judge tone/i);
   });

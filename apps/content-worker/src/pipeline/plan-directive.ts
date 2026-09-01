@@ -335,9 +335,7 @@ async function handleApprove(
   const [awaiting] = await ctx.db
     .select({ id: schema.planItems.id })
     .from(schema.planItems)
-    .where(
-      and(eq(schema.planItems.brandId, job.brandId), eq(schema.planItems.status, 'proposed')),
-    )
+    .where(and(eq(schema.planItems.brandId, job.brandId), eq(schema.planItems.status, 'proposed')))
     .limit(1);
 
   await recordFeedbackSignal(ctx.db, {

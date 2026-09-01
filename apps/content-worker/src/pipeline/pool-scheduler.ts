@@ -98,9 +98,7 @@ async function loadActiveBuckets(ctx: WorkerContext): Promise<PoolBucket[]> {
   if (markets.length === 0) markets.push(DEFAULT_MARKET);
 
   return [
-    ...pairs.map(
-      ({ category, market }): PoolBucket => ({ scope: 'category', category, market }),
-    ),
+    ...pairs.map(({ category, market }): PoolBucket => ({ scope: 'category', category, market })),
     ...markets.map((market): PoolBucket => ({ scope: 'national', category: null, market })),
   ];
 }

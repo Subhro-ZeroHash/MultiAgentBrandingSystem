@@ -215,7 +215,9 @@ async function sweepInactiveAutomation(ctx: WorkerContext, now: Date): Promise<v
       )
       .returning({ id: schema.automationSettings.id });
 
-    console.warn(`[research-scheduler] paused autopilot on ${paused.length} brand(s) — owner inactive 7+ days`);
+    console.warn(
+      `[research-scheduler] paused autopilot on ${paused.length} brand(s) — owner inactive 7+ days`,
+    );
   } catch (error) {
     console.error(`[research-scheduler] inactivity sweep failed: ${describeError(error)}`);
   }

@@ -153,7 +153,11 @@ async function fetchMediaInsights(
       if (typeof name === 'string' && typeof value === 'number') byName.set(name, value);
     }
   }
-  return { reach: byName.get('reach') ?? null, saved: byName.get('saved') ?? null, raw: result.body };
+  return {
+    reach: byName.get('reach') ?? null,
+    saved: byName.get('saved') ?? null,
+    raw: result.body,
+  };
 }
 
 interface FetchedComment {

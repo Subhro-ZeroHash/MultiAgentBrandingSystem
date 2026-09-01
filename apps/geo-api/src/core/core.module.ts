@@ -34,7 +34,11 @@ function redisConnection() {
         // See apps/content-api/src/core/core.module.ts's identical comment —
         // Supabase's session-pooler cap (15) is shared across every service,
         // not per-service, so each one needs an explicit small `max`.
-        return createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production', max: 3 });
+        return createDatabase({
+          url: env.DATABASE_URL,
+          ssl: env.NODE_ENV === 'production',
+          max: 3,
+        });
       },
     },
     {

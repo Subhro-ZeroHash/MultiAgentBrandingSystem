@@ -45,7 +45,11 @@ function redisConnection() {
         // past that ceiling under any real concurrent load, surfacing as
         // random "max clients reached" failures rather than a clean error at
         // the one place that's actually over budget.
-        return createDatabase({ url: env.DATABASE_URL, ssl: env.NODE_ENV === 'production', max: 4 });
+        return createDatabase({
+          url: env.DATABASE_URL,
+          ssl: env.NODE_ENV === 'production',
+          max: 4,
+        });
       },
     },
     { provide: AI_REGISTRY, useFactory: (): AiRegistry => createAiRegistryFromEnv() },
@@ -113,8 +117,7 @@ function redisConnection() {
     },
     {
       provide: PLAN_ITEM_REPLACE_QUEUE,
-      useFactory: () =>
-        new Queue(QUEUES.contentPlanItemReplace, { connection: redisConnection() }),
+      useFactory: () => new Queue(QUEUES.contentPlanItemReplace, { connection: redisConnection() }),
     },
     {
       provide: INSTAGRAM_INSIGHTS_SYNC_QUEUE,

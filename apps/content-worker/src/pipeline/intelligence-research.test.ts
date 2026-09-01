@@ -145,9 +145,7 @@ describe('buildBrandIntelligenceQueries', () => {
   /** Competitor search used to be skipped entirely when no competitors were
    *  named — the default state — so the category was always empty. */
   it('still searches competitors when none are named', () => {
-    const competitor = buildBrandIntelligenceQueries(bata).find(
-      (q) => q.category === 'competitor',
-    );
+    const competitor = buildBrandIntelligenceQueries(bata).find((q) => q.category === 'competitor');
     expect(competitor).toBeDefined();
     expect(competitor!.request.query).toMatch(/competitors of Bata/i);
   });

@@ -51,7 +51,8 @@ export async function runProbe(ctx: WorkerContext, job: GeoProbeJob): Promise<vo
   // engine call on every attempt: three paid probes and three duplicate runs for
   // one prompt, silently inflating runsProbed and every metric derived from it.
   const existing = await findRunInBucket(ctx, prompt.id, job.engine as AnswerEngine);
-  const run = existing ?? (await probeAndPersist(ctx, { client, prompt, brand, engine: job.engine }));
+  const run =
+    existing ?? (await probeAndPersist(ctx, { client, prompt, brand, engine: job.engine }));
 
   const { analysis, cost: analysisCost } = await analyzeAnswer(ctx.ai, {
     answerText: run.answerText,

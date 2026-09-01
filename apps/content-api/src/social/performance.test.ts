@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  engagementRate,
-  latestPerMedia,
-  percentChange,
-  sumMetrics,
-} from './social.service.js';
+import { engagementRate, latestPerMedia, percentChange, sumMetrics } from './social.service.js';
 
 const sample = (
   igMediaId: string,

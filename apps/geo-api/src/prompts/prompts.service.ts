@@ -34,7 +34,9 @@ export class PromptsService {
     return this.db
       .select()
       .from(schema.trackedPrompts)
-      .where(and(eq(schema.trackedPrompts.brandId, brandId), eq(schema.trackedPrompts.isActive, true)))
+      .where(
+        and(eq(schema.trackedPrompts.brandId, brandId), eq(schema.trackedPrompts.isActive, true)),
+      )
       .orderBy(schema.trackedPrompts.createdAt);
   }
 

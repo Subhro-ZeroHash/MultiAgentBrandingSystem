@@ -1,4 +1,10 @@
-import { CanActivate, ExecutionContext, HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  HttpException,
+  HttpStatus,
+  Injectable,
+} from '@nestjs/common';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 
 interface Bucket {
@@ -55,7 +61,10 @@ export class PerUserRateLimitGuard implements CanActivate {
     }
 
     if (existing.count >= this.limit) {
-      throw new HttpException('Too many attempts. Wait a while and try again.', HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException(
+        'Too many attempts. Wait a while and try again.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     existing.count += 1;

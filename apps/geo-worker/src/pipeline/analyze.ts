@@ -34,7 +34,8 @@ const ANALYSIS_SCHEMA = {
           sentiment: { type: 'string', enum: ['positive', 'neutral', 'negative'] },
           excerpt: {
             type: 'string',
-            description: 'The shortest quote showing how this entity was described. Under 200 characters.',
+            description:
+              'The shortest quote showing how this entity was described. Under 200 characters.',
           },
           citedUrl: { type: ['string', 'null'] },
         },

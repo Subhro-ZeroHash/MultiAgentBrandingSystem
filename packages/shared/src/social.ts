@@ -21,7 +21,9 @@ export const postToInstagramInputSchema = z
     imageUrl: z.string().url().max(2048).optional(),
     caption: z.string().min(1).max(CAPTION_MAX),
   })
-  .refine((v) => v.assetId ?? v.imageUrl, { message: 'assetId (preferred) or imageUrl is required' });
+  .refine((v) => v.assetId ?? v.imageUrl, {
+    message: 'assetId (preferred) or imageUrl is required',
+  });
 export type PostToInstagramInput = z.infer<typeof postToInstagramInputSchema>;
 
 export const postReelToInstagramInputSchema = z
@@ -31,7 +33,9 @@ export const postReelToInstagramInputSchema = z
     videoUrl: z.string().url().max(2048).optional(),
     caption: z.string().min(1).max(CAPTION_MAX),
   })
-  .refine((v) => v.assetId ?? v.videoUrl, { message: 'assetId (preferred) or videoUrl is required' });
+  .refine((v) => v.assetId ?? v.videoUrl, {
+    message: 'assetId (preferred) or videoUrl is required',
+  });
 export type PostReelToInstagramInput = z.infer<typeof postReelToInstagramInputSchema>;
 
 /**

@@ -26,7 +26,12 @@ class VideoGenerationCancelledError extends Error {
   }
 }
 
-async function recordCost(ctx: WorkerContext, brandId: string, jobId: string, cost: CostEvent): Promise<void> {
+async function recordCost(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  cost: CostEvent,
+): Promise<void> {
   await ctx.db.insert(schema.costEvents).values({
     brandId,
     system: 'content',
@@ -60,7 +65,9 @@ async function loadFirstFrame(
   const [row] = await ctx.db
     .select()
     .from(schema.productImages)
-    .where(and(eq(schema.productImages.productId, productId), eq(schema.productImages.isPrimary, true)))
+    .where(
+      and(eq(schema.productImages.productId, productId), eq(schema.productImages.isPrimary, true)),
+    )
     .limit(1);
   if (!row) return undefined;
 
@@ -133,7 +140,9 @@ export async function composeVideoBrief(
     request.offerText?.trim()
       ? `The offer being promoted is "${request.offerText.trim()}" — build energy toward it rather than displaying it as text.`
       : null,
-    request.extraInstructions?.trim() ? `Additional direction: ${request.extraInstructions.trim()}` : null,
+    request.extraInstructions?.trim()
+      ? `Additional direction: ${request.extraInstructions.trim()}`
+      : null,
   ];
 
   return lines.filter((line): line is string => line !== null).join('\n');
@@ -153,7 +162,9 @@ export async function composeVideoBrief(
  */
 export function validateVideo(data: Buffer, durationSeconds: number, requestedMax: number): void {
   if (data.length < 1024) {
-    throw new Error(`video is suspiciously small (${data.length} bytes) — likely a truncated download`);
+    throw new Error(
+      `video is suspiciously small (${data.length} bytes) — likely a truncated download`,
+    );
   }
   const brand = data.subarray(4, 8).toString('ascii');
   if (brand !== 'ftyp') {
@@ -187,7 +198,11 @@ export async function runVideoGeneration(
 
   // brandId comes off the row, not the queue payload — see generate.ts's
   // identical comment for why.
-  const [brand] = await ctx.db.select().from(schema.brands).where(eq(schema.brands.id, row.brandId)).limit(1);
+  const [brand] = await ctx.db
+    .select()
+    .from(schema.brands)
+    .where(eq(schema.brands.id, row.brandId))
+    .limit(1);
   if (!brand) throw new Error(`Brand ${row.brandId} not found`);
 
   const request = row.request as unknown as VideoGenerationRequest;
@@ -201,7 +216,10 @@ export async function runVideoGeneration(
         startedAt: sql`coalesce(${schema.videoGenerationJobs.startedAt}, now())`,
       })
       .where(
-        and(eq(schema.videoGenerationJobs.id, job.jobId), ne(schema.videoGenerationJobs.status, 'cancelled')),
+        and(
+          eq(schema.videoGenerationJobs.id, job.jobId),
+          ne(schema.videoGenerationJobs.status, 'cancelled'),
+        ),
       )
       .returning();
     if (!updated) throw new VideoGenerationCancelledError(job.jobId);

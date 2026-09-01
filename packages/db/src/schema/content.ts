@@ -327,7 +327,10 @@ export const videoGenerationJobsRelations = relations(videoGenerationJobs, ({ on
 }));
 
 export const videoAssetsRelations = relations(videoAssets, ({ one }) => ({
-  job: one(videoGenerationJobs, { fields: [videoAssets.jobId], references: [videoGenerationJobs.id] }),
+  job: one(videoGenerationJobs, {
+    fields: [videoAssets.jobId],
+    references: [videoGenerationJobs.id],
+  }),
 }));
 
 export const copyPacks = content.table(

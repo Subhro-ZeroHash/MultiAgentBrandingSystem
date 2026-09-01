@@ -13,22 +13,24 @@ export default function PrivacyPolicyPage() {
       </div>
 
       <p className="text-[var(--color-muted)]">
-        MarketPulse is operated by Nirvanta Technologies Inc. (&quot;we&quot;, &quot;us&quot;).
-        This policy explains what we collect when you connect an Instagram account, why, and how
-        to have it removed.
+        MarketPulse is operated by Nirvanta Technologies Inc. (&quot;we&quot;, &quot;us&quot;). This
+        policy explains what we collect when you connect an Instagram account, why, and how to have
+        it removed.
       </p>
 
       <section className="space-y-2">
         <h2 className="text-lg font-medium">What we collect from Instagram</h2>
         <ul className="list-disc space-y-1 pl-5 text-[var(--color-muted)]">
-          <li>Your Instagram Business/Creator profile — username, account type, profile picture.</li>
+          <li>
+            Your Instagram Business/Creator profile — username, account type, profile picture.
+          </li>
           <li>
             Posts and media on the connected account, so we can show performance history: caption,
             media type, timestamp, and public counts (likes, comments).
           </li>
           <li>
-            Account-level performance metrics (reach, impressions, follower count, engagement)
-            where you&apos;ve granted the insights permission.
+            Account-level performance metrics (reach, impressions, follower count, engagement) where
+            you&apos;ve granted the insights permission.
           </li>
           <li>
             The access token Instagram issues when you connect your account, so we can act on your
@@ -68,8 +70,8 @@ export default function PrivacyPolicyPage() {
         <h2 className="text-lg font-medium">Deleting your data</h2>
         <p className="text-[var(--color-muted)]">
           Disconnecting your Instagram account from within the app immediately and permanently
-          deletes your stored access token and every insight or comment we&apos;d read through
-          that connection. See our{' '}
+          deletes your stored access token and every insight or comment we&apos;d read through that
+          connection. See our{' '}
           <a href="/data-deletion" className="underline">
             Data Deletion page
           </a>{' '}
@@ -80,8 +82,8 @@ export default function PrivacyPolicyPage() {
       <section className="space-y-2">
         <h2 className="text-lg font-medium">Children&apos;s privacy</h2>
         <p className="text-[var(--color-muted)]">
-          MarketPulse is a business tool and is not directed at, or knowingly used by, anyone
-          under 13.
+          MarketPulse is a business tool and is not directed at, or knowingly used by, anyone under
+          13.
         </p>
       </section>
 

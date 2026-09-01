@@ -53,8 +53,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export type PoolBucketInput = (
-  | { scope: 'category'; category: CategoryKey }
-  | { scope: 'national' }
+  { scope: 'category'; category: CategoryKey } | { scope: 'national' }
 ) & {
   /** ISO country the bucket covers. Part of the key, so two brands in
    *  different markets never share a pool — see PoolBucket in @bmas/shared. */
@@ -393,7 +392,13 @@ async function pollForFreshIntelligenceRun(
       throw new Error(`Concurrent intelligence pool refresh for this bucket failed`);
     }
     if (Date.now() >= deadline) {
-      await reapStalledIntelligenceRun(ctx, scope, category, market, bucketLabel(scope, category, market));
+      await reapStalledIntelligenceRun(
+        ctx,
+        scope,
+        category,
+        market,
+        bucketLabel(scope, category, market),
+      );
       throw new Error('Timed out waiting for a concurrent intelligence pool refresh to finish');
     }
     await sleep(POOL_BACKFILL_POLL_INTERVAL_MS);

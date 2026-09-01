@@ -102,7 +102,8 @@ export async function runPlanItemReplace(
   );
   await recordCost(ctx, brandId, cost);
 
-  const productId = draft.productIndex === null ? null : (context.products[draft.productIndex]?.id ?? null);
+  const productId =
+    draft.productIndex === null ? null : (context.products[draft.productIndex]?.id ?? null);
   const suggestedRequest: TrendSuggestedRequest = {
     campaignType: draft.campaignType,
     styleTemplate: draft.styleTemplate,
@@ -192,68 +193,69 @@ async function draftReplacement(
     ? context.opportunities.map((o, i) => `[${i}] ${o.title} — ${o.summary}`).join('\n')
     : 'No live trend opportunities.';
 
-  const { value: draft, cost } = await withRetry(() =>
-    withTimeout(
-      ctx.ai.llm().generateJson(
-        {
-          role: 'orchestrator',
-          maxTokens: MAX_REPLACE_TOKENS,
-          system:
-            'The business owner rejected one proposed piece of content and asked for a different ' +
-            'idea. Write exactly one replacement.\n\n' +
-            'This must be a genuinely different idea, not a rewording. Change the angle: a ' +
-            'different content type, a different hook, a different reason for someone to care. ' +
-            'If your replacement could be mistaken for the rejected one, it is wrong.\n\n' +
-            'Do not reuse any title or premise in the "already proposed" or "previously ' +
-            'rejected" lists. Stay on the plan\'s subject and respect the brand\'s banned ' +
-            'topics and learned preferences.',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                `Business: ${context.identity.brandName}${
-                  context.identity.industry ? `, ${context.identity.industry}` : ''
-                }${context.identity.location ? `, in ${context.identity.location}` : ''}.`,
-                context.identity.audience ? `Audience: ${context.identity.audience}` : '',
-                context.identity.bannedTopics.length
-                  ? `Never mention: ${context.identity.bannedTopics.join(', ')}`
-                  : '',
-                context.currentPlanHeadline ? `The plan: "${context.currentPlanHeadline}"` : '',
-                '',
-                'THE IDEA THEY REJECTED — do not propose anything like it:',
-                `"${dismissed.title}" — ${dismissed.rationale}`,
-                '',
-                siblings.length
-                  ? `ALREADY PROPOSED in this plan, do not duplicate:\n${siblings.map((t) => `- ${t}`).join('\n')}`
-                  : 'Nothing else is proposed in this plan yet.',
-                '',
-                rejectedHistory.length
-                  ? `PREVIOUSLY REJECTED by this business, do not return to these:\n${rejectedHistory.map((t) => `- ${t}`).join('\n')}`
-                  : '',
-                context.learnings.length
-                  ? `WHAT THIS BUSINESS HAS TAUGHT US:\n${context.learnings
-                      .map((l) => `- ${l.summary}`)
-                      .join('\n')}`
-                  : '',
-                '',
-                'PRODUCTS:',
-                productBlock,
-                '',
-                'LIVE OPPORTUNITIES:',
-                opportunityBlock,
-              ]
-                .filter(Boolean)
-                .join('\n'),
-            },
-          ],
-          schema: REPLACEMENT_JSON_SCHEMA,
-          parse: (raw) => plannedItemDraftSchema.parse(raw),
-        },
-        { referenceId: dismissed.id, brandId: context.identity.brandId },
+  const { value: draft, cost } = await withRetry(
+    () =>
+      withTimeout(
+        ctx.ai.llm().generateJson(
+          {
+            role: 'orchestrator',
+            maxTokens: MAX_REPLACE_TOKENS,
+            system:
+              'The business owner rejected one proposed piece of content and asked for a different ' +
+              'idea. Write exactly one replacement.\n\n' +
+              'This must be a genuinely different idea, not a rewording. Change the angle: a ' +
+              'different content type, a different hook, a different reason for someone to care. ' +
+              'If your replacement could be mistaken for the rejected one, it is wrong.\n\n' +
+              'Do not reuse any title or premise in the "already proposed" or "previously ' +
+              "rejected\" lists. Stay on the plan's subject and respect the brand's banned " +
+              'topics and learned preferences.',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  `Business: ${context.identity.brandName}${
+                    context.identity.industry ? `, ${context.identity.industry}` : ''
+                  }${context.identity.location ? `, in ${context.identity.location}` : ''}.`,
+                  context.identity.audience ? `Audience: ${context.identity.audience}` : '',
+                  context.identity.bannedTopics.length
+                    ? `Never mention: ${context.identity.bannedTopics.join(', ')}`
+                    : '',
+                  context.currentPlanHeadline ? `The plan: "${context.currentPlanHeadline}"` : '',
+                  '',
+                  'THE IDEA THEY REJECTED — do not propose anything like it:',
+                  `"${dismissed.title}" — ${dismissed.rationale}`,
+                  '',
+                  siblings.length
+                    ? `ALREADY PROPOSED in this plan, do not duplicate:\n${siblings.map((t) => `- ${t}`).join('\n')}`
+                    : 'Nothing else is proposed in this plan yet.',
+                  '',
+                  rejectedHistory.length
+                    ? `PREVIOUSLY REJECTED by this business, do not return to these:\n${rejectedHistory.map((t) => `- ${t}`).join('\n')}`
+                    : '',
+                  context.learnings.length
+                    ? `WHAT THIS BUSINESS HAS TAUGHT US:\n${context.learnings
+                        .map((l) => `- ${l.summary}`)
+                        .join('\n')}`
+                    : '',
+                  '',
+                  'PRODUCTS:',
+                  productBlock,
+                  '',
+                  'LIVE OPPORTUNITIES:',
+                  opportunityBlock,
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+              },
+            ],
+            schema: REPLACEMENT_JSON_SCHEMA,
+            parse: (raw) => plannedItemDraftSchema.parse(raw),
+          },
+          { referenceId: dismissed.id, brandId: context.identity.brandId },
+        ),
+        REPLACE_TIMEOUT_MS,
+        'plan:item-replace',
       ),
-      REPLACE_TIMEOUT_MS,
-      'plan:item-replace',
-    ),
     {
       onRetry: ({ attempt, delayMs, error }) =>
         console.warn(

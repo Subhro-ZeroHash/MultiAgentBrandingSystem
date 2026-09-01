@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { desc, eq, inArray, recordFeedbackSignal, schema, type Database } from '@bmas/db';
 import { QUEUES, type CreativeRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';

@@ -76,8 +76,11 @@ const envSchema = z.object({
    *  AUTH_SECRET already uses below. */
   ENCRYPTION_KEY: z
     .string()
-    .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes). Generate one with: ' +
-      "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""),
+    .regex(
+      /^[0-9a-fA-F]{64}$/,
+      'ENCRYPTION_KEY must be 64 hex characters (32 bytes). Generate one with: ' +
+        "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+    ),
   /** Must be HTTPS and match the dashboard exactly; Instagram Login rejects
    *  plain-http redirects, including on localhost. */
   INSTAGRAM_OAUTH_REDIRECT_URI: optionalUrl(),

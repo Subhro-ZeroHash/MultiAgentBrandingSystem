@@ -36,7 +36,7 @@ before we build it.
 
 ### 1. Most of these are workflows, not agents
 
-An *agent* is a model-driven loop that chooses its own next step. A *workflow*
+An _agent_ is a model-driven loop that chooses its own next step. A _workflow_
 is a pipeline we wrote, with LLM calls at some steps. They cost and fail very
 differently.
 
@@ -46,21 +46,21 @@ already correctly built as workflows (`brief → image → QA → copy`,
 
 Reserve real agentic loops for genuinely open-ended work:
 
-| Component        | Actually is                          | Why                                                     |
-| ---------------- | ------------------------------------ | ------------------------------------------------------- |
-| Onboarding       | workflow (crawl → extract → synth)   | Fixed steps, known output shape                         |
-| **Strategist**   | **agent** — tool loop                | Must explore: read site, GEO data, competitors, decide   |
-| **Researcher**   | **agent** — tool loop                | Open-ended: why do answers cite X and not us?            |
-| Content pipeline | workflow (exists)                    | Deterministic, cost-sensitive, high volume               |
-| Publisher        | workflow                             | It's an API call with a retry policy                     |
-| GEO pipeline     | workflow (exists)                    | It's a measurement instrument; non-determinism is a bug  |
-| Analyst          | workflow + one LLM narration step    | Metrics are computed, not reasoned                       |
-| Brand critic     | single LLM-as-judge call             | One decision, no loop                                    |
+| Component        | Actually is                        | Why                                                     |
+| ---------------- | ---------------------------------- | ------------------------------------------------------- |
+| Onboarding       | workflow (crawl → extract → synth) | Fixed steps, known output shape                         |
+| **Strategist**   | **agent** — tool loop              | Must explore: read site, GEO data, competitors, decide  |
+| **Researcher**   | **agent** — tool loop              | Open-ended: why do answers cite X and not us?           |
+| Content pipeline | workflow (exists)                  | Deterministic, cost-sensitive, high volume              |
+| Publisher        | workflow                           | It's an API call with a retry policy                    |
+| GEO pipeline     | workflow (exists)                  | It's a measurement instrument; non-determinism is a bug |
+| Analyst          | workflow + one LLM narration step  | Metrics are computed, not reasoned                      |
+| Brand critic     | single LLM-as-judge call           | One decision, no loop                                   |
 
 Two agents, five workflows. If we call all seven "agents" we will spend months
 building loop infrastructure we don't need, and our unit costs will be
-unpredictable. The multi-agent framing is a good *product* story and a bad
-*implementation* default.
+unpredictable. The multi-agent framing is a good _product_ story and a bad
+_implementation_ default.
 
 ### 2. The measurement loop has two clocks — don't merge them
 
@@ -73,14 +73,14 @@ support, and the first person who checks will find the confound.
 
 Model it as two loops with different periods:
 
-| Loop     | Period      | Measures                                        | Source                     | Steers                  |
-| -------- | ----------- | ----------------------------------------------- | -------------------------- | ----------------------- |
-| **Fast** | days        | reach, engagement, saves, clicks, post velocity | Instagram Graph API        | content tactics         |
-| **Slow** | 2–4 weeks   | presence, position, share of voice, citations   | GEO probes (already built) | strategy & positioning  |
+| Loop     | Period    | Measures                                        | Source                     | Steers                 |
+| -------- | --------- | ----------------------------------------------- | -------------------------- | ---------------------- |
+| **Fast** | days      | reach, engagement, saves, clicks, post velocity | Instagram Graph API        | content tactics        |
+| **Slow** | 2–4 weeks | presence, position, share of voice, citations   | GEO probes (already built) | strategy & positioning |
 
-GEO's real output isn't "post more." It's *"you are absent from 6 of 9
+GEO's real output isn't "post more." It's _"you are absent from 6 of 9
 discovery prompts; the answers that beat you cite these four sources; you
-appear on none of them."* That drives a strategy revision — get listed, get
+appear on none of them."_ That drives a strategy revision — get listed, get
 reviewed, publish comparison content — which then drives content work. The
 causal chain is `GEO → strategy → content`, not `content → GEO`.
 
@@ -99,7 +99,7 @@ owner confirms or corrects six things.** The questionnaire's job is to capture
 only what cannot be inferred: goals, budget/effort ceiling, geography, things
 we must never say, and what "success" means to them. Everything else we read.
 
-That's a better product *and* less work, because half of it exists.
+That's a better product _and_ less work, because half of it exists.
 
 ### 4. A goal that isn't a metric is decoration
 
@@ -155,16 +155,16 @@ core.brand_context
 
 `facts[]` is the important part. Every assertion carries **provenance**:
 
-| source          | Example                                             |
-| --------------- | --------------------------------------------------- |
-| `onboarding`    | Owner said the goal is weekend footfall             |
-| `site_crawl`    | Menu lists 40 items; 3 locations                    |
-| `social`        | Posts 2×/week, best engagement on food reels        |
-| `geo_observed`  | Answer engines describe us as "budget-friendly"     |
-| `human_edit`    | Owner corrected the category                        |
+| source         | Example                                         |
+| -------------- | ----------------------------------------------- |
+| `onboarding`   | Owner said the goal is weekend footfall         |
+| `site_crawl`   | Menu lists 40 items; 3 locations                |
+| `social`       | Posts 2×/week, best engagement on food reels    |
+| `geo_observed` | Answer engines describe us as "budget-friendly" |
+| `human_edit`   | Owner corrected the category                    |
 
 Provenance is what lets the context **self-update from measurement** — that's
-the outer arrow in the diagram — and what lets us show a customer *why* we
+the outer arrow in the diagram — and what lets us show a customer _why_ we
 believe something. `geo_observed` facts are especially valuable: how the
 internet's AI describes you is often not how you describe yourself, and that
 gap is a genuine insight we can sell.
@@ -219,7 +219,7 @@ the system did. BullMQ stays the transport; the event log is the record.
 
 Sized for two people. Each phase ships something demonstrable.
 
-### Phase 0 — Merge and consolidate *(~1 week, blocking)*
+### Phase 0 — Merge and consolidate _(~1 week, blocking)_
 
 Nothing new. `feature/content-gen` and `geo/engine-mvp` both edit
 `packages/ai/`, `queues.ts`, `registry.ts`, and `core.ts`; both independently
@@ -233,7 +233,7 @@ week we wait, and **everything below assumes a single trunk.**
 
 **Demo:** both products running side by side on one database.
 
-### Phase 1 — Context layer *(~2 weeks)*
+### Phase 1 — Context layer _(~2 weeks)_
 
 - `core.brand_context` with provenance; `assembleContext(brandId, task)`
 - Onboarding: URL + handle → derived profile → 6-question confirmation
@@ -244,7 +244,7 @@ week we wait, and **everything below assumes a single trunk.**
 object driving a caption and a GEO analysis. Both products get better and we
 have added no agents.
 
-### Phase 2 — Strategist and goals *(~2–3 weeks)*
+### Phase 2 — Strategist and goals _(~2–3 weeks)_
 
 - `plan` schema; goal→metric compiler with hard validation
 - Strategist as a genuine tool-loop agent (`orchestrator` role) with tools:
@@ -256,7 +256,7 @@ have added no agents.
 **Demo:** onboard → a real plan with measurable goals, pillars, and a rationale
 you can argue with.
 
-### Phase 3 — Close the loop *(~2 weeks)*
+### Phase 3 — Close the loop _(~2 weeks)_
 
 - `core.events` + dispatcher
 - Initiative compiler: content initiatives → generation jobs; **GEO initiatives
@@ -267,7 +267,7 @@ you can argue with.
 
 **Demo:** the full loop, end to end, on one screen.
 
-### Phase 4 — Learning and the fast clock *(~2–3 weeks)*
+### Phase 4 — Learning and the fast clock _(~2–3 weeks)_
 
 - Instagram insights ingestion → fast-loop metrics
 - Performance facts written back into context (`source: 'social'`)
@@ -284,16 +284,16 @@ anyone outside the team to touch it. Decide them by end of Phase 2.
 
 ## Risks
 
-| Risk                                                                        | Mitigation                                                                 |
-| --------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Merge debt compounds and Phase 1 starts on two divergent trunks              | Phase 0 is blocking. Do it first, this week.                               |
-| We claim campaigns caused GEO movement                                       | Two clocks; markers not attribution; state the limitation in the UI.       |
-| "Agent" everywhere → unpredictable cost and latency                          | Two agents only; everything else is a workflow. Enforce in review.         |
-| Strategist emits pretty, unmeasurable plans                                  | Goal→metric compiler rejects non-compiling goals in code.                  |
-| Context layer becomes a six-week infrastructure project                      | One table, one function. No retrieval service before Phase 4.              |
-| Two people, ~3 months, three workstreams                                     | Orchestration needs a named owner before Phase 2 or it will stall.         |
-| Provider spend scales with brands × prompts × engines                        | `core.cost_events` exists; add per-brand caps before any pilot.            |
-| Answer-engine terms/pricing shift under us                                   | Adapter boundary already isolates this; re-verify at each phase gate.      |
+| Risk                                                            | Mitigation                                                            |
+| --------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Merge debt compounds and Phase 1 starts on two divergent trunks | Phase 0 is blocking. Do it first, this week.                          |
+| We claim campaigns caused GEO movement                          | Two clocks; markers not attribution; state the limitation in the UI.  |
+| "Agent" everywhere → unpredictable cost and latency             | Two agents only; everything else is a workflow. Enforce in review.    |
+| Strategist emits pretty, unmeasurable plans                     | Goal→metric compiler rejects non-compiling goals in code.             |
+| Context layer becomes a six-week infrastructure project         | One table, one function. No retrieval service before Phase 4.         |
+| Two people, ~3 months, three workstreams                        | Orchestration needs a named owner before Phase 2 or it will stall.    |
+| Provider spend scales with brands × prompts × engines           | `core.cost_events` exists; add per-brand caps before any pilot.       |
+| Answer-engine terms/pricing shift under us                      | Adapter boundary already isolates this; re-verify at each phase gate. |
 
 ## Open decisions
 

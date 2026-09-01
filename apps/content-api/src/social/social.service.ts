@@ -658,7 +658,10 @@ export class SocialService {
    * private address — or the cloud metadata address, which the regex never
    * blocked at all — sailed straight through.
    */
-  private async assertPubliclyReachableUrl(url: string, mediaKind: 'image' | 'video'): Promise<void> {
+  private async assertPubliclyReachableUrl(
+    url: string,
+    mediaKind: 'image' | 'video',
+  ): Promise<void> {
     let parsed: URL;
     try {
       parsed = new URL(url);

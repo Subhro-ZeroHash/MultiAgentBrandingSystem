@@ -39,15 +39,22 @@ export class AutopilotActivityService {
   async recordActivity(userId: string): Promise<void> {
     let paused: Array<{ brandId: string }>;
     try {
-      await this.db.update(schema.users).set({ lastActiveAt: new Date() }).where(eq(schema.users.id, userId));
+      await this.db
+        .update(schema.users)
+        .set({ lastActiveAt: new Date() })
+        .where(eq(schema.users.id, userId));
 
       paused = await this.db
         .select({ brandId: schema.automationSettings.brandId })
         .from(schema.automationSettings)
         .innerJoin(schema.brands, eq(schema.brands.id, schema.automationSettings.brandId))
-        .where(and(eq(schema.brands.ownerId, userId), isNotNull(schema.automationSettings.autoPausedAt)));
+        .where(
+          and(eq(schema.brands.ownerId, userId), isNotNull(schema.automationSettings.autoPausedAt)),
+        );
     } catch (error) {
-      console.error(`[autopilot-activity] failed to record activity for ${userId}: ${describeError(error)}`);
+      console.error(
+        `[autopilot-activity] failed to record activity for ${userId}: ${describeError(error)}`,
+      );
       return;
     }
 
@@ -68,7 +75,9 @@ export class AutopilotActivityService {
         await this.trends.startResearch(brandId, userId, {});
         await this.intelligence.startResearch(brandId, userId);
       } catch (error) {
-        console.error(`[autopilot-activity] resume failed for brand ${brandId}: ${describeError(error)}`);
+        console.error(
+          `[autopilot-activity] resume failed for brand ${brandId}: ${describeError(error)}`,
+        );
       }
     }
   }

@@ -84,7 +84,9 @@ async function topUpPromptsForBrand(ctx: WorkerContext, brandId: string): Promis
   const [row] = await ctx.db
     .select({ value: count() })
     .from(schema.trackedPrompts)
-    .where(and(eq(schema.trackedPrompts.brandId, brandId), eq(schema.trackedPrompts.isActive, true)));
+    .where(
+      and(eq(schema.trackedPrompts.brandId, brandId), eq(schema.trackedPrompts.isActive, true)),
+    );
   const needed = TARGET_ACTIVE_PROMPTS - (row?.value ?? 0);
   if (needed <= 0) return 0;
 
@@ -165,7 +167,11 @@ async function draftPromptsForBrand(
   wanted: number,
 ): Promise<(typeof schema.trackedPrompts.$inferInsert)[]> {
   const needed = wanted;
-  const [brand] = await ctx.db.select().from(schema.brands).where(eq(schema.brands.id, brandId)).limit(1);
+  const [brand] = await ctx.db
+    .select()
+    .from(schema.brands)
+    .where(eq(schema.brands.id, brandId))
+    .limit(1);
   if (!brand) return [];
 
   const [products, [brandContext], existing] = await Promise.all([
@@ -178,7 +184,11 @@ async function draftPromptsForBrand(
       .from(schema.products)
       .where(eq(schema.products.brandId, brandId))
       .limit(MAX_PRODUCTS_IN_PROMPT),
-    ctx.db.select().from(schema.brandContexts).where(eq(schema.brandContexts.brandId, brandId)).limit(1),
+    ctx.db
+      .select()
+      .from(schema.brandContexts)
+      .where(eq(schema.brandContexts.brandId, brandId))
+      .limit(1),
     // Live prompts only, which on a refresh means the user's own prompts plus
     // the suggested set about to be retired. Both belong here: duplicating a
     // user's prompt is waste, and a "refresh" that returns the same six
@@ -188,7 +198,9 @@ async function draftPromptsForBrand(
     ctx.db
       .select({ text: schema.trackedPrompts.text })
       .from(schema.trackedPrompts)
-      .where(and(eq(schema.trackedPrompts.brandId, brandId), eq(schema.trackedPrompts.isActive, true)))
+      .where(
+        and(eq(schema.trackedPrompts.brandId, brandId), eq(schema.trackedPrompts.isActive, true)),
+      )
       .limit(MAX_EXISTING_IN_PROMPT),
   ]);
 
@@ -199,7 +211,7 @@ async function draftPromptsForBrand(
           role: 'orchestrator',
           system:
             'You write the questions a real buyer would type into ChatGPT, Gemini, or Perplexity ' +
-            'when researching a purchase — not marketing copy, not the brand\'s own words. Each one ' +
+            "when researching a purchase — not marketing copy, not the brand's own words. Each one " +
             'gets asked verbatim to a real AI assistant to see whether this brand comes up in the ' +
             'answer, so it has to read like an honest, specific buyer intent, in the language a ' +
             'customer actually thinks in.\n\n' +
@@ -207,7 +219,7 @@ async function draftPromptsForBrand(
             Object.entries(INTENT_EXAMPLE)
               .map(([intent, example]) => `- ${intent}: e.g. ${example}`)
               .join('\n') +
-            '\n\nGround every prompt in the brand\'s real category, audience, and location — a prompt ' +
+            "\n\nGround every prompt in the brand's real category, audience, and location — a prompt " +
             'about a product or place this brand has nothing to do with is worthless. Never mention ' +
             'the brand name itself except in a brand_direct or comparison prompt, where a real buyer ' +
             'would actually type it.',
@@ -217,8 +229,12 @@ async function draftPromptsForBrand(
               content: [
                 `Business: ${brand.name}, category: ${brand.category ?? 'not specified'}.`,
                 brand.audience ? `Audience: ${brand.audience}.` : '',
-                brand.location ? `Trades from: ${brand.location} — write locally-phrased prompts a buyer there would use.` : '',
-                brandContext?.positioning ? `What sets this brand apart: ${brandContext.positioning}` : '',
+                brand.location
+                  ? `Trades from: ${brand.location} — write locally-phrased prompts a buyer there would use.`
+                  : '',
+                brandContext?.positioning
+                  ? `What sets this brand apart: ${brandContext.positioning}`
+                  : '',
                 brandContext?.goals.length ? `Goals: ${brandContext.goals.join('; ')}` : '',
                 brandContext?.competitors.length
                   ? `Real competitors, usable in comparison prompts: ${brandContext.competitors.map((c) => c.name).join(', ')}`

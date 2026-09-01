@@ -130,83 +130,84 @@ async function draftPlan(
     : 'No live trend opportunities. Plan from the brand and its products alone.';
 
   const intelligenceBlock = context.intelligence.length
-    ? context.intelligence
-        .map((i) => `- (${i.urgency}) ${i.title}: ${i.whyItMatters}`)
-        .join('\n')
+    ? context.intelligence.map((i) => `- (${i.urgency}) ${i.title}: ${i.whyItMatters}`).join('\n')
     : 'No competitor or market intelligence on file yet.';
 
   const productBlock = context.products.length
-    ? context.products.map((p, i) => `[${i}] ${p.name}${p.description ? ` — ${p.description}` : ''}`).join('\n')
+    ? context.products
+        .map((p, i) => `[${i}] ${p.name}${p.description ? ` — ${p.description}` : ''}`)
+        .join('\n')
     : 'No products on file. Plan brand-level content only, and leave productIndex null.';
 
-  const { value: draft, cost } = await withRetry(() =>
-    withTimeout(
-      ctx.ai.llm().generateJson(
-        {
-          role: 'orchestrator',
-          maxTokens: MAX_PLAN_TOKENS,
-          system:
-            'You are the head of marketing for one brand, writing the plan for the next ' +
-            `${horizonDays} days. Your audience is the business owner, who will read every ` +
-            'line and approve or reject each item individually.\n\n' +
-            'Rules:\n' +
-            '- Every item must be justified by something you were actually given — a trend ' +
-            'opportunity, a piece of intelligence, a stated goal, or a learned preference. ' +
-            'If you cannot point to why, do not propose it.\n' +
-            '- Cite trend opportunities by their [index] in your rationale where you used them, ' +
-            'and set opportunityIndex on the item that came from one.\n' +
-            '- Respect what this brand has learned it does and does not want. A preference ' +
-            'that says a topic was rejected is not a suggestion.\n' +
-            '- Never repeat a title the current plan already proposed.\n' +
-            '- Never touch a banned topic.\n' +
-            '- The headline is one line the owner reads first: what this plan is trying to ' +
-            'move, in their language, not marketing boilerplate.\n' +
-            '- Vary content types and spread dayOffset across the horizon. Do not stack ' +
-            'everything on day 0.',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                ...renderBrandContextLines(context),
-                '',
-                focus
-                  ? `THE OWNER HAS ASKED YOU TO FOCUS ON: ${focus}\nThis overrides your own ` +
-                    'judgment about subject matter. Build the plan around it. If the live ' +
-                    'opportunities below are unrelated to it, say so in the rationale and plan ' +
-                    'from the focus anyway.'
-                  : 'No specific focus requested — choose the subject yourself from the evidence.',
-                '',
-                `CURRENT VISIBILITY: ${
-                  context.geoScore === null
-                    ? 'never measured'
-                    : `${context.geoScore}/100 in AI answer engines`
-                }`,
-                context.currentPlanHeadline
-                  ? `PLAN YOU ARE REPLACING: "${context.currentPlanHeadline}". Titles already ` +
-                    `proposed (do not repeat): ${context.currentPlanTitles.join('; ') || 'none'}`
-                  : 'This is the brand&rsquo;s first plan.',
-                '',
-                'LIVE TREND OPPORTUNITIES:',
-                opportunityBlock,
-                '',
-                'MARKET & COMPETITOR INTELLIGENCE:',
-                intelligenceBlock,
-                '',
-                'PRODUCTS:',
-                productBlock,
-                '',
-                `Write exactly ${itemTarget} items.`,
-              ].join('\n'),
-            },
-          ],
-          schema: PLAN_JSON_SCHEMA,
-          parse: (raw) => planDraftSchema.parse(raw),
-        },
-        { referenceId: context.identity.brandId, brandId: context.identity.brandId },
+  const { value: draft, cost } = await withRetry(
+    () =>
+      withTimeout(
+        ctx.ai.llm().generateJson(
+          {
+            role: 'orchestrator',
+            maxTokens: MAX_PLAN_TOKENS,
+            system:
+              'You are the head of marketing for one brand, writing the plan for the next ' +
+              `${horizonDays} days. Your audience is the business owner, who will read every ` +
+              'line and approve or reject each item individually.\n\n' +
+              'Rules:\n' +
+              '- Every item must be justified by something you were actually given — a trend ' +
+              'opportunity, a piece of intelligence, a stated goal, or a learned preference. ' +
+              'If you cannot point to why, do not propose it.\n' +
+              '- Cite trend opportunities by their [index] in your rationale where you used them, ' +
+              'and set opportunityIndex on the item that came from one.\n' +
+              '- Respect what this brand has learned it does and does not want. A preference ' +
+              'that says a topic was rejected is not a suggestion.\n' +
+              '- Never repeat a title the current plan already proposed.\n' +
+              '- Never touch a banned topic.\n' +
+              '- The headline is one line the owner reads first: what this plan is trying to ' +
+              'move, in their language, not marketing boilerplate.\n' +
+              '- Vary content types and spread dayOffset across the horizon. Do not stack ' +
+              'everything on day 0.',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...renderBrandContextLines(context),
+                  '',
+                  focus
+                    ? `THE OWNER HAS ASKED YOU TO FOCUS ON: ${focus}\nThis overrides your own ` +
+                      'judgment about subject matter. Build the plan around it. If the live ' +
+                      'opportunities below are unrelated to it, say so in the rationale and plan ' +
+                      'from the focus anyway.'
+                    : 'No specific focus requested — choose the subject yourself from the evidence.',
+                  '',
+                  `CURRENT VISIBILITY: ${
+                    context.geoScore === null
+                      ? 'never measured'
+                      : `${context.geoScore}/100 in AI answer engines`
+                  }`,
+                  context.currentPlanHeadline
+                    ? `PLAN YOU ARE REPLACING: "${context.currentPlanHeadline}". Titles already ` +
+                      `proposed (do not repeat): ${context.currentPlanTitles.join('; ') || 'none'}`
+                    : 'This is the brand&rsquo;s first plan.',
+                  '',
+                  'LIVE TREND OPPORTUNITIES:',
+                  opportunityBlock,
+                  '',
+                  'MARKET & COMPETITOR INTELLIGENCE:',
+                  intelligenceBlock,
+                  '',
+                  'PRODUCTS:',
+                  productBlock,
+                  '',
+                  `Write exactly ${itemTarget} items.`,
+                ].join('\n'),
+              },
+            ],
+            schema: PLAN_JSON_SCHEMA,
+            parse: (raw) => planDraftSchema.parse(raw),
+          },
+          { referenceId: context.identity.brandId, brandId: context.identity.brandId },
+        ),
+        PLAN_TIMEOUT_MS,
+        'plan:synthesis',
       ),
-      PLAN_TIMEOUT_MS,
-      'plan:synthesis',
-    ),
     {
       onRetry: ({ attempt, delayMs, error }) =>
         console.warn(

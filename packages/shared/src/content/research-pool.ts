@@ -273,9 +273,11 @@ export interface PoolBucket {
 
 export function allPoolBuckets(market: string = DEFAULT_MARKET): PoolBucket[] {
   return [
-    ...categoryKeySchema.options.map(
-      (category): PoolBucket => ({ scope: 'category', category, market }),
-    ),
+    ...categoryKeySchema.options.map((category): PoolBucket => ({
+      scope: 'category',
+      category,
+      market,
+    })),
     { scope: 'national', category: null, market },
   ];
 }

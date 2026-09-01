@@ -25,10 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               >
                 Studio
               </Link>
-              <Link
-                href="/geo"
-                className="text-[var(--color-muted)] hover:text-[var(--color-ink)]"
-              >
+              <Link href="/geo" className="text-[var(--color-muted)] hover:text-[var(--color-ink)]">
                 GEO
               </Link>
               <Link
