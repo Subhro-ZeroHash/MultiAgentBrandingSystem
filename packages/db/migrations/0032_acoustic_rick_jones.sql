@@ -1,0 +1,1 @@
+ALTER TABLE "content"."video_generation_jobs" ADD COLUMN "copy" jsonb;

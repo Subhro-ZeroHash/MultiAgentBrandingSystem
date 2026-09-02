@@ -22,6 +22,7 @@
     "LTX_BASE_URL",
     "VIDEO_PROVIDER_PRIMARY",
     "VIDEO_MODEL_*",
+    "VIDEO_ENDCARD_FONT",
     "GEO_*",
     "S3_*",
     "R2_*"

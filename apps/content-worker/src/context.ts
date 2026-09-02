@@ -64,6 +64,14 @@ const envSchema = z.object({
   ENCRYPTION_KEY: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes)'),
+
+  /** TrueType file ffmpeg draws the video end card with. Defaults to the path
+   *  `fonts-dejavu-core` installs on Debian/Ubuntu, which is what the
+   *  deployed box has; override it anywhere the font lives elsewhere. Not
+   *  validated at startup on purpose — a missing font degrades to a clip with
+   *  no end card (see `burnEndCard`), and failing the whole worker's boot
+   *  over a cosmetic dependency would be the worse trade. */
+  VIDEO_ENDCARD_FONT: z.string().default('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
 });
 
 export interface WorkerContext {
@@ -76,6 +84,7 @@ export interface WorkerContext {
   contentApiUrl: string;
   authSecret: string;
   encryptionKey: string;
+  videoEndCardFont: string;
 }
 
 export function createContext(): WorkerContext {
@@ -115,5 +124,6 @@ export function createContext(): WorkerContext {
     contentApiUrl: env.CONTENT_API_URL,
     authSecret: env.AUTH_SECRET,
     encryptionKey: env.ENCRYPTION_KEY,
+    videoEndCardFont: env.VIDEO_ENDCARD_FONT,
   };
 }

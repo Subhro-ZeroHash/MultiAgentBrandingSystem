@@ -225,6 +225,13 @@
       "when": 1787941482497,
       "tag": "0031_cold_the_order",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788343812858,
+      "tag": "0032_acoustic_rick_jones",
+      "breakpoints": true
     }
   ]
 }

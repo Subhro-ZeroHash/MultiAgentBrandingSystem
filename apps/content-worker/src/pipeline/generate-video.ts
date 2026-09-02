@@ -8,10 +8,23 @@ import {
   type VideoGenerateRequest,
 } from '@bmas/ai';
 import { and, eq, ne, schema, sql, type Brand } from '@bmas/db';
-import type { CostEvent, VideoGenerationJob, VideoGenerationRequest } from '@bmas/shared';
+import type {
+  CopyPack,
+  CostEvent,
+  CreativeRequest,
+  VideoGenerationJob,
+  VideoGenerationRequest,
+} from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
 import type { WorkerContext } from '../context.js';
-import { CAMPAIGN_INTENT, STYLE_DIRECTION, mediaTypeFor, toneDirection } from './stages.js';
+import {
+  CAMPAIGN_INTENT,
+  STYLE_DIRECTION,
+  generateCopy,
+  mediaTypeFor,
+  toneDirection,
+} from './stages.js';
+import { addEndCard } from './video-endcard.js';
 
 /**
  * Video generation's own pipeline, mirroring `generate.ts`'s shape at the
@@ -210,6 +223,80 @@ export async function composeVideoBrief(
 }
 
 /**
+ * The clip's copy pack, from the same `generateCopy` stage images already
+ * use — a Reel caption is the same job as a post caption, and this way the
+ * two mediums stay in one voice instead of drifting apart as that prompt is
+ * tuned. `story_reel_cover` is the format video already declares itself
+ * equivalent to (see `videoGenerationRequestSchema`'s width/height comment),
+ * and it maps to the same 'instagram' platform a Reel posts to.
+ *
+ * Best-effort by design: a caption is worth a retry, but not worth throwing
+ * away a video that already rendered and cost real money. A failure here
+ * leaves `copy` null and the user writes their own caption, which is exactly
+ * the behaviour that shipped before this stage existed.
+ */
+async function generateVideoCopy(
+  ctx: WorkerContext,
+  brand: Brand,
+  request: VideoGenerationRequest,
+  jobId: string,
+): Promise<CopyPack | null> {
+  const copyRequest: CreativeRequest = {
+    ...request,
+    outputFormat: 'story_reel_cover',
+    variantCount: 1,
+    variantMode: 'uniform',
+    language: 'en',
+  };
+
+  try {
+    const [pack] = await generateCopy({
+      ai: ctx.ai,
+      brand,
+      request: copyRequest,
+      db: ctx.db,
+      storage: ctx.storage,
+      jobId,
+    });
+    return pack ?? null;
+  } catch (error) {
+    console.warn(
+      `[content:video] job ${jobId}: copy generation failed, posting screen will open with an empty caption — ${describeError(error)}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Burns the closing message on, or returns the clip untouched if it can't.
+ *
+ * Best-effort for the same reason the copy stage is: the video has already
+ * rendered and already cost money by the time this runs, and a missing font
+ * or an ffmpeg that isn't installed is an operational problem with the box,
+ * not a reason to throw away the thing the user is waiting for. A silent
+ * clip is a worse ad than one with a caption, but it is still an ad.
+ */
+async function burnEndCard(
+  ctx: WorkerContext,
+  video: Buffer,
+  options: { headline: string; cta?: string | undefined; durationSeconds: number; jobId: string },
+): Promise<Buffer> {
+  try {
+    return await addEndCard(
+      video,
+      { headline: options.headline, cta: options.cta },
+      options.durationSeconds,
+      ctx.videoEndCardFont,
+    );
+  } catch (error) {
+    console.warn(
+      `[content:video] job ${options.jobId}: end card could not be drawn, posting the clip without it — ${describeError(error)}`,
+    );
+    return video;
+  }
+}
+
+/**
  * The real, if smaller, QA check this pipeline stage owes its output — no
  * provider here can read a rendered frame the way `analyzeImage` does for
  * images, so this checks what can be checked without one: the container is
@@ -311,9 +398,28 @@ export async function runVideoGeneration(
     await setStage('qa');
     validateVideo(video.data, video.durationSeconds, request.durationSeconds);
 
+    // After the render, not alongside it: copy is cheap but not free, and a
+    // job that fails to produce a video has no use for a caption.
+    await setStage('copy');
+    const copy = await generateVideoCopy(ctx, brand, request, job.jobId);
+
+    // The clip's closing message. Prefers what the user typed over what the
+    // model wrote: `headlineText` is the one line they chose themselves, and
+    // silently replacing it with a generated alternative would be the app
+    // overruling them.
+    const endCardHeadline = request.headlineText?.trim() || copy?.headline;
+    const finalVideo = endCardHeadline
+      ? await burnEndCard(ctx, video.data, {
+          headline: endCardHeadline,
+          cta: request.ctaText?.trim() || copy?.cta,
+          durationSeconds: video.durationSeconds,
+          jobId: job.jobId,
+        })
+      : video.data;
+
     await setStage('storage');
     const key = `brands/${brand.id}/videos/${job.jobId}/video-1.mp4`;
-    await ctx.storage.put(key, video.data, video.mediaType);
+    await ctx.storage.put(key, finalVideo, video.mediaType);
 
     await ctx.db.transaction(async (tx) => {
       await tx.insert(schema.videoAssets).values({
@@ -333,7 +439,13 @@ export async function runVideoGeneration(
 
       await tx
         .update(schema.videoGenerationJobs)
-        .set({ status: 'succeeded', stage: null, error: null, finishedAt: new Date() })
+        .set({
+          status: 'succeeded',
+          stage: null,
+          error: null,
+          copy,
+          finishedAt: new Date(),
+        })
         .where(eq(schema.videoGenerationJobs.id, job.jobId));
     });
 

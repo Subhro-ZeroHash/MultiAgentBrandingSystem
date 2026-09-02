@@ -18,6 +18,7 @@ import {
 import type {
   AutoTriggeredJobRef,
   BrandCompetitor,
+  CopyPack,
   IntelligencePoolScore,
   IntelligenceScore,
   PlanEvidence,
@@ -280,6 +281,13 @@ export const videoGenerationJobs = content.table(
     /** The validated VideoGenerationRequest, stored verbatim so a job can be
      *  replayed — same reasoning as `generationJobs.request`. */
     request: jsonb('request').$type<Record<string, unknown>>().notNull(),
+    /** The clip's copy pack — caption for the post screen, headline/cta for
+     *  the burnt-in end card. One column rather than `copyPacks` rows because
+     *  a video job produces exactly one pack: images fan out per variant and
+     *  per platform, a Reel is one clip going to one place. Nullable because
+     *  copy is best-effort — a rendered video is not thrown away because the
+     *  caption call failed. */
+    copy: jsonb('copy').$type<CopyPack>(),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
