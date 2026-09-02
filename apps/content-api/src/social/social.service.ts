@@ -72,7 +72,15 @@ const CONTAINER_POLL_INTERVAL_MS = 2000;
  *  routinely takes past the 20 seconds an image container needs, so reusing
  *  the same numbers would abandon a Reel that was still genuinely processing.
  *  120 seconds total is generous for the short (<=20s) clips this pipeline
- *  produces without leaving a failed request hanging indefinitely. */
+ *  produces without leaving a failed request hanging indefinitely.
+ *
+ *  IMPORTANT – nginx proxy_read_timeout: the reverse proxy in front of this
+ *  service (nginx/bmas.conf) must set `proxy_read_timeout` for the
+ *  `/api/social/post-reel` location to at least
+ *    REEL_CONTAINER_POLL_ATTEMPTS × REEL_CONTAINER_POLL_INTERVAL_MS / 1000
+ *    + publish-call buffer  =  120 s + 30 s  =  150 s
+ *  nginx defaults to 60 s, which cuts the connection before the poll finishes
+ *  and returns a 504 to the client.  See nginx/bmas.conf for the fix. */
 const REEL_CONTAINER_POLL_ATTEMPTS = 40;
 const REEL_CONTAINER_POLL_INTERVAL_MS = 3000;
 

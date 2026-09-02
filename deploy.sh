@@ -19,6 +19,13 @@ pnpm build
 echo "==> Applying any new database migrations..."
 pnpm db:migrate
 
+echo "==> Installing / reloading nginx config..."
+# nginx/bmas.conf sets proxy_read_timeout 150s on /api/social/post-reel so the
+# 120 s Instagram Reel transcoding poll isn't cut short by nginx's 60 s default.
+sudo cp nginx/bmas.conf /etc/nginx/sites-available/bmas
+sudo ln -sf /etc/nginx/sites-available/bmas /etc/nginx/sites-enabled/bmas
+sudo nginx -t && sudo systemctl reload nginx
+
 echo "==> Restarting all services..."
 pm2 restart all
 
