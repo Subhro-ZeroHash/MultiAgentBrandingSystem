@@ -24,13 +24,20 @@ import { join } from 'node:path';
 const ENDCARD_SECONDS = 2;
 
 /**
- * Chars per line before wrapping. Paired with the `w/14` headline size below:
- * DejaVu Sans averages a little over half an em per glyph, so ~18 characters
- * fills roughly 80% of the frame and leaves a margin down both sides. Checked
- * against a real render, not calculated — 24 put "50% off — today only:" hard
- * against both edges.
+ * Chars per line before wrapping, paired with the `w/14` headline size below.
+ *
+ * Counted in characters rather than measured in pixels, which is the cheap
+ * approximation here: a line of wide glyphs still runs longer than the same
+ * count of narrow ones. Both numbers below come from looking at real renders
+ * rather than from the font metrics — 24 put "50% off — today only:" hard
+ * against both edges, and 18 left "Monsoon sale — 50%" nearly touching the
+ * right one. 16 holds a margin even for the wide case.
+ *
+ * ponytail: character count, not text width. If a headline ever needs to fill
+ * the frame properly, measure it with `ffprobe`'s drawtext metrics (or shape
+ * it with opentype.js) and wrap on that instead.
  */
-const MAX_LINE_CHARS = 18;
+const MAX_LINE_CHARS = 16;
 
 const FFMPEG_TIMEOUT_MS = 120_000;
 
