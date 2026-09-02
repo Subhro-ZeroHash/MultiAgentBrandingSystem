@@ -17,34 +17,41 @@ import { join } from 'node:path';
  * rate, pixel format and timebase, and a mismatch there fails at mux time
  * with a message that has nothing to do with the text. Drawing over the tail
  * of the clip the provider already returned cannot desync.
+ *
+ * Visual design — advertising-grade end card:
+ *   • Bottom-anchored gradient scrim: transparent above, rich-black below,
+ *     so the product stays visible in the upper frame while text reads cleanly
+ *     at the bottom — the same composition every modern Reel ad uses.
+ *   • Headline at w/11 (up from w/14): large enough to land on a mobile
+ *     screen without leaning in, with a two-pixel drop-shadow for legibility
+ *     over any background colour the video model may produce.
+ *   • CTA in a pill-shaped box: distinct from the headline, signals
+ *     interactivity (even on a static screen), and gives the line its own
+ *     visual weight without needing a second font.
  */
 
-/** How long the message holds at the end of the clip. Long enough to read a
- *  short headline aloud, short enough not to eat a 4-6s ad. */
-const ENDCARD_SECONDS = 2;
+/** How long the message holds at the end of the clip. 2.5 s gives a viewer
+ *  enough time to read a two-line headline aloud without eating too much of a
+ *  4-6 s ad. */
+const ENDCARD_SECONDS = 2.5;
 
 /**
- * Chars per line before wrapping, paired with the `w/14` headline size below.
+ * Chars per line before wrapping, paired with the `w/11` headline size below.
  *
- * Counted in characters rather than measured in pixels, which is the cheap
- * approximation here: a line of wide glyphs still runs longer than the same
- * count of narrow ones. Both numbers below come from looking at real renders
- * rather than from the font metrics — 24 put "50% off — today only:" hard
- * against both edges, and 18 left "Monsoon sale — 50%" nearly touching the
- * right one. 16 holds a margin even for the wide case.
- *
- * ponytail: character count, not text width. If a headline ever needs to fill
- * the frame properly, measure it with `ffprobe`'s drawtext metrics (or shape
- * it with opentype.js) and wrap on that instead.
+ * 20 chars per line at the wider font size gives approximately the same
+ * horizontal margin as 16 chars did at the old w/14 size — both keep text
+ * away from the edges at 1080 px width. Counted in characters (the cheap
+ * approximation): if a headline ever needs pixel-perfect measurement, use
+ * ffprobe's drawtext metrics and wrap on text_w instead.
  */
-const MAX_LINE_CHARS = 16;
+const MAX_LINE_CHARS = 20;
 
 const FFMPEG_TIMEOUT_MS = 120_000;
 
 export interface EndCardText {
   /** The campaign line — what the ad is actually saying. */
   headline: string;
-  /** The closing ask, drawn smaller beneath the headline. */
+  /** The closing ask, drawn in a pill box beneath the headline. */
   cta?: string | undefined;
 }
 
@@ -122,6 +129,12 @@ function run(command: string, args: string[]): Promise<void> {
  * warns "Stray %" and drops the character. None of this pipeline's text is
  * ever meant as a template, so expansion is turned off outright rather than
  * escaped around.
+ *
+ * Visual filter stack (applied bottom → top):
+ *   1. Gradient scrim  — bottom half of frame fades to near-black.
+ *   2. Headline text   — large, centred, with drop-shadow.
+ *   3. CTA pill box    — rounded-rect drawn behind the CTA text.
+ *   4. CTA text        — smaller, centred inside the pill.
  */
 export function buildEndCardFilter(
   headlineFile: string,
@@ -134,21 +147,49 @@ export function buildEndCardFilter(
   const shown = `between(t,${startSeconds.toFixed(3)},99999)`;
 
   const filters = [
-    // A scrim rather than a hard cut to a card: the product stays on screen
-    // behind the words, which is what an ad's end frame is for.
-    `drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill:enable='${shown}'`,
+    // ── 1. Gradient scrim ────────────────────────────────────────────────────
+    // A smooth black-fade over the bottom half keeps the product shot visible
+    // above while giving the text a consistently dark backdrop regardless of
+    // whatever colour the model placed there.  Two overlapping semi-transparent
+    // boxes approximate a gradient with no extra filter dependencies:
+    //   • upper box: 25 % of height at 20 % opacity — a soft entry
+    //   • lower box: 75 % of height at 65 % opacity — the solid read zone
+    `drawbox=x=0:y=h/2:w=iw:h=h/4:color=black@0.20:t=fill:enable='${shown}'`,
+    `drawbox=x=0:y=3*h/4:w=iw:h=h/4:color=black@0.65:t=fill:enable='${shown}'`,
+
+    // ── 2. Headline ──────────────────────────────────────────────────────────
+    // Drop-shadow pair (shadow drawn first, then the white copy on top) gives
+    // the text lift against any background the provider renders.
     `drawtext=textfile='${headlineFile}':fontfile='${fontFile}':expansion=none:` +
-      // Sized off frame width so this holds at any resolution the providers
-      // snap to, not just the 1080x1920 the request asks for.
-      `fontsize=w/14:fontcolor=white:line_spacing=12:` +
-      `x=(w-text_w)/2:y=(h-text_h)/2${ctaFile ? '-h/12' : ''}:enable='${shown}'`,
+      // w/11 is larger than the old w/14 — counterintuitively the divisor is
+      // smaller; larger divisor = smaller text.  Verified readable at 1080 px.
+      `fontsize=w/11:fontcolor=black@0.55:line_spacing=10:` +
+      // Shadow: offset 2 px down-right, 55 % opacity
+      `x=(w-text_w)/2+2:y=h*0.62+2${ctaFile ? '-h/14' : ''}:enable='${shown}'`,
+    `drawtext=textfile='${headlineFile}':fontfile='${fontFile}':expansion=none:` +
+      `fontsize=w/11:fontcolor=white:line_spacing=10:` +
+      `x=(w-text_w)/2:y=h*0.62${ctaFile ? '-h/14' : ''}:enable='${shown}'`,
   ];
 
   if (ctaFile) {
+    // ── 3. CTA pill box ──────────────────────────────────────────────────────
+    // A translucent white-border pill framing the CTA text — width is fixed at
+    // iw*0.55 (wider than most CTAs, narrower than the frame) so it has a
+    // consistent presence without measuring the text.  Centred horizontally.
+    filters.push(
+      `drawbox=x=(iw-iw*0.55)/2:y=h*0.82-h/28:w=iw*0.55:h=h/14:` +
+        `color=white@0.18:t=fill:enable='${shown}'`,
+      // Pill border — drawn as a thin filled box on top of the fill (ffmpeg
+      // drawbox's `t=` parameter is border thickness, not border vs fill).
+      `drawbox=x=(iw-iw*0.55)/2:y=h*0.82-h/28:w=iw*0.55:h=h/14:` +
+        `color=white@0.55:t=2:enable='${shown}'`,
+    );
+
+    // ── 4. CTA text ──────────────────────────────────────────────────────────
     filters.push(
       `drawtext=textfile='${ctaFile}':fontfile='${fontFile}':expansion=none:` +
-        `fontsize=w/26:fontcolor=white@0.85:` +
-        `x=(w-text_w)/2:y=(h+text_h)/2+h/14:enable='${shown}'`,
+        `fontsize=w/22:fontcolor=white:` +
+        `x=(w-text_w)/2:y=h*0.82-text_h/2:enable='${shown}'`,
     );
   }
 

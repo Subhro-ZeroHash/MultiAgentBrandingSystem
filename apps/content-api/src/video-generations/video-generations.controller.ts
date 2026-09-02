@@ -6,6 +6,7 @@ import {
   Headers,
   Param,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -50,6 +51,22 @@ export class VideoGenerationsController {
       idempotencyKey,
       req.user.id,
     );
+  }
+
+  @Get()
+  list(
+    @Query('brandId') brandId: string | undefined,
+    @Query('limit') limitStr: string | undefined,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    if (!brandId) {
+      throw new BadRequestException('brandId query param is required');
+    }
+    const limit = limitStr ? parseInt(limitStr, 10) : 20;
+    if (Number.isNaN(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('limit must be a number between 1 and 100');
+    }
+    return this.videoGenerations.listForBrand(brandId, req.user.id, limit);
   }
 
   @Get(':id')

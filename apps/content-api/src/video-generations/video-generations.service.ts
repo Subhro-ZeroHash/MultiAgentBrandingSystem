@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { eq, reapStalledVideoGenerationJob, schema, type Database } from '@bmas/db';
+import { asc, desc, eq, inArray, reapStalledVideoGenerationJob, schema, type Database } from '@bmas/db';
 import { QUEUES, type VideoGenerationRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
@@ -123,5 +123,107 @@ export class VideoGenerationsService {
     );
 
     return { ...job, assets: signed };
+  }
+
+  /**
+   * Returns a summary list of video generation jobs for `brandId`, newest-
+   * first, limited to `limit` rows.  Mirrors `GenerationsService.list`'s
+   * shape and reasoning: a list never needs the full job (no `copy` pack, no
+   * every-asset array) — just enough for a history thumbnail row.
+   *
+   * Each item carries a signed `videoUrl` and `thumbnailUrl` from the first
+   * `videoAssets` row for that job (null while still running or if the job
+   * failed before storage).
+   */
+  async listForBrand(
+    brandId: string,
+    ownerId: string,
+    limit: number,
+  ): Promise<
+    Array<{
+      id: string;
+      status: string;
+      stage: string | null;
+      error: string | null;
+      createdAt: Date;
+      finishedAt: Date | null;
+      durationSeconds: number | null;
+      productName: string | null;
+      videoUrl: string | null;
+      thumbnailUrl: string | null;
+      copyHeadline: string | null;
+    }>
+  > {
+    await this.assertBrandOwned(brandId, ownerId);
+
+    // Pull all jobs for the brand, newest-first.
+    const jobs = await this.db
+      .select()
+      .from(schema.videoGenerationJobs)
+      .where(eq(schema.videoGenerationJobs.brandId, brandId))
+      .orderBy(desc(schema.videoGenerationJobs.createdAt))
+      .limit(limit);
+
+    if (jobs.length === 0) return [];
+
+    // Fetch the first asset for each job in one query rather than N+1 selects.
+    const jobIds = jobs.map((j) => j.id);
+    const allAssets = await this.db
+      .select()
+      .from(schema.videoAssets)
+      .where(
+        jobIds.length === 1
+          ? eq(schema.videoAssets.jobId, jobIds[0]!)
+          : inArray(schema.videoAssets.jobId, jobIds),
+      )
+      .orderBy(asc(schema.videoAssets.createdAt));
+
+    // Group assets by jobId and keep only the first.
+    const assetByJob = new Map(
+      allAssets.reduce<[string, (typeof allAssets)[0]][]>((acc, asset) => {
+        if (!acc.some(([id]) => id === asset.jobId)) acc.push([asset.jobId, asset]);
+        return acc;
+      }, []),
+    );
+
+    // Fetch product names in one query.
+    const productIds = [
+      ...new Set(jobs.map((j) => j.productId).filter((id): id is string => Boolean(id))),
+    ];
+    const products =
+      productIds.length === 0
+        ? []
+        : await this.db
+            .select({ id: schema.products.id, name: schema.products.name })
+            .from(schema.products)
+            .where(
+              productIds.length === 1
+                ? eq(schema.products.id, productIds[0]!)
+                : inArray(schema.products.id, productIds),
+            );
+    const productNameById = new Map(products.map((p) => [p.id, p.name]));
+
+    return Promise.all(
+      jobs.map(async (job) => {
+        const asset = assetByJob.get(job.id);
+        const copy = job.copy as { headline?: string } | null;
+        return {
+          id: job.id,
+          status: job.status,
+          stage: job.stage,
+          error: job.error,
+          createdAt: job.createdAt,
+          finishedAt: job.finishedAt ?? null,
+          durationSeconds: asset?.durationSeconds ?? null,
+          productName: job.productId ? (productNameById.get(job.productId) ?? null) : null,
+          videoUrl: asset ? await this.assetUrls.sign(asset.storageKey) : null,
+          thumbnailUrl:
+            asset?.thumbnailStorageKey
+              ? await this.assetUrls.sign(asset.thumbnailStorageKey)
+              : null,
+          copyHeadline: copy?.headline ?? null,
+        };
+      }),
+    );
   }
 }
