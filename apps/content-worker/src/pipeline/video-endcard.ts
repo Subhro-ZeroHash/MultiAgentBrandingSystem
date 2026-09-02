@@ -100,7 +100,9 @@ function run(command: string, args: string[]): Promise<void> {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code === 0) return resolve();
-      reject(new Error(`${command} exited ${code}: ${stderr.trim().split('\n').slice(-5).join(' ')}`));
+      reject(
+        new Error(`${command} exited ${code}: ${stderr.trim().split('\n').slice(-5).join(' ')}`),
+      );
     });
   });
 }
