@@ -72,6 +72,13 @@ const envSchema = z.object({
    *  no end card (see `burnEndCard`), and failing the whole worker's boot
    *  over a cosmetic dependency would be the worse trade. */
   VIDEO_ENDCARD_FONT: z.string().default('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+
+  /** Headline weight — bold reads as an ad headline at the end card's large
+   *  size, where the regular weight (used above for the CTA line) looks thin.
+   *  Same not-validated-at-startup reasoning as VIDEO_ENDCARD_FONT. */
+  VIDEO_ENDCARD_FONT_BOLD: z
+    .string()
+    .default('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'),
 });
 
 export interface WorkerContext {
@@ -85,6 +92,7 @@ export interface WorkerContext {
   authSecret: string;
   encryptionKey: string;
   videoEndCardFont: string;
+  videoEndCardFontBold: string;
 }
 
 export function createContext(): WorkerContext {
@@ -125,5 +133,6 @@ export function createContext(): WorkerContext {
     authSecret: env.AUTH_SECRET,
     encryptionKey: env.ENCRYPTION_KEY,
     videoEndCardFont: env.VIDEO_ENDCARD_FONT,
+    videoEndCardFontBold: env.VIDEO_ENDCARD_FONT_BOLD,
   };
 }

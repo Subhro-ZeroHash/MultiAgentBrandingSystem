@@ -198,6 +198,12 @@ export class GeminiVideoAdapter implements VideoGenService {
           resolution: resolved.resolution,
           durationSeconds: duration,
           numberOfVideos: 1,
+          // `composeVideoBrief` deliberately never asks for on-screen text
+          // (see its own doc comment) since this pipeline has no vision-QA
+          // pass to catch the model getting it wrong — but an unprompted
+          // model can still render text of its own accord. This tells Veo
+          // not to, rather than just not asking.
+          negativePrompt: 'on-screen text, captions, subtitles, watermark, logo overlay',
           ...(req.lastFrame ? { lastFrame: toImagePart(req.lastFrame) } : {}),
           ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
         },

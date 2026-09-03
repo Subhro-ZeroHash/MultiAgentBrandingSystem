@@ -20,10 +20,14 @@ echo "==> Applying any new database migrations..."
 pnpm db:migrate
 
 echo "==> Installing / reloading nginx config..."
-# nginx/bmas.conf sets proxy_read_timeout 150s on /api/social/post-reel so the
-# 120 s Instagram Reel transcoding poll isn't cut short by nginx's 60 s default.
-sudo cp nginx/bmas.conf /etc/nginx/sites-available/bmas
-sudo ln -sf /etc/nginx/sites-available/bmas /etc/nginx/sites-enabled/bmas
+# One file per subdomain (content-api/geo-api/web all share this box but
+# route by server_name, not by path) — mirrors the box's actual Certbot
+# layout, not a made-up single-domain topology. content-api.conf carries the
+# proxy_read_timeout 180s that keeps the ~120s Instagram Reel transcoding
+# poll from getting cut short by nginx's 60s default.
+for site in content-api geo-api web; do
+  sudo cp "nginx/${site}.conf" "/etc/nginx/sites-available/${site}.conf"
+done
 sudo nginx -t && sudo systemctl reload nginx
 
 echo "==> Restarting all services..."

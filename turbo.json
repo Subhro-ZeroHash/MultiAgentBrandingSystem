@@ -23,6 +23,7 @@
     "VIDEO_PROVIDER_PRIMARY",
     "VIDEO_MODEL_*",
     "VIDEO_ENDCARD_FONT",
+    "VIDEO_ENDCARD_FONT_BOLD",
     "GEO_*",
     "S3_*",
     "R2_*"

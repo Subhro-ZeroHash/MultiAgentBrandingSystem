@@ -1,5 +1,13 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { asc, desc, eq, inArray, reapStalledVideoGenerationJob, schema, type Database } from '@bmas/db';
+import {
+  asc,
+  desc,
+  eq,
+  inArray,
+  reapStalledVideoGenerationJob,
+  schema,
+  type Database,
+} from '@bmas/db';
 import { QUEUES, type VideoGenerationRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
@@ -217,10 +225,9 @@ export class VideoGenerationsService {
           durationSeconds: asset?.durationSeconds ?? null,
           productName: job.productId ? (productNameById.get(job.productId) ?? null) : null,
           videoUrl: asset ? await this.assetUrls.sign(asset.storageKey) : null,
-          thumbnailUrl:
-            asset?.thumbnailStorageKey
-              ? await this.assetUrls.sign(asset.thumbnailStorageKey)
-              : null,
+          thumbnailUrl: asset?.thumbnailStorageKey
+            ? await this.assetUrls.sign(asset.thumbnailStorageKey)
+            : null,
           copyHeadline: copy?.headline ?? null,
         };
       }),

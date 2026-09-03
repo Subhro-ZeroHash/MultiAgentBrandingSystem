@@ -19,12 +19,12 @@ import { join } from 'node:path';
  * of the clip the provider already returned cannot desync.
  *
  * Visual design — advertising-grade end card:
- *   • Bottom-anchored gradient scrim: transparent above, rich-black below,
- *     so the product stays visible in the upper frame while text reads cleanly
- *     at the bottom — the same composition every modern Reel ad uses.
- *   • Headline at w/11 (up from w/14): large enough to land on a mobile
- *     screen without leaning in, with a two-pixel drop-shadow for legibility
- *     over any background colour the video model may produce.
+ *   • Bottom-anchored scrim (58%-100% of frame height): the product stays
+ *     visible above while every line of text — headline and CTA alike —
+ *     sits inside the same solid dark band, so nothing is fighting a bright
+ *     or busy background for contrast.
+ *   • Headline in the bold weight at w/11: large enough to land on a mobile
+ *     screen without leaning in, with a two-pixel drop-shadow for legibility.
  *   • CTA in a pill-shaped box: distinct from the headline, signals
  *     interactivity (even on a static screen), and gives the line its own
  *     visual weight without needing a second font.
@@ -114,6 +114,11 @@ function run(command: string, args: string[]): Promise<void> {
   });
 }
 
+/** Top of the scrim, as a fraction of frame height. Headline and CTA are both
+ *  positioned relative to this so they always land inside the dark band
+ *  regardless of how tall the wrapped text turns out to be. */
+const SCRIM_TOP = 0.58;
+
 /**
  * Builds the filter chain. Split out from `addEndCard` so the string can be
  * asserted in a test without spawning ffmpeg or needing a real clip.
@@ -130,66 +135,85 @@ function run(command: string, args: string[]): Promise<void> {
  * ever meant as a template, so expansion is turned off outright rather than
  * escaped around.
  *
+ * Headline and CTA are positioned with drawtext's own `text_h`/`text_w`
+ * rather than hand-picked percentages, so a one-line headline centers
+ * differently than a two-line one instead of both using the same fixed slot
+ * — the earlier fixed-percentage layout put a two-line headline half inside
+ * a lighter, low-opacity band and half in the solid one, which is what made
+ * it hard to read against a busy background.
+ *
  * Visual filter stack (applied bottom → top):
- *   1. Gradient scrim  — bottom half of frame fades to near-black.
- *   2. Headline text   — large, centred, with drop-shadow.
+ *   1. Scrim           — solid dark band across the bottom of the frame.
+ *   2. Headline text   — large, bold, centred within the scrim, with drop-shadow.
  *   3. CTA pill box    — rounded-rect drawn behind the CTA text.
  *   4. CTA text        — smaller, centred inside the pill.
  */
 export function buildEndCardFilter(
   headlineFile: string,
   ctaFile: string | null,
-  fontFile: string,
+  headlineFontFile: string,
+  ctaFontFile: string,
   startSeconds: number,
 ): string {
   // Every element is gated on the same `enable` window, so nothing is drawn
   // until the ad reaches its closing beat.
   const shown = `between(t,${startSeconds.toFixed(3)},99999)`;
 
+  // With a CTA, the headline sits in the upper part of the scrim (centred on
+  // 70% of frame height) so the pill has its own clear space below it.
+  // Without one, the headline is centred in the scrim as a whole.
+  const headlineY = ctaFile ? '0.70*h-text_h/2' : `(${1 + SCRIM_TOP}*h-text_h)/2`;
+
   const filters = [
-    // ── 1. Gradient scrim ────────────────────────────────────────────────────
-    // A smooth black-fade over the bottom half keeps the product shot visible
-    // above while giving the text a consistently dark backdrop regardless of
-    // whatever colour the model placed there.  Two overlapping semi-transparent
-    // boxes approximate a gradient with no extra filter dependencies:
-    //   • upper box: 25 % of height at 20 % opacity — a soft entry
-    //   • lower box: 75 % of height at 65 % opacity — the solid read zone
-    `drawbox=x=0:y=h/2:w=iw:h=h/4:color=black@0.20:t=fill:enable='${shown}'`,
-    `drawbox=x=0:y=3*h/4:w=iw:h=h/4:color=black@0.65:t=fill:enable='${shown}'`,
+    // ── 1. Scrim ─────────────────────────────────────────────────────────────
+    // One solid band, not a two-step gradient: it keeps the product shot
+    // visible above while guaranteeing every line of text below it sits on
+    // the same dark backdrop, whatever colour the model placed there.
+    //
+    // `iw`/`ih` here, not `w`/`h`: in drawtext, `w`/`h` are the frame's own
+    // size, but in drawbox they mean the box's own width/height — sizing a
+    // drawbox box off `h` when `h` is what's being computed is circular and
+    // fails filter-graph init outright ("Error when evaluating the
+    // expression"), taking every filter after it down with it. Confirmed
+    // against this box's ffmpeg 6.1.1: `y=0.58*h` errors, `y=0.58*ih`
+    // doesn't. Every drawbox box below uses `iw`/`ih` for the same reason;
+    // the drawtext boxes correctly keep `w`/`h`.
+    `drawbox=x=0:y=${SCRIM_TOP}*ih:w=iw:h=${1 - SCRIM_TOP}*ih:color=black@0.60:t=fill:enable='${shown}'`,
 
     // ── 2. Headline ──────────────────────────────────────────────────────────
     // Drop-shadow pair (shadow drawn first, then the white copy on top) gives
-    // the text lift against any background the provider renders.
-    `drawtext=textfile='${headlineFile}':fontfile='${fontFile}':expansion=none:` +
-      // w/11 is larger than the old w/14 — counterintuitively the divisor is
-      // smaller; larger divisor = smaller text.  Verified readable at 1080 px.
+    // the text lift against any background the provider renders. Bold face
+    // reads as an ad headline rather than body copy at this size.
+    `drawtext=textfile='${headlineFile}':fontfile='${headlineFontFile}':expansion=none:` +
       `fontsize=w/11:fontcolor=black@0.55:line_spacing=10:` +
       // Shadow: offset 2 px down-right, 55 % opacity
-      `x=(w-text_w)/2+2:y=h*0.62+2${ctaFile ? '-h/14' : ''}:enable='${shown}'`,
-    `drawtext=textfile='${headlineFile}':fontfile='${fontFile}':expansion=none:` +
+      `x=(w-text_w)/2+2:y=${headlineY}+2:enable='${shown}'`,
+    `drawtext=textfile='${headlineFile}':fontfile='${headlineFontFile}':expansion=none:` +
       `fontsize=w/11:fontcolor=white:line_spacing=10:` +
-      `x=(w-text_w)/2:y=h*0.62${ctaFile ? '-h/14' : ''}:enable='${shown}'`,
+      `x=(w-text_w)/2:y=${headlineY}:enable='${shown}'`,
   ];
 
   if (ctaFile) {
     // ── 3. CTA pill box ──────────────────────────────────────────────────────
     // A translucent white-border pill framing the CTA text — width is fixed at
     // iw*0.55 (wider than most CTAs, narrower than the frame) so it has a
-    // consistent presence without measuring the text.  Centred horizontally.
+    // consistent presence without measuring the text. Centred horizontally,
+    // and vertically centred at 90% of frame height — inside the scrim, with
+    // clearance below the headline slot above.
     filters.push(
-      `drawbox=x=(iw-iw*0.55)/2:y=h*0.82-h/28:w=iw*0.55:h=h/14:` +
+      `drawbox=x=(iw-iw*0.55)/2:y=0.90*ih-ih/28:w=iw*0.55:h=ih/14:` +
         `color=white@0.18:t=fill:enable='${shown}'`,
       // Pill border — drawn as a thin filled box on top of the fill (ffmpeg
       // drawbox's `t=` parameter is border thickness, not border vs fill).
-      `drawbox=x=(iw-iw*0.55)/2:y=h*0.82-h/28:w=iw*0.55:h=h/14:` +
+      `drawbox=x=(iw-iw*0.55)/2:y=0.90*ih-ih/28:w=iw*0.55:h=ih/14:` +
         `color=white@0.55:t=2:enable='${shown}'`,
     );
 
     // ── 4. CTA text ──────────────────────────────────────────────────────────
     filters.push(
-      `drawtext=textfile='${ctaFile}':fontfile='${fontFile}':expansion=none:` +
+      `drawtext=textfile='${ctaFile}':fontfile='${ctaFontFile}':expansion=none:` +
         `fontsize=w/22:fontcolor=white:` +
-        `x=(w-text_w)/2:y=h*0.82-text_h/2:enable='${shown}'`,
+        `x=(w-text_w)/2:y=0.90*h-text_h/2:enable='${shown}'`,
     );
   }
 
@@ -205,7 +229,8 @@ export async function addEndCard(
   video: Buffer,
   text: EndCardText,
   durationSeconds: number,
-  fontFile: string,
+  headlineFontFile: string,
+  ctaFontFile: string,
 ): Promise<Buffer> {
   const headline = wrapText(text.headline).join('\n');
   if (!headline) throw new Error('end card has no headline text to draw');
@@ -233,7 +258,7 @@ export async function addEndCard(
       '-i',
       input,
       '-vf',
-      buildEndCardFilter(headlineFile, ctaFile, fontFile, start),
+      buildEndCardFilter(headlineFile, ctaFile, headlineFontFile, ctaFontFile, start),
       // Audio copied untouched — the filter is video-only, and re-encoding it
       // would be spend for no change. `-movflags +faststart` puts the moov
       // atom first so Instagram can begin reading before the whole file

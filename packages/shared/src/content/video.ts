@@ -31,9 +31,11 @@ export const videoGenerationRequestSchema = z.object({
   ctaText: z.string().max(40).optional(),
   /** FR-2.4-equivalent escape hatch, same role it plays for images. */
   extraInstructions: z.string().max(500).optional(),
-  /** LTX's own ceiling. Defaults to 6s — long enough to read as a clip
-   *  rather than a stinger, short enough to stay cheap while this is new. */
-  durationSeconds: z.number().int().min(1).max(20).default(6),
+  /** LTX's own ceiling is 20s. Defaults to 10s — long enough for the end
+   *  card to hold its message without eating most of the clip. Falls back to
+   *  Veo's fixed 8s option (see `nearestVeoDuration`) when LTX is
+   *  unavailable, since Veo has no 10s tier of its own. */
+  durationSeconds: z.number().int().min(1).max(20).default(10),
   /** A vertical Reel/Story frame — the one shape a video from this pipeline
    *  is ever asked for, matching `OUTPUT_FORMAT_DIMENSIONS.story_reel_cover`. */
   width: z.number().int().positive().default(1080),

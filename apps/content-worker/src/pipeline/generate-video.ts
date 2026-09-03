@@ -286,6 +286,7 @@ async function burnEndCard(
       video,
       { headline: options.headline, cta: options.cta },
       options.durationSeconds,
+      ctx.videoEndCardFontBold,
       ctx.videoEndCardFont,
     );
   } catch (error) {
