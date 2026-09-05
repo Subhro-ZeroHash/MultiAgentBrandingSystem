@@ -1,27 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { AiRegistry } from './registry.js';
 
-describe('AiRegistry.videoGeneratorFallbackChain', () => {
-  it('defaults to LTX primary, Gemini fallback', () => {
-    const chain = new AiRegistry({}).videoGeneratorFallbackChain();
-    expect(chain.map((service) => service.provider)).toEqual(['ltx', 'google']);
+describe('AiRegistry.videoGenerator', () => {
+  it('defaults to the configured primary with no argument', () => {
+    expect(new AiRegistry({}).videoGenerator().provider).toBe('ltx');
+    expect(new AiRegistry({ videoProviderPrimary: 'google' }).videoGenerator().provider).toBe(
+      'google',
+    );
   });
 
-  it('puts the configured primary first, Gemini still second', () => {
-    // Only real alternative to the ltx default today; still exercises "the
-    // configured primary" rather than a hardcoded 'ltx', so this doesn't
-    // silently stop meaning anything if the default ever changes.
-    const chain = new AiRegistry({ videoProviderPrimary: 'ltx' }).videoGeneratorFallbackChain();
-    expect(chain.map((service) => service.provider)).toEqual(['ltx', 'google']);
+  it('an explicit provider argument overrides the configured primary', () => {
+    const registry = new AiRegistry({ videoProviderPrimary: 'ltx' });
+    expect(registry.videoGenerator('google').provider).toBe('google');
+    expect(registry.videoGenerator('ltx').provider).toBe('ltx');
   });
 
-  it('never duplicates Gemini as its own fallback', () => {
-    const chain = new AiRegistry({ videoProviderPrimary: 'google' }).videoGeneratorFallbackChain();
-    expect(chain.map((service) => service.provider)).toEqual(['google']);
-  });
-
-  it('never escalates a stub-configured run to a real, billed provider', () => {
-    const chain = new AiRegistry({ videoProviderPrimary: 'stub' }).videoGeneratorFallbackChain();
-    expect(chain.map((service) => service.provider)).toEqual(['stub']);
+  it('falls back to ltx with no config and no argument at all', () => {
+    expect(new AiRegistry({}).videoGenerator().provider).toBe('ltx');
   });
 });

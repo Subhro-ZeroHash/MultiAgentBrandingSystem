@@ -6,14 +6,16 @@ import {
   type GeneratedVideo,
   type ProviderResult,
   type VideoGenerateRequest,
+  type VideoProviderName,
 } from '@bmas/ai';
-import { and, eq, ne, schema, sql, type Brand } from '@bmas/db';
+import { and, asc, desc, eq, ne, schema, sql, type Brand } from '@bmas/db';
 import type {
   CopyPack,
   CostEvent,
   CreativeRequest,
   VideoGenerationJob,
   VideoGenerationRequest,
+  VideoMode,
 } from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
 import type { WorkerContext } from '../context.js';
@@ -71,89 +73,100 @@ async function recordCost(
 }
 
 /**
- * Tries each provider in `ctx.ai.videoGeneratorFallbackChain()` in order —
- * LTX first, then Gemini's Veo models — retrying transient failures on the
- * same provider before moving to the next one. Same "sequential try, not
- * simultaneous fan-out" shape as festival-calendar.ts's `corroborateEvent`:
- * LTX is a brand-new integration with no uptime track record, so a bad day
- * on its side should degrade to a slower/pricier provider rather than fail
- * the job outright, and there's no benefit to this codebase's "two sources
- * corroborate" reasoning (used for search) — a video either renders or it
- * doesn't, there's nothing for a second provider to confirm.
- *
- * Every provider in the chain gets identical resolution/duration inputs; each
- * adapter is responsible for snapping them to whatever it actually supports
- * (see `nearestVideoResolution` in ltx.video.ts and `nearestVeoResolution` in
- * gemini.video.ts), so a fallback never silently renders at the wrong size.
+ * `videoMode` is the one thing that decides which provider renders a job —
+ * two different products, not a quality tier with a fallback between them.
+ * `cinematic_broll` needs LTX's image-to-video conditioning and ships its
+ * output untouched; `advertisement` needs Veo's stronger prompt adherence
+ * for on-brief energy and gets the closing message burned in afterward. See
+ * `videoModeSchema`'s doc comment in packages/shared for the full reasoning.
  */
-async function generateVideoWithFallback(
+const PROVIDER_FOR_MODE: Record<VideoMode, VideoProviderName> = {
+  cinematic_broll: 'ltx',
+  advertisement: 'google',
+};
+
+/**
+ * Renders on the one provider `videoMode` maps to, retrying transient
+ * failures on that provider only. Deliberately no fallback to the other
+ * provider on exhaustion: unlike the old single-primary pipeline, a mode is
+ * a caller's explicit choice of *product* (raw footage vs. a finished ad),
+ * and silently handing back the other one under the chosen label would be
+ * wrong regardless of which one still worked.
+ */
+async function generateVideoForMode(
   ctx: WorkerContext,
+  mode: VideoMode,
   request: VideoGenerateRequest,
   jobId: string,
   brandId: string,
 ): Promise<ProviderResult<GeneratedVideo>> {
-  const chain = ctx.ai.videoGeneratorFallbackChain();
-  let lastError: unknown;
-
-  for (const [index, generator] of chain.entries()) {
-    try {
-      return await withRetry(
-        () =>
-          withTimeout(
-            generator.generate(request, { referenceId: jobId, brandId }),
-            VIDEO_TIMEOUT_MS,
-            `video:generate (${generator.provider})`,
-          ),
-        {
-          onRetry: ({ attempt, delayMs, error }) =>
-            console.warn(
-              `[content:video] job ${jobId}: ${generator.provider} attempt ${attempt} failed, retrying in ${delayMs}ms — ${describeError(error)}`,
-            ),
-        },
-      );
-    } catch (error) {
-      lastError = error;
-      const hasMore = index < chain.length - 1;
-      console.warn(
-        `[content:video] job ${jobId}: ${generator.provider} failed${hasMore ? ', falling back to the next provider' : ' — no more providers configured'} — ${describeError(error)}`,
-      );
-    }
-  }
-
-  throw lastError;
+  const generator = ctx.ai.videoGenerator(PROVIDER_FOR_MODE[mode]);
+  return withRetry(
+    () =>
+      withTimeout(
+        generator.generate(request, { referenceId: jobId, brandId }),
+        VIDEO_TIMEOUT_MS,
+        `video:generate (${generator.provider})`,
+      ),
+    {
+      onRetry: ({ attempt, delayMs, error }) =>
+        console.warn(
+          `[content:video] job ${jobId}: ${generator.provider} attempt ${attempt} failed, retrying in ${delayMs}ms — ${describeError(error)}`,
+        ),
+    },
+  );
 }
 
-/**
- * The product's primary photo, as a video conditioning frame — LTX's
- * `image_uri` takes exactly one image, so only the primary photo is used
- * (never every product photo the way image generation conditions on all of
- * them). Best-effort: a product with no photos yet generates text-to-video
- * rather than failing the job — the same "a missing reference is a degraded
- * creative, not a failed one" reasoning `loadBrandReferences` uses for images.
- */
-async function loadFirstFrame(
+type ConditioningFrame = { data: Buffer; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' };
+
+async function loadFrame(
   ctx: WorkerContext,
   jobId: string,
-  productId: string,
-): Promise<{ data: Buffer; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' } | undefined> {
-  const [row] = await ctx.db
-    .select()
-    .from(schema.productImages)
-    .where(
-      and(eq(schema.productImages.productId, productId), eq(schema.productImages.isPrimary, true)),
-    )
-    .limit(1);
-  if (!row) return undefined;
-
+  label: 'first' | 'last',
+  row: { storageKey: string; cleanedStorageKey: string | null },
+): Promise<ConditioningFrame | undefined> {
   try {
     const key = row.cleanedStorageKey ?? row.storageKey;
     return { data: await ctx.storage.get(key), mediaType: mediaTypeFor(key) };
   } catch (error) {
     console.warn(
-      `[content:video] job ${jobId}: could not load product ${productId}'s primary photo, generating text-to-video instead: ${describeError(error)}`,
+      `[content:video] job ${jobId}: could not load the ${label} conditioning frame — ${describeError(error)}`,
     );
     return undefined;
   }
+}
+
+/**
+ * The product's photos, as video conditioning frames: the primary photo as
+ * `firstFrame`, and — when a product has more than one — a second, distinct
+ * photo as `lastFrame`, so both providers' image-to-video path has an actual
+ * start and end to interpolate between instead of just one static reference.
+ * Never every photo the way image generation conditions on all of them: both
+ * LTX and Veo's APIs take exactly two image slots, not an arbitrary list.
+ *
+ * Best-effort: a product with no photos yet generates text-to-video rather
+ * than failing the job — the same "a missing reference is a degraded
+ * creative, not a failed one" reasoning `loadBrandReferences` uses for images.
+ */
+async function loadConditioningFrames(
+  ctx: WorkerContext,
+  jobId: string,
+  productId: string,
+): Promise<{ firstFrame?: ConditioningFrame; lastFrame?: ConditioningFrame }> {
+  const rows = await ctx.db
+    .select()
+    .from(schema.productImages)
+    .where(eq(schema.productImages.productId, productId))
+    .orderBy(desc(schema.productImages.isPrimary), asc(schema.productImages.createdAt))
+    .limit(2);
+  if (rows.length === 0) return {};
+
+  const [firstFrame, lastRow] = await Promise.all([
+    loadFrame(ctx, jobId, 'first', rows[0]!),
+    rows[1] ? loadFrame(ctx, jobId, 'last', rows[1]) : Promise.resolve(undefined),
+  ]);
+
+  return { firstFrame, lastFrame: lastRow };
 }
 
 /**
@@ -376,17 +389,19 @@ export async function runVideoGeneration(
 
   try {
     await setStage('brief');
-    const [prompt, firstFrame] = await Promise.all([
+    const [prompt, frames] = await Promise.all([
       composeVideoBrief(ctx, brand, request),
-      loadFirstFrame(ctx, job.jobId, request.productId),
+      loadConditioningFrames(ctx, job.jobId, request.productId),
     ]);
 
     await setStage('generate');
-    const { value: video, cost } = await generateVideoWithFallback(
+    const { value: video, cost } = await generateVideoForMode(
       ctx,
+      request.videoMode,
       {
         prompt,
-        ...(firstFrame ? { firstFrame } : {}),
+        ...(frames.firstFrame ? { firstFrame: frames.firstFrame } : {}),
+        ...(frames.lastFrame ? { lastFrame: frames.lastFrame } : {}),
         width: request.width,
         height: request.height,
         durationSeconds: request.durationSeconds,
@@ -404,19 +419,22 @@ export async function runVideoGeneration(
     await setStage('copy');
     const copy = await generateVideoCopy(ctx, brand, request, job.jobId);
 
-    // The clip's closing message. Prefers what the user typed over what the
-    // model wrote: `headlineText` is the one line they chose themselves, and
-    // silently replacing it with a generated alternative would be the app
-    // overruling them.
+    // `cinematic_broll` ships exactly what LTX returned — no end card, no
+    // pixel touched. Only `advertisement` gets the closing message burned in,
+    // preferring what the user typed over what the model wrote:
+    // `headlineText` is the one line they chose themselves, and silently
+    // replacing it with a generated alternative would be the app overruling
+    // them.
     const endCardHeadline = request.headlineText?.trim() || copy?.headline;
-    const finalVideo = endCardHeadline
-      ? await burnEndCard(ctx, video.data, {
-          headline: endCardHeadline,
-          cta: request.ctaText?.trim() || copy?.cta,
-          durationSeconds: video.durationSeconds,
-          jobId: job.jobId,
-        })
-      : video.data;
+    const finalVideo =
+      request.videoMode === 'advertisement' && endCardHeadline
+        ? await burnEndCard(ctx, video.data, {
+            headline: endCardHeadline,
+            cta: request.ctaText?.trim() || copy?.cta,
+            durationSeconds: video.durationSeconds,
+            jobId: job.jobId,
+          })
+        : video.data;
 
     await setStage('storage');
     const key = `brands/${brand.id}/videos/${job.jobId}/video-1.mp4`;
