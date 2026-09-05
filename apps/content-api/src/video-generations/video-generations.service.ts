@@ -8,7 +8,7 @@ import {
   schema,
   type Database,
 } from '@bmas/db';
-import { QUEUES, type VideoGenerationRequest } from '@bmas/shared';
+import { QUEUES, type CopyPack, type VideoGenerationRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
 import { ASSET_URLS, DATABASE, VIDEO_GENERATION_QUEUE } from '../core/core.module.js';
@@ -135,9 +135,11 @@ export class VideoGenerationsService {
 
   /**
    * Returns a summary list of video generation jobs for `brandId`, newest-
-   * first, limited to `limit` rows.  Mirrors `GenerationsService.list`'s
-   * shape and reasoning: a list never needs the full job (no `copy` pack, no
-   * every-asset array) — just enough for a history thumbnail row.
+   * first, limited to `limit` rows. Mirrors `GenerationsService.list`'s shape
+   * (no every-asset array) but does carry the full `copy` pack unlike that
+   * one: tapping a history card jumps straight to the posting screen, and a
+   * headline alone there would drop the caption body and hashtags a fresh
+   * generation gets.
    *
    * Each item carries a signed `videoUrl` and `thumbnailUrl` from the first
    * `videoAssets` row for that job (null while still running or if the job
@@ -159,7 +161,7 @@ export class VideoGenerationsService {
       productName: string | null;
       videoUrl: string | null;
       thumbnailUrl: string | null;
-      copyHeadline: string | null;
+      copy: CopyPack | null;
     }>
   > {
     await this.assertBrandOwned(brandId, ownerId);
@@ -214,7 +216,7 @@ export class VideoGenerationsService {
     return Promise.all(
       jobs.map(async (job) => {
         const asset = assetByJob.get(job.id);
-        const copy = job.copy as { headline?: string } | null;
+        const copy = job.copy as CopyPack | null;
         return {
           id: job.id,
           status: job.status,
@@ -228,7 +230,7 @@ export class VideoGenerationsService {
           thumbnailUrl: asset?.thumbnailStorageKey
             ? await this.assetUrls.sign(asset.thumbnailStorageKey)
             : null,
-          copyHeadline: copy?.headline ?? null,
+          copy,
         };
       }),
     );
