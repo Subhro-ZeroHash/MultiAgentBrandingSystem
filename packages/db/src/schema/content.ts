@@ -718,6 +718,37 @@ export const pushTokens = content.table(
   ],
 );
 
+/** One row per push `notifyBrandOwner` has ever sent — the receipt trail
+ *  `sendExpoPush`'s own doc comment says doesn't exist. Written regardless of
+ *  whether the owner has a registered device: the History screen this backs
+ *  is about what happened, not about delivery success, so an owner with push
+ *  disabled still sees the same feed everyone else does. */
+export const notificationHistory = content.table(
+  'notification_history',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    /** Derived from `data` at send time (`data.type`, or 'scheduled-post' when
+     *  only `data.scheduledPostId` is present) — not a separate argument, so
+     *  none of the existing call sites need to change to get one. */
+    type: text('type').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    /** Same payload the push itself carried, so a tapped history row routes
+     *  through the identical mapping a tapped OS notification does. */
+    data: jsonb('data').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('notification_history_owner_created_idx').on(t.ownerId, t.createdAt)],
+);
+
 export const trendResearchStatus = content.enum('trend_research_status', [
   'queued',
   'running',

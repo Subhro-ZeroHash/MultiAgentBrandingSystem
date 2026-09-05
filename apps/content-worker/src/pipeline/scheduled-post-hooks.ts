@@ -1,5 +1,5 @@
 import { and, eq, schema, type Database } from '@bmas/db';
-import { pushTokensForOwner, sendExpoPush } from './push.js';
+import { notifyBrandOwner } from './push.js';
 
 /** Instagram's hard limit on a caption. Meta rejects the whole post over this,
  *  so it is a publish-time failure rather than a truncation on their side. */
@@ -143,7 +143,7 @@ export async function onGenerationSucceeded(db: Database, jobId: string): Promis
     .returning();
   if (!updated) return;
 
-  await sendExpoPush(await pushTokensForOwner(db, ownerId), {
+  await notifyBrandOwner(db, post.brandId, {
     title: 'A post is ready to review',
     body: `Your post for ${productName} is ready — review it before it goes out.`,
     data: { scheduledPostId: post.id },
@@ -179,14 +179,7 @@ export async function onGenerationFailed(
     .returning();
   if (!updated) return;
 
-  const [brand] = await db
-    .select({ ownerId: schema.brands.ownerId })
-    .from(schema.brands)
-    .where(eq(schema.brands.id, post.brandId))
-    .limit(1);
-  if (!brand) return;
-
-  await sendExpoPush(await pushTokensForOwner(db, brand.ownerId), {
+  await notifyBrandOwner(db, post.brandId, {
     title: 'A scheduled post failed to generate',
     body: 'Tap to review and regenerate it before its time slot passes.',
     data: { scheduledPostId: post.id },

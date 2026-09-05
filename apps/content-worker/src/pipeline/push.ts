@@ -72,6 +72,16 @@ export async function pushTokensForOwner(db: Database, ownerId: string): Promise
   return rows.map((row) => row.token);
 }
 
+/** 'scheduled-post' is inferred rather than sent explicitly: the four
+ *  scheduled-post call sites have always shipped a bare `scheduledPostId`
+ *  with no `type` (see `notificationTarget` on the client), and adding one
+ *  now would be a second thing every existing caller has to agree on. */
+function notificationTypeFor(data?: Record<string, unknown>): string {
+  if (typeof data?.type === 'string') return data.type;
+  if (data && 'scheduledPostId' in data) return 'scheduled-post';
+  return 'general';
+}
+
 /**
  * Looks up an owner and notifies them in one step.
  *
@@ -79,6 +89,13 @@ export async function pushTokensForOwner(db: Database, ownerId: string): Promise
  * immediately after a committed transaction, and a push failure there must not
  * unwind work that already succeeded. Callers that already hold the ownerId
  * should use `sendExpoPush` with `pushTokensForOwner` directly.
+ *
+ * Also the one place a `notification_history` row is written — every caller
+ * routes through here (nothing calls `sendExpoPush` directly any more), so
+ * the History screen sees every push ever sent without each pipeline having
+ * to remember to record its own. Written even for an owner with zero
+ * registered devices: the history is about what happened, not about whether
+ * a push happened to land.
  */
 export async function notifyBrandOwner(
   db: Database,
@@ -94,6 +111,14 @@ export async function notifyBrandOwner(
     if (!brand) return;
 
     await sendExpoPush(await pushTokensForOwner(db, brand.ownerId), message);
+    await db.insert(schema.notificationHistory).values({
+      ownerId: brand.ownerId,
+      brandId,
+      type: notificationTypeFor(message.data),
+      title: message.title,
+      body: message.body,
+      data: message.data ?? null,
+    });
   } catch (error) {
     console.error(`[push] could not notify owner of brand ${brandId}:`, error);
   }

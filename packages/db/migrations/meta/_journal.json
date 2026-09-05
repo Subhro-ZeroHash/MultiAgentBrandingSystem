@@ -232,6 +232,13 @@
       "when": 1788343812858,
       "tag": "0032_acoustic_rick_jones",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788640067436,
+      "tag": "0033_real_black_bolt",
+      "breakpoints": true
     }
   ]
 }

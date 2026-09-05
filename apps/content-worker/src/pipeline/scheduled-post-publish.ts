@@ -5,12 +5,11 @@ import {
   inArray,
   recordContextSnapshot,
   schema,
-  type Database,
 } from '@bmas/db';
 import type { ScheduledPostPublishJob } from '@bmas/shared';
 import jwt from 'jsonwebtoken';
 import type { WorkerContext } from '../context.js';
-import { sendExpoPush } from './push.js';
+import { notifyBrandOwner } from './push.js';
 
 /** Mints a token for the post's actual owner rather than a fixed dev id, so
  *  the call passes content-api's JwtAuthGuard as whichever user owns this
@@ -18,29 +17,6 @@ import { sendExpoPush } from './push.js';
  *  TTL: this token only needs to survive the one fetch below. */
 function mintServiceToken(ctx: WorkerContext, ownerId: string): string {
   return jwt.sign({ sub: ownerId }, ctx.authSecret, { expiresIn: '5m' });
-}
-
-async function notifyOwner(
-  db: Database,
-  brandId: string,
-  message: { title: string; body: string; data?: Record<string, unknown> },
-): Promise<void> {
-  const [brand] = await db
-    .select({ ownerId: schema.brands.ownerId })
-    .from(schema.brands)
-    .where(eq(schema.brands.id, brandId))
-    .limit(1);
-  if (!brand) return;
-
-  const tokens = await db
-    .select({ token: schema.pushTokens.expoPushToken })
-    .from(schema.pushTokens)
-    .where(eq(schema.pushTokens.ownerId, brand.ownerId));
-
-  await sendExpoPush(
-    tokens.map((row) => row.token),
-    message,
-  );
 }
 
 /**
@@ -65,7 +41,7 @@ async function expireIfUnreviewed(ctx: WorkerContext, scheduledPostId: string): 
     .returning();
   if (!expired) return;
 
-  await notifyOwner(ctx.db, expired.brandId, {
+  await notifyBrandOwner(ctx.db, expired.brandId, {
     title: 'A scheduled post was skipped',
     body: 'Its publish time arrived before you approved it, so it was not posted.',
     data: { scheduledPostId: expired.id },
@@ -136,7 +112,7 @@ export async function runScheduledPostPublish(
       })
       .where(eq(schema.scheduledPosts.id, post.id));
 
-    await notifyOwner(ctx.db, post.brandId, {
+    await notifyBrandOwner(ctx.db, post.brandId, {
       title: 'A scheduled post failed to publish',
       body: 'It was approved but was missing required details when its time came.',
       data: { scheduledPostId: post.id },
@@ -196,7 +172,7 @@ export async function runScheduledPostPublish(
       .set({ status: 'failed', error: message, updatedAt: new Date() })
       .where(eq(schema.scheduledPosts.id, post.id));
 
-    await notifyOwner(ctx.db, post.brandId, {
+    await notifyBrandOwner(ctx.db, post.brandId, {
       title: 'A scheduled post failed to publish',
       body: message.slice(0, 120),
       data: { scheduledPostId: post.id },
@@ -209,7 +185,7 @@ export async function runScheduledPostPublish(
     .set({ status: 'posted', igMediaId, error: null, updatedAt: new Date() })
     .where(eq(schema.scheduledPosts.id, post.id));
 
-  await notifyOwner(ctx.db, post.brandId, {
+  await notifyBrandOwner(ctx.db, post.brandId, {
     title: 'Your post is live',
     body: 'A scheduled post just published to Instagram.',
     data: { scheduledPostId: post.id },
