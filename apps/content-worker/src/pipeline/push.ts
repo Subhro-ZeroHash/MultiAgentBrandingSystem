@@ -23,7 +23,7 @@ export async function sendExpoPush(
   if (tokens.length === 0) return;
 
   try {
-    await fetch(EXPO_PUSH_ENDPOINT, {
+    const response = await fetch(EXPO_PUSH_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(
@@ -35,6 +35,29 @@ export async function sendExpoPush(
           ...(message.data ? { data: message.data } : {}),
         })),
       ),
+    });
+
+    // Expo answers 200 for the batch even when every ticket in it failed —
+    // DeviceNotRegistered, InvalidCredentials, MismatchSenderId (an FCM v1
+    // service account not linked to this Expo project) all come back this
+    // way. Without reading the body, a broken credential looks identical to
+    // a real send in these logs.
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      console.error(`[push] Expo push endpoint returned ${response.status}:`, body);
+      return;
+    }
+
+    const tickets = Array.isArray((body as { data?: unknown[] })?.data)
+      ? (body as { data: Array<{ status: string; message?: string; details?: unknown }> }).data
+      : [];
+    tickets.forEach((ticket, index) => {
+      if (ticket.status !== 'ok') {
+        console.error(
+          `[push] ticket failed for token ${tokens[index]}: ${ticket.message ?? ticket.status}`,
+          ticket.details,
+        );
+      }
     });
   } catch (error) {
     console.error('[push] failed to send notification:', error);
