@@ -26,7 +26,12 @@ const extractionCost = {
 
 function fakeAi(overrides: {
   isConfigured?: boolean;
-  results?: Array<{ url: string; title: string | null; snippet: string; publishedAt: string | null }>;
+  results?: Array<{
+    url: string;
+    title: string | null;
+    snippet: string;
+    publishedAt: string | null;
+  }>;
   competitors?: unknown[];
 }): AiRegistry {
   const results = overrides.results ?? [
@@ -38,7 +43,11 @@ function fakeAi(overrides: {
     },
   ];
   const competitors = overrides.competitors ?? [
-    { name: 'Rival Sarees', websiteUrl: 'https://rivalsarees.com', note: 'Same city, same audience' },
+    {
+      name: 'Rival Sarees',
+      websiteUrl: 'https://rivalsarees.com',
+      note: 'Same city, same audience',
+    },
   ];
 
   return {
@@ -56,15 +65,15 @@ function fakeAi(overrides: {
 
 describe('discoverCompetitors', () => {
   it('refuses to search with no industry to search for', async () => {
-    await expect(
-      discoverCompetitors(fakeAi({}), { ...baseInput, industry: null }),
-    ).rejects.toThrow(/industry/i);
+    await expect(discoverCompetitors(fakeAi({}), { ...baseInput, industry: null })).rejects.toThrow(
+      /industry/i,
+    );
   });
 
   it('refuses when no search provider is configured', async () => {
-    await expect(
-      discoverCompetitors(fakeAi({ isConfigured: false }), baseInput),
-    ).rejects.toThrow(/web search provider/i);
+    await expect(discoverCompetitors(fakeAi({ isConfigured: false }), baseInput)).rejects.toThrow(
+      /web search provider/i,
+    );
   });
 
   it('returns the search cost alone when the search finds nothing', async () => {
@@ -73,7 +82,7 @@ describe('discoverCompetitors', () => {
     expect(result.costs).toEqual([searchCost]);
   });
 
-  it('drops a suggestion that matches a name already on the brand\'s list', async () => {
+  it("drops a suggestion that matches a name already on the brand's list", async () => {
     const result = await discoverCompetitors(fakeAi({}), {
       ...baseInput,
       known: ['rival sarees'],
@@ -84,7 +93,11 @@ describe('discoverCompetitors', () => {
   it('surfaces a genuinely new suggestion with both provider costs recorded', async () => {
     const result = await discoverCompetitors(fakeAi({}), baseInput);
     expect(result.suggestions).toEqual([
-      { name: 'Rival Sarees', websiteUrl: 'https://rivalsarees.com', note: 'Same city, same audience' },
+      {
+        name: 'Rival Sarees',
+        websiteUrl: 'https://rivalsarees.com',
+        note: 'Same city, same audience',
+      },
     ]);
     expect(result.costs).toEqual([searchCost, extractionCost]);
   });

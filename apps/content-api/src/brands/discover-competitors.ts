@@ -37,7 +37,10 @@ const SUGGESTIONS_JSON_SCHEMA = {
         additionalProperties: false,
         required: ['name', 'websiteUrl', 'note'],
         properties: {
-          name: { type: 'string', description: 'The competing business, not a directory or marketplace.' },
+          name: {
+            type: 'string',
+            description: 'The competing business, not a directory or marketplace.',
+          },
           websiteUrl: { type: ['string', 'null'] },
           note: {
             type: 'string',
@@ -128,7 +131,9 @@ export async function discoverCompetitors(
                   `Industry: ${input.industry}`,
                   input.location ? `Location: ${input.location}` : '',
                   input.audience ? `Audience: ${input.audience}` : '',
-                  input.known.length ? `Already known, do not repeat: ${input.known.join(', ')}` : '',
+                  input.known.length
+                    ? `Already known, do not repeat: ${input.known.join(', ')}`
+                    : '',
                   '',
                   'Search results:',
                   ...results.map(
