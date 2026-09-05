@@ -184,6 +184,10 @@ export type ImportBrandSiteInput = z.infer<typeof importBrandSiteSchema>;
  * and taking the colours.
  */
 export const applyBrandSiteSchema = z.object({
+  /** The client only ever sends this from first-time setup (see
+   *  `WebsiteImportCard`'s `offerName` prop) — a named brand's own choice is
+   *  not something a later re-import should quietly overwrite. */
+  name: z.string().min(1).max(120).optional(),
   colors: z.array(hexColorSchema).max(3).optional(),
   tone: z.array(toneOfVoiceSchema).min(1).max(3).optional(),
   category: z.string().max(120).nullable().optional(),

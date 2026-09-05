@@ -236,6 +236,7 @@ export class BrandSiteService {
     }
 
     const brandUpdate = {
+      ...(input.name ? { name: input.name } : {}),
       ...(input.colors ? { colors: input.colors } : {}),
       ...(input.tone ? { tone: input.tone } : {}),
       ...(input.category !== undefined ? { category: input.category } : {}),
