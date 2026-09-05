@@ -44,14 +44,18 @@ export const videoGenerationRequestSchema = z.object({
   ctaText: z.string().max(40).optional(),
   /** FR-2.4-equivalent escape hatch, same role it plays for images. */
   extraInstructions: z.string().max(500).optional(),
-  /** LTX's own ceiling is 20s. Defaults to 10s. Veo has no 10s tier of its
-   *  own, so an `advertisement` request is snapped to its nearest option (8s)
-   *  by `nearestVeoDuration` — see gemini.video.ts. */
-  durationSeconds: z.number().int().min(1).max(20).default(10),
-  /** A vertical Reel/Story frame — the one shape a video from this pipeline
-   *  is ever asked for, matching `OUTPUT_FORMAT_DIMENSIONS.story_reel_cover`. */
-  width: z.number().int().positive().default(1080),
-  height: z.number().int().positive().default(1920),
+  /** Every video this pipeline makes is at least 10s. LTX renders this exactly
+   *  (its own ceiling is 20s). Veo has no 10s tier at all — the closest it has
+   *  is 8s — so an `advertisement` request is accepted here and then snapped
+   *  down to its nearest option (8s) by `nearestVeoDuration` in
+   *  gemini.video.ts; that's an accepted provider ceiling, not a bug, and the
+   *  one case where the finished video is shorter than requested. */
+  durationSeconds: z.number().int().min(10).max(20).default(10),
+  /** The one shape a video from this pipeline is ever asked for, matching
+   *  `OUTPUT_FORMAT_DIMENSIONS.story_reel_cover` — fixed rather than just
+   *  defaulted, since nothing in the app ever asks for another size. */
+  width: z.literal(1080).default(1080),
+  height: z.literal(1920).default(1920),
 });
 export type VideoGenerationRequest = z.infer<typeof videoGenerationRequestSchema>;
 
