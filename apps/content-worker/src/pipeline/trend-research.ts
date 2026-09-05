@@ -1,7 +1,11 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
 import {
+  and,
   eq,
   getTrendContext,
+  inArray,
+  lt,
+  or,
   recordContextSnapshot,
   renderBrandContextLines,
   schema,
@@ -560,6 +564,30 @@ export async function runTrendResearch(
 
       if (opportunityRows.length)
         await tx.insert(schema.trendOpportunities).values(opportunityRows);
+
+      // Opportunities have no brandId of their own, only a runId — reach this
+      // brand's rows through its runs. Deletes are safe: every FK onto
+      // trend_opportunities (plan_items, brand_preferences) is ON DELETE SET
+      // NULL, so removing a used-up or stale row never breaks something it
+      // already produced.
+      const brandRuns = tx
+        .select({ id: schema.trendResearchRuns.id })
+        .from(schema.trendResearchRuns)
+        .where(eq(schema.trendResearchRuns.brandId, brand.id));
+      await tx.delete(schema.trendOpportunities).where(
+        and(
+          inArray(schema.trendOpportunities.runId, brandRuns),
+          or(
+            // Already acted on — nothing left to decide about it.
+            eq(schema.trendOpportunities.status, 'working_on'),
+            // Never acted on and stale — a week-old "trend" is not one.
+            and(
+              inArray(schema.trendOpportunities.status, ['new', 'saved']),
+              lt(schema.trendOpportunities.createdAt, new Date(Date.now() - 7 * 24 * 60 * 60_000)),
+            ),
+          ),
+        ),
+      );
 
       await tx
         .update(schema.trendResearchRuns)

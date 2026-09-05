@@ -47,6 +47,10 @@ const PENDING_STATUSES: ScheduledPost['status'][] = [
   'approved',
 ];
 
+/** Every status a post can sit in before it's done with, one way or another.
+ *  A campaign is finished once none of its posts are in one of these. */
+const IN_FLIGHT_STATUSES: ScheduledPost['status'][] = [...PENDING_STATUSES, 'publishing'];
+
 /** Posts an edit may re-plan. Deliberately narrower than PENDING_STATUSES:
  *  once a post has been generated the user has (or soon will have) reviewed
  *  it, and silently deleting reviewed work to honour a cadence change would
@@ -354,8 +358,30 @@ export class SchedulingService {
       totalByCampaign.set(post.campaignId, (totalByCampaign.get(post.campaignId) ?? 0) + 1);
     }
 
+    // No worker or cron marks a campaign 'completed' — the fact that it's
+    // done only exists as "every one of its posts reached a final state", so
+    // it's checked here, on the read every screen that shows a campaign list
+    // already does. Self-healing: the next load after the last post settles
+    // is the one that notices, no extra job to run or forget to run.
+    const finishedIds = campaigns
+      .filter(
+        (c) =>
+          (c.status === 'active' || c.status === 'paused') &&
+          (totalByCampaign.get(c.id) ?? 0) > 0 &&
+          !IN_FLIGHT_STATUSES.some((s) => statusCountsByCampaign.get(c.id)?.[s]),
+      )
+      .map((c) => c.id);
+    if (finishedIds.length) {
+      await this.db
+        .update(schema.scheduledCampaigns)
+        .set({ status: 'completed' })
+        .where(inArray(schema.scheduledCampaigns.id, finishedIds));
+    }
+    const finished = new Set(finishedIds);
+
     return campaigns.map((campaign) => ({
       ...campaign,
+      status: finished.has(campaign.id) ? ('completed' as const) : campaign.status,
       // The real row count, not totalDays x postsPerDay: an edit re-plans only
       // part of a campaign, so the arithmetic no longer describes it.
       totalPosts: totalByCampaign.get(campaign.id) ?? 0,
@@ -371,6 +397,20 @@ export class SchedulingService {
       .from(schema.scheduledPosts)
       .where(eq(schema.scheduledPosts.campaignId, campaignId))
       .orderBy(schema.scheduledPosts.scheduledFor);
+
+    // Same lazy completion check as listCampaigns, for whoever opens this one
+    // campaign directly instead of via the list.
+    if (
+      (campaign.status === 'active' || campaign.status === 'paused') &&
+      posts.length > 0 &&
+      !posts.some((post) => IN_FLIGHT_STATUSES.includes(post.status))
+    ) {
+      await this.db
+        .update(schema.scheduledCampaigns)
+        .set({ status: 'completed' })
+        .where(eq(schema.scheduledCampaigns.id, campaignId));
+      campaign.status = 'completed';
+    }
 
     return { ...campaign, posts };
   }
