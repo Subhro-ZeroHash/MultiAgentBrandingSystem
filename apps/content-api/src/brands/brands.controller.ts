@@ -134,6 +134,14 @@ export class BrandsController {
     return this.context.refreshFromSiteProfile(id, req.user.id);
   }
 
+  /** Proposes competitors from a web search — a suggestion list, not a write.
+   *  The client adds whichever ones it keeps to its own draft and saves them
+   *  through the normal `PATCH :id/context`, same as every other field here. */
+  @Post(':id/context/competitors/discover')
+  discoverCompetitors(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.context.discoverCompetitors(id, req.user.id);
+  }
+
   /** What an agent was actually told, newest first. Forensics for a run that
    *  produced something off-brand. */
   @Get(':id/context/snapshots')

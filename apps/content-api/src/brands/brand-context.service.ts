@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { type AiRegistry } from '@bmas/ai';
 import {
   and,
   count,
@@ -14,15 +15,21 @@ import {
 import {
   contextCompleteness,
   type AgentType,
+  type BrandCompetitor,
   type BrandContext,
   type BrandContextSummary,
+  type CostEvent,
   type FullBrandContext,
   type SiteAnalysis,
   type UpdateBrandContextInput,
 } from '@bmas/shared';
-import { DATABASE } from '../core/core.module.js';
+import { AI_REGISTRY, DATABASE } from '../core/core.module.js';
 import { AutomationSettingsService } from './automation-settings.service.js';
 import { BrandPreferencesService } from './brand-preferences.service.js';
+import {
+  CompetitorDiscoveryInputError,
+  discoverCompetitors as runCompetitorDiscovery,
+} from './discover-competitors.js';
 
 /**
  * The Brand Brain's read side.
@@ -47,6 +54,7 @@ export class BrandContextService {
 
   constructor(
     @Inject(DATABASE) private readonly db: Database,
+    @Inject(AI_REGISTRY) private readonly ai: AiRegistry,
     private readonly preferences: BrandPreferencesService,
     private readonly automation: AutomationSettingsService,
   ) {}
@@ -466,6 +474,76 @@ export class BrandContextService {
 
     if (!updated) throw new Error('Update returned no row');
     return updated as BrandContext;
+  }
+
+  /**
+   * Proposes competitors via one web search plus one extraction pass — shown
+   * next to the existing manual list, the same "read it, then let the user
+   * decide" shape as the website importer. Nothing here is written; the
+   * client only persists what the user keeps, through the normal
+   * `updateContext` save.
+   */
+  async discoverCompetitors(
+    brandId: string,
+    ownerId: string,
+  ): Promise<{ suggestions: BrandCompetitor[] }> {
+    await this.assertBrandOwned(brandId, ownerId);
+    const context = await this.ensureContext(brandId);
+
+    const [brand] = await this.db
+      .select({ name: schema.brands.name })
+      .from(schema.brands)
+      .where(eq(schema.brands.id, brandId))
+      .limit(1);
+    if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
+
+    const referenceId = `competitor-discovery-${brandId}`;
+    let suggestions: BrandCompetitor[];
+    let costs: CostEvent[];
+    try {
+      ({ suggestions, costs } = await runCompetitorDiscovery(
+        this.ai,
+        {
+          brandName: brand.name,
+          industry: context.industry,
+          location: context.location,
+          audience: context.audience,
+          known: context.competitors.map((competitor) => competitor.name),
+        },
+        { brandId, referenceId },
+      ));
+    } catch (caught) {
+      // No industry set, or no search provider configured — the caller's to
+      // fix, surfaced as a 400 so the message reaches the client's Alert.
+      // Anything else (a search or model failure) is left to bubble as the
+      // ordinary 500 an unexpected provider fault gets everywhere else.
+      if (caught instanceof CompetitorDiscoveryInputError) {
+        throw new BadRequestException(caught.message);
+      }
+      throw caught;
+    }
+
+    const operations = ['competitor-discovery-search', 'competitor-discovery-extract'];
+    await Promise.all(
+      costs.map((cost, index) =>
+        this.db.insert(schema.costEvents).values({
+          brandId,
+          system: 'content',
+          referenceId,
+          provider: cost.provider,
+          model: cost.model,
+          operation: operations[index] ?? 'competitor-discovery',
+          inputTokens: cost.inputTokens ?? null,
+          outputTokens: cost.outputTokens ?? null,
+          cachedInputTokens: cost.cachedInputTokens ?? null,
+          imageCount: cost.imageCount ?? null,
+          costMicroUsd: cost.costMicroUsd,
+          latencyMs: cost.latencyMs ?? null,
+        }),
+      ),
+    );
+
+    return { suggestions };
   }
 
   /**
