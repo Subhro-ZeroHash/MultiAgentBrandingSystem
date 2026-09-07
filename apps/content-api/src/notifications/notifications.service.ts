@@ -36,7 +36,9 @@ export class NotificationsService {
   async deleteOne(id: string, ownerId: string): Promise<void> {
     const [deleted] = await this.db
       .delete(schema.notificationHistory)
-      .where(and(eq(schema.notificationHistory.id, id), eq(schema.notificationHistory.ownerId, ownerId)))
+      .where(
+        and(eq(schema.notificationHistory.id, id), eq(schema.notificationHistory.ownerId, ownerId)),
+      )
       .returning({ id: schema.notificationHistory.id });
     if (!deleted) throw new NotFoundException(`Notification ${id} not found`);
   }
