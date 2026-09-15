@@ -1,13 +1,17 @@
 import { Body, Controller, Get, Post, Request, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
+  forgotPasswordInputSchema,
   loginInputSchema,
   logoutInputSchema,
   refreshInputSchema,
+  resetPasswordInputSchema,
   signupInputSchema,
   type AuthUser,
+  type ForgotPasswordInput,
   type LogoutInput,
   type RefreshInput,
+  type ResetPasswordInput,
 } from '@bmas/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { AuthService } from './auth.service.js';
@@ -81,6 +85,25 @@ export class AuthController {
     const result = await this.auth.login(body as Parameters<AuthService['login']>[0]);
     await this.autopilotActivity.recordActivity(result.user.id);
     return result;
+  }
+
+  /** Same generic-success shape as AuthService.forgotPassword: the response
+   *  never reveals whether the email is registered. */
+  @Throttle(AUTH_RATE_LIMIT)
+  @Post('forgot-password')
+  async forgotPassword(
+    @Body(new ZodValidationPipe(forgotPasswordInputSchema)) body: unknown,
+  ) {
+    await this.auth.forgotPassword((body as ForgotPasswordInput).email);
+    return { ok: true };
+  }
+
+  @Throttle(AUTH_RATE_LIMIT)
+  @Post('reset-password')
+  async resetPassword(@Body(new ZodValidationPipe(resetPasswordInputSchema)) body: unknown) {
+    const input = body as ResetPasswordInput;
+    await this.auth.resetPassword(input.email, input.code, input.newPassword);
+    return { ok: true };
   }
 
   /** No account-tracked throttle here (unlike signup/login): there's no email

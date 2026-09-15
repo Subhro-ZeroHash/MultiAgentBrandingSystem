@@ -36,3 +36,15 @@ export const logoutInputSchema = z.object({
   refreshToken: z.string().min(1),
 });
 export type LogoutInput = z.infer<typeof logoutInputSchema>;
+
+export const forgotPasswordInputSchema = z.object({
+  email: z.string().email().max(255),
+});
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordInputSchema>;
+
+export const resetPasswordInputSchema = z.object({
+  email: z.string().email().max(255),
+  code: z.string().length(6),
+  newPassword: z.string().min(8).max(200),
+});
+export type ResetPasswordInput = z.infer<typeof resetPasswordInputSchema>;

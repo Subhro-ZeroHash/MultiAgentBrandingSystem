@@ -1,10 +1,17 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { ConflictException, Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { and, eq, isNull, schema, type Database } from '@bmas/db';
 import type { AuthResponse, AuthUser, LoginInput, SignupInput } from '@bmas/shared';
 import * as bcrypt from 'bcrypt';
+import nodemailer, { type Transporter } from 'nodemailer';
 import { DATABASE } from '../core/core.module.js';
+import { loadEnv } from '../config/env.js';
+
+/** Brevo's SMTP relay — same host/port for every account, only the
+ *  login/key differ. See BREVO_SMTP_LOGIN's doc comment in config/env.ts. */
+const BREVO_SMTP_HOST = 'smtp-relay.brevo.com';
+const BREVO_SMTP_PORT = 587;
 
 /** Cost factor for bcrypt.hash. 12 is the current OWASP-recommended floor;
  *  raising it re-hashes nothing retroactively, so existing users stay on
@@ -16,6 +23,11 @@ const BCRYPT_ROUNDS = 12;
  *  make anyone log in more often — it only makes a stolen session revocable
  *  and bounds a stolen *access* token's blast radius to AUTH_TOKEN_TTL. */
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000;
+
+/** How long a password-reset code is valid for. Short — it's a 6-digit code,
+ *  not a signed link, so the real defence against guessing is this window
+ *  plus the per-account rate limit on reset-password, not the code's size. */
+const RESET_CODE_TTL_MS = 15 * 60_000;
 
 function hashToken(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
@@ -45,6 +57,12 @@ function isUniqueViolation(error: unknown): boolean {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  /** `undefined` means "not yet resolved", `null` means "resolved, no
+   *  credentials configured" — created once and reused rather than a fresh
+   *  SMTP connection per reset request. */
+  private transporter: Transporter | null | undefined;
+
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     private readonly jwt: JwtService,
@@ -141,26 +159,30 @@ export class AuthService {
   async refresh(rawToken: string): Promise<Pick<AuthResponse, 'accessToken' | 'refreshToken'>> {
     const invalid = () => new UnauthorizedException('Invalid or expired refresh token.');
 
+    // Atomic claim, not select-then-update: the `revokedAt IS NULL` check
+    // re-runs at UPDATE time against whatever committed since, not against a
+    // snapshot from an earlier SELECT. Two concurrent /auth/refresh calls
+    // presenting the same raw token (a network-retry duplicate, two tabs)
+    // both used to pass the old SELECT before either UPDATE landed, so both
+    // proceeded to mint a session — one stolen-and-replayed token produced
+    // two live sessions instead of the second failing closed, which is
+    // exactly the property this table exists to give logout(). Only the
+    // caller whose UPDATE actually revokes a row gets one back here.
     const [tokenRow] = await this.db
-      .select({
-        id: schema.refreshTokens.id,
-        userId: schema.refreshTokens.userId,
-        expiresAt: schema.refreshTokens.expiresAt,
-      })
-      .from(schema.refreshTokens)
+      .update(schema.refreshTokens)
+      .set({ revokedAt: new Date() })
       .where(
         and(
           eq(schema.refreshTokens.tokenHash, hashToken(rawToken)),
           isNull(schema.refreshTokens.revokedAt),
         ),
       )
-      .limit(1);
+      .returning({
+        id: schema.refreshTokens.id,
+        userId: schema.refreshTokens.userId,
+        expiresAt: schema.refreshTokens.expiresAt,
+      });
     if (!tokenRow || tokenRow.expiresAt < new Date()) throw invalid();
-
-    await this.db
-      .update(schema.refreshTokens)
-      .set({ revokedAt: new Date() })
-      .where(eq(schema.refreshTokens.id, tokenRow.id));
 
     const [user] = await this.db
       .select({ id: schema.users.id, email: schema.users.email, name: schema.users.name })
@@ -185,5 +207,106 @@ export class AuthService {
           isNull(schema.refreshTokens.revokedAt),
         ),
       );
+  }
+
+  /** Always resolves, whether or not the email is registered — same
+   *  enumeration-safety shape as login()'s single "invalid" message. A send
+   *  failure (SMTP outage, an unverified "from" address, bad credentials) is
+   *  logged, not thrown: the caller learning "the send failed" is just as
+   *  much a leak as learning "the email exists". */
+  async forgotPassword(email: string): Promise<void> {
+    const [user] = await this.db
+      .select({ id: schema.users.id, email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.email, email))
+      .limit(1);
+    if (!user) return;
+
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    await this.db
+      .update(schema.users)
+      .set({
+        resetCodeHash: hashToken(code),
+        resetCodeExpiresAt: new Date(Date.now() + RESET_CODE_TTL_MS),
+      })
+      .where(eq(schema.users.id, user.id));
+
+    await this.sendResetCodeEmail(user.email, code).catch((error) => {
+      this.logger.error(`Failed to send reset code to ${user.email}: ${String(error)}`);
+    });
+  }
+
+  async resetPassword(email: string, code: string, newPassword: string): Promise<void> {
+    const invalid = () => new UnauthorizedException('Invalid or expired reset code.');
+
+    const [user] = await this.db
+      .select({
+        id: schema.users.id,
+        resetCodeHash: schema.users.resetCodeHash,
+        resetCodeExpiresAt: schema.users.resetCodeExpiresAt,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.email, email))
+      .limit(1);
+    if (!user?.resetCodeHash || !user.resetCodeExpiresAt) throw invalid();
+    if (user.resetCodeExpiresAt < new Date()) throw invalid();
+    if (user.resetCodeHash !== hashToken(code)) throw invalid();
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    await this.db
+      .update(schema.users)
+      .set({ passwordHash, resetCodeHash: null, resetCodeExpiresAt: null })
+      .where(eq(schema.users.id, user.id));
+
+    // A reset means "treat every existing session as no longer trustworthy" —
+    // same as a security-conscious "log out everywhere" after a password change.
+    await this.db
+      .update(schema.refreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(eq(schema.refreshTokens.userId, user.id), isNull(schema.refreshTokens.revokedAt)),
+      );
+  }
+
+  /** SMTP, not REST — Brevo's API is a REST call like Resend's, but the
+   *  instructions handed to this project are specifically for the SMTP
+   *  relay, so nodemailer owns the protocol instead of a bare `fetch`.
+   *
+   *  Outside production, the code is always logged too — not only when no
+   *  credentials are configured — since a misconfigured sender or an
+   *  unverified "from" address fails delivery the same way an absent key
+   *  does, and the developer testing this still needs the code. Never
+   *  logged in production — the same secret-in-logs discipline everywhere
+   *  else in this file. */
+  private async sendResetCodeEmail(email: string, code: string): Promise<void> {
+    const env = loadEnv();
+    if (env.NODE_ENV !== 'production') {
+      this.logger.log(`[dev] Password reset code for ${email}: ${code}`);
+    }
+
+    const mailer = this.mailer();
+    if (!mailer) return;
+
+    await mailer.sendMail({
+      from: env.BREVO_FROM_EMAIL,
+      to: email,
+      subject: 'Your password reset code',
+      text: `Your password reset code is ${code}. It expires in 15 minutes.`,
+    });
+  }
+
+  private mailer(): Transporter | null {
+    if (this.transporter !== undefined) return this.transporter;
+
+    const env = loadEnv();
+    this.transporter =
+      env.BREVO_API_KEY && env.BREVO_SMTP_LOGIN && env.BREVO_FROM_EMAIL
+        ? nodemailer.createTransport({
+            host: BREVO_SMTP_HOST,
+            port: BREVO_SMTP_PORT,
+            auth: { user: env.BREVO_SMTP_LOGIN, pass: env.BREVO_API_KEY },
+          })
+        : null;
+    return this.transporter;
   }
 }

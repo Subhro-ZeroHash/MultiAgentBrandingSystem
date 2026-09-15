@@ -89,6 +89,27 @@ const envSchema = z.object({
    *  which only has to be reachable from the user's own phone. */
   PUBLIC_ASSET_BASE_URL: optionalUrl(),
 
+  /** OAuth client for Google Business Profile — from GCP Console > APIs &
+   *  Services > Credentials, NOT the same project's GOOGLE_API_KEY (that one's
+   *  for Gemini, an unrelated LLM-provider key). */
+  GOOGLE_OAUTH_CLIENT_ID: optionalText(),
+  GOOGLE_OAUTH_CLIENT_SECRET: optionalText(),
+  /** Must exactly match an "Authorized redirect URI" on the OAuth client —
+   *  Google rejects any mismatch, including a trailing slash. */
+  GOOGLE_OAUTH_REDIRECT_URI: optionalUrl(),
+
+  /** Sends password-reset codes via Brevo's SMTP relay (nodemailer — SMTP has
+   *  no REST equivalent simple enough for a bare `fetch`, unlike Resend).
+   *  Unset in local dev: the code is logged instead of emailed, the same
+   *  "stub" convention IMAGE_PROVIDER_PRIMARY uses elsewhere in this repo. */
+  BREVO_API_KEY: optionalText(),
+  /** The SMTP login shown on Brevo's SMTP & API settings page — the account's
+   *  Brevo login email, not necessarily the address mail appears "from". */
+  BREVO_SMTP_LOGIN: optionalText(),
+  /** Sender address recipients see. Must be a verified sender/domain in
+   *  Brevo, or its API rejects the send. */
+  BREVO_FROM_EMAIL: optionalText(),
+
   DEV_OWNER_ID: z.string().default('dev-user'),
 
   /** Signs and verifies JWTs issued by AuthService. No default in production —
@@ -113,7 +134,31 @@ const envSchema = z.object({
    *  refresh token (see `core.refresh_tokens`), which is revocable; this only
    *  bounds how long a stolen access token stays useful after that. */
   AUTH_TOKEN_TTL: z.string().default('15m'),
-});
+})
+  // A partial Brevo config (a very plausible "set the key, forget the other
+  // two" deploy step) doesn't fail any single field's own validation, so
+  // without this it boots successfully and `sendResetCodeEmail`'s `mailer()`
+  // silently returns null — forgotPassword still answers `{ ok: true }`,
+  // with nothing anywhere explaining why the email never arrives. Same
+  // "fail at startup, not silently" standard AUTH_SECRET/ENCRYPTION_KEY hold
+  // above. All-unset stays valid — that's local dev's deliberate stub mode.
+  .superRefine((env, ctx) => {
+    const brevoVars = {
+      BREVO_API_KEY: env.BREVO_API_KEY,
+      BREVO_SMTP_LOGIN: env.BREVO_SMTP_LOGIN,
+      BREVO_FROM_EMAIL: env.BREVO_FROM_EMAIL,
+    };
+    const set = Object.values(brevoVars).filter((value) => value !== undefined);
+    if (set.length > 0 && set.length < Object.keys(brevoVars).length) {
+      const missing = Object.entries(brevoVars)
+        .filter(([, value]) => value === undefined)
+        .map(([name]) => name);
+      ctx.addIssue(
+        `${missing.join(', ')} must be set together with the other BREVO_* vars, or all left ` +
+          'blank — a partial config boots successfully but silently no-ops every password-reset email.',
+      );
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

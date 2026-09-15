@@ -33,6 +33,12 @@ export const users = core.table(
      *  `dev-user`) or via a future OAuth-only signup — never compared against
      *  directly, only through AuthService.login's bcrypt.compare. */
     passwordHash: text('password_hash'),
+    /** SHA-256 hash of a one-time 6-digit password-reset code (AuthService's
+     *  existing `hashToken` helper, already used for refresh tokens) — never
+     *  the raw code. Null outside the ~15-minute window between a
+     *  forgot-password request and its use or expiry. */
+    resetCodeHash: text('reset_code_hash'),
+    resetCodeExpiresAt: timestamp('reset_code_expires_at', { withTimezone: true }),
     emailVerified: boolean('email_verified').notNull().default(false),
     imageUrl: text('image_url'),
     /** Stamped on every signup/login/refresh (AuthService.issueTokenPair) —
