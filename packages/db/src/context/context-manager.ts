@@ -1,5 +1,11 @@
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
-import type { ApprovalPolicy, BrandCompetitor, SiteAnalysis, TrendFrequency } from '@bmas/shared';
+import type {
+  ApprovalPolicy,
+  BrandCompetitor,
+  PreferenceType,
+  SiteAnalysis,
+  TrendFrequency,
+} from '@bmas/shared';
 import type { Database } from '../client.js';
 import * as schema from '../schema/index.js';
 
@@ -184,18 +190,28 @@ async function loadSiteIdentity(db: Database, brandId: string) {
   };
 }
 
-/** Every dimension the platform learns about, so each can be queried on its
- *  own. Mirrors `preferenceTypeSchema` in @bmas/shared. */
-const PREFERENCE_TYPES = [
-  'content_format',
-  'posting_time',
-  'visual_style',
-  'tone',
-  'topic',
-] as const;
 
 /**
- * Current beliefs: the newest observation per type, above the confidence floor.
+ * Current beliefs: the newest observation per type, dropped if it's below the
+ * confidence floor.
+ *
+ * Recency governs, full stop — confidence only filters whether the newest
+ * observation is worth showing at all, it never picks an older one instead.
+ * A below-floor newest row means "no current belief for this type", not
+ * "fall back to what we used to believe": a stale finding from months ago
+ * outranking this week's fresh-but-unconfident one would tell the model
+ * something the brand's own recent activity has already moved past. Kept
+ * identical to `BrandPreferencesService.getTopPreferences`'s semantics on
+ * purpose — these two functions answer the same question ("what does this
+ * brand currently believe about X?") for two different callers, and they
+ * used to disagree with each other after diverging during a refactor: this
+ * one filtered confidence before picking the newest row (so a low-confidence
+ * newest row let an older, higher-confidence one resurface); the other
+ * filtered after (so a low-confidence newest row dropped the type entirely).
+ * Same brand and dimension could get a different "current belief" depending
+ * on which of these two nearly-identical functions was asked — aligned to
+ * the latter, since it matches the "confidence filters rather than ranks"
+ * intent `getTopPreferences`'s own doc comment already states.
  *
  * One indexed query per type rather than "take the N newest rows, then dedupe
  * by type". That first approach is what this originally did, and it silently
@@ -211,26 +227,24 @@ const PREFERENCE_TYPES = [
  * returning one row, is cheaper than the fifty-row scan it replaces.
  */
 async function loadLearnings(db: Database, brandId: string): Promise<ContextLearning[]> {
-  const perType = await Promise.all(
-    PREFERENCE_TYPES.map(async (preferenceType) => {
-      const [row] = await db
-        .select()
-        .from(schema.brandPreferences)
-        .where(
-          and(
-            eq(schema.brandPreferences.brandId, brandId),
-            eq(schema.brandPreferences.preferenceType, preferenceType),
-            gte(schema.brandPreferences.confidence, MIN_PROMPT_CONFIDENCE),
-          ),
-        )
-        .orderBy(desc(schema.brandPreferences.createdAt))
-        .limit(1);
-      return row;
-    }),
-  );
+  // Same "newest row per type" result as five separate `LIMIT 1` queries
+  // (see the starvation history above) but one round trip: `DISTINCT ON`
+  // keeps the first row per `preferenceType` group under the given ORDER BY,
+  // which — ordering newest-first within each group — is exactly the newest
+  // row. `preferenceType` is a 5-value pg enum (schema/content.ts), so this
+  // can never return more groups than the five queries it replaces did.
+  //
+  // Confidence is deliberately not in this WHERE — see the doc comment above
+  // for why filtering before picking the newest row would let a stale, older
+  // observation quietly outrank a fresh but low-confidence one.
+  const rows = await db
+    .selectDistinctOn([schema.brandPreferences.preferenceType])
+    .from(schema.brandPreferences)
+    .where(eq(schema.brandPreferences.brandId, brandId))
+    .orderBy(schema.brandPreferences.preferenceType, desc(schema.brandPreferences.createdAt));
 
-  return perType
-    .filter((row): row is NonNullable<typeof row> => row != null)
+  return rows
+    .filter((row) => row.confidence >= MIN_PROMPT_CONFIDENCE)
     .map((row) => ({
       type: row.preferenceType,
       summary: row.preference.summary,
@@ -977,7 +991,7 @@ export async function recordFeedbackSignal(
      *  chosen direction, same shape as picking a creative variant). Confidence
      *  still comes from `kind` either way; only which dimension the row is
      *  filed under changes. */
-    type?: (typeof PREFERENCE_TYPES)[number];
+    type?: PreferenceType;
   },
 ): Promise<void> {
   try {

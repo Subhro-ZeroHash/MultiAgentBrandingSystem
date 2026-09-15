@@ -3,15 +3,6 @@ import { and, asc, desc, eq, schema, type Database } from '@bmas/db';
 import type { BrandPreference, PreferenceType, RecordPreferenceInput } from '@bmas/shared';
 import { DATABASE } from '../core/core.module.js';
 
-/** Every preference type, in the order the Brand Brain screen lists them. */
-const PREFERENCE_TYPES: PreferenceType[] = [
-  'content_format',
-  'posting_time',
-  'visual_style',
-  'tone',
-  'topic',
-];
-
 /**
  * Learned preferences (1.7).
  *
@@ -63,39 +54,44 @@ export class BrandPreferencesService {
   }
 
   /**
-   * The current belief: the newest observation per type.
+   * The current belief: the newest observation per type, dropped (not
+   * replaced by an older one) if it's below `minConfidence`.
    *
    * `minConfidence` defaults above zero because a low-confidence learning is
    * worse than none in a prompt — the model treats it as fact regardless of the
    * number attached, so filtering is the only thing that actually works.
+   *
+   * Kept in sync with `@bmas/db`'s `loadLearnings` — same question ("what
+   * does this brand currently believe?") for a different caller. Change the
+   * "newest row, then filter by confidence" order here only alongside that
+   * one, or the two will quietly disagree on the same brand's current belief
+   * again, the way they did before this comment existed.
    */
   async getTopPreferences(
     brandId: string,
     type?: PreferenceType,
     minConfidence = 0.4,
   ): Promise<BrandPreference[]> {
-    const types = type ? [type] : PREFERENCE_TYPES;
+    const brandFilter = eq(schema.brandPreferences.brandId, brandId);
 
-    const rows = await Promise.all(
-      types.map(async (preferenceType) => {
-        const [row] = await this.db
+    // A single type is already a one-row query. Asking for all of them (the
+    // common case — every caller but `historyForOwner`'s sibling) used to fan
+    // out into one query per type; `DISTINCT ON` gets the same "newest row
+    // per type" result in one round trip instead of `PREFERENCE_TYPES.length`.
+    const rows = type
+      ? await this.db
           .select()
           .from(schema.brandPreferences)
-          .where(
-            and(
-              eq(schema.brandPreferences.brandId, brandId),
-              eq(schema.brandPreferences.preferenceType, preferenceType),
-            ),
-          )
+          .where(and(brandFilter, eq(schema.brandPreferences.preferenceType, type)))
           .orderBy(desc(schema.brandPreferences.createdAt))
-          .limit(1);
-        return row;
-      }),
-    );
+          .limit(1)
+      : await this.db
+          .selectDistinctOn([schema.brandPreferences.preferenceType])
+          .from(schema.brandPreferences)
+          .where(brandFilter)
+          .orderBy(schema.brandPreferences.preferenceType, desc(schema.brandPreferences.createdAt));
 
-    return rows
-      .filter((row): row is NonNullable<typeof row> => row != null)
-      .filter((row) => row.confidence >= minConfidence) as BrandPreference[];
+    return (rows as BrandPreference[]).filter((row) => row.confidence >= minConfidence);
   }
 
   /**

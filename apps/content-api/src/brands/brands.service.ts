@@ -65,11 +65,15 @@ export class BrandsService {
   /** Every brand the caller owns, oldest first so the list order is stable as
    *  brands are added — the client picks an active one from this. */
   async listForOwner(ownerId: string) {
+    // No query-param pagination here — one account's own brands, not a
+    // shared or growing-without-bound collection. This cap is a defensive
+    // ceiling, not a real page size.
     return this.db
       .select()
       .from(schema.brands)
       .where(eq(schema.brands.ownerId, ownerId))
-      .orderBy(schema.brands.createdAt);
+      .orderBy(schema.brands.createdAt)
+      .limit(200);
   }
 
   async findOne(brandId: string, ownerId: string) {

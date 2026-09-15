@@ -322,14 +322,15 @@ export class SchedulingService {
 
   /** Campaign list with a per-status post count, so the UI can render a
    *  progress bar without a second round trip per campaign. */
-  async listCampaigns(brandId: string, ownerId: string) {
+  async listCampaigns(brandId: string, ownerId: string, limit = 50) {
     await this.assertBrandOwned(brandId, ownerId);
 
     const campaigns = await this.db
       .select()
       .from(schema.scheduledCampaigns)
       .where(eq(schema.scheduledCampaigns.brandId, brandId))
-      .orderBy(desc(schema.scheduledCampaigns.createdAt));
+      .orderBy(desc(schema.scheduledCampaigns.createdAt))
+      .limit(limit);
 
     if (campaigns.length === 0) return [];
 

@@ -22,6 +22,14 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { SchedulingService } from './scheduling.service.js';
 
+/** Same clamp-and-default convention as GenerationsController's `parseLimit`
+ *  — a brand's campaigns accumulate for its whole lifetime with no cap. */
+function parseLimit(raw: string | undefined): number {
+  const value = Number(raw ?? 50);
+  if (!Number.isFinite(value)) return 50;
+  return Math.min(200, Math.max(1, Math.floor(value)));
+}
+
 @UseGuards(JwtAuthGuard)
 @Controller()
 export class ScheduledCampaignsController {
@@ -41,9 +49,13 @@ export class ScheduledCampaignsController {
   }
 
   @Get('scheduled-campaigns')
-  list(@Query('brandId') brandId: string, @Request() req: AuthenticatedRequest) {
+  list(
+    @Query('brandId') brandId: string,
+    @Query('limit') limit: string | undefined,
+    @Request() req: AuthenticatedRequest,
+  ) {
     if (!brandId) throw new BadRequestException('brandId query parameter is required');
-    return this.scheduling.listCampaigns(brandId, req.user.id);
+    return this.scheduling.listCampaigns(brandId, req.user.id, parseLimit(limit));
   }
 
   @Get('scheduled-campaigns/:id')

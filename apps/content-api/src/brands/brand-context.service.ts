@@ -134,11 +134,13 @@ export class BrandContextService {
    * per brand.
    */
   async listContextSummaries(ownerId: string): Promise<BrandContextSummary[]> {
+    // Defensive ceiling, not real pagination — see BrandsService.listForOwner.
     const brands = await this.db
       .select()
       .from(schema.brands)
       .where(eq(schema.brands.ownerId, ownerId))
-      .orderBy(schema.brands.createdAt);
+      .orderBy(schema.brands.createdAt)
+      .limit(200);
 
     if (brands.length === 0) return [];
     const brandIds = brands.map((brand) => brand.id);
