@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import { TokenEncryption } from '@bmas/shared';
 import * as schema from './schema/index.js';
 
 /**
@@ -40,6 +41,14 @@ const DEV_COMPETITOR_NALLI_ID = 'dev-competitor-nalli';
 const DEV_COMPETITOR_KALANIKETAN_ID = 'dev-competitor-kalaniketan';
 const DEV_PROMPT_DISCOVERY_ID = 'dev-prompt-discovery';
 const DEV_PROMPT_WEDDING_ID = 'dev-prompt-wedding';
+const DEV_GOOGLE_ACCOUNT_ID = 'dev-google-account';
+const DEV_REVIEW_IDS = [
+  'dev-review-1',
+  'dev-review-2',
+  'dev-review-3',
+  'dev-review-4',
+  'dev-review-5',
+] as const;
 
 try {
   await db
@@ -121,7 +130,111 @@ try {
     ])
     .onConflictDoNothing();
 
-  console.warn(`Seeded dev user (${DEV_USER_ID}) and brand (${DEV_BRAND_ID}).`);
+  // Fixture Google connection + reviews: there is no live Business Profile
+  // API access yet (see GoogleAuthService), so this stands in for what a real
+  // OAuth connect + review sync would produce, and is the only way to
+  // exercise the (fully automatic — see GoogleReviewsService) reply flow
+  // locally. The two left as `needs_reply` demo that automation running live
+  // the first time the reviews screen loads after a fresh seed.
+  const encryptionKey = process.env.ENCRYPTION_KEY;
+  if (!encryptionKey) {
+    console.error('ENCRYPTION_KEY is not set — cannot seed the fixture Google connection.');
+    process.exit(1);
+  }
+  const encryption = new TokenEncryption(encryptionKey);
+
+  await db
+    .insert(schema.socialAccounts)
+    .values({
+      id: DEV_GOOGLE_ACCOUNT_ID,
+      ownerId: DEV_USER_ID,
+      platform: 'google',
+      pageId: null,
+      igBusinessId: 'dev-google-user-id',
+      pageAccessToken: encryption.encrypt('fixture-google-access-token'),
+      refreshToken: encryption.encrypt('fixture-google-refresh-token'),
+      tokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      displayName: 'dev.brand@gmail.com',
+      status: 'active',
+    })
+    .onConflictDoNothing();
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  await db
+    .insert(schema.googleReviews)
+    .values([
+      {
+        id: DEV_REVIEW_IDS[0],
+        brandId: DEV_BRAND_ID,
+        socialAccountId: DEV_GOOGLE_ACCOUNT_ID,
+        externalReviewId: 'fixture-review-1',
+        reviewerName: 'Priya Sharma',
+        rating: 5,
+        reviewText:
+          'Absolutely stunning saree! The zari work is even more beautiful in person. Delivery was quick too.',
+        reviewedAt: new Date(Date.now() - 2 * DAY_MS),
+        status: 'needs_reply',
+      },
+      {
+        id: DEV_REVIEW_IDS[1],
+        brandId: DEV_BRAND_ID,
+        socialAccountId: DEV_GOOGLE_ACCOUNT_ID,
+        externalReviewId: 'fixture-review-2',
+        reviewerName: 'Anjali Mehta',
+        rating: 2,
+        reviewText:
+          "Saree was nice but arrived a week later than promised, with no update on the delay. Customer service didn't respond to my calls.",
+        reviewedAt: new Date(Date.now() - 4 * DAY_MS),
+        status: 'needs_reply',
+      },
+      {
+        id: DEV_REVIEW_IDS[2],
+        brandId: DEV_BRAND_ID,
+        socialAccountId: DEV_GOOGLE_ACCOUNT_ID,
+        externalReviewId: 'fixture-review-3',
+        reviewerName: 'Ritu Agarwal',
+        rating: 5,
+        reviewText:
+          "Bought this for my daughter's wedding — the silk quality is premium and the color was exactly as shown online.",
+        reviewedAt: new Date(Date.now() - 6 * DAY_MS),
+        draftReply:
+          "Thank you so much, Ritu! We're thrilled the saree was perfect for such a special occasion — congratulations to your daughter!",
+        status: 'approved',
+      },
+      {
+        id: DEV_REVIEW_IDS[3],
+        brandId: DEV_BRAND_ID,
+        socialAccountId: DEV_GOOGLE_ACCOUNT_ID,
+        externalReviewId: 'fixture-review-4',
+        reviewerName: 'Vikram Singh',
+        rating: 3,
+        reviewText:
+          'Good product but a bit overpriced compared to similar sarees I found elsewhere in Jaipur.',
+        reviewedAt: new Date(Date.now() - 9 * DAY_MS),
+        draftReply:
+          'Thank you for the honest feedback, Vikram — we price for handwoven quality and craftsmanship, but we appreciate you taking the time to compare and share your thoughts.',
+        status: 'approved',
+      },
+      {
+        id: DEV_REVIEW_IDS[4],
+        brandId: DEV_BRAND_ID,
+        socialAccountId: DEV_GOOGLE_ACCOUNT_ID,
+        externalReviewId: 'fixture-review-5',
+        reviewerName: 'Neha Kapoor',
+        rating: 4,
+        reviewText:
+          'Lovely saree, exactly as pictured. Would have given 5 stars but the packaging could be better.',
+        reviewedAt: new Date(Date.now() - 12 * DAY_MS),
+        draftReply:
+          "Thank you, Neha! So glad you loved the saree — we're already working on improving our packaging based on feedback like yours.",
+        status: 'approved',
+      },
+    ])
+    .onConflictDoNothing();
+
+  console.warn(
+    `Seeded dev user (${DEV_USER_ID}), brand (${DEV_BRAND_ID}), and a fixture Google connection with ${DEV_REVIEW_IDS.length} reviews.`,
+  );
 } catch (error) {
   console.error('Seed failed:', error);
   process.exitCode = 1;

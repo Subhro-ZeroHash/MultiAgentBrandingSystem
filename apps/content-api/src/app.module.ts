@@ -7,6 +7,7 @@ import { BrandSiteModule } from './brand-site/brand-site.module.js';
 import { BrandsModule } from './brands/brands.module.js';
 import { CoreModule } from './core/core.module.js';
 import { GenerationsModule } from './generations/generations.module.js';
+import { GoogleModule } from './google/google.module.js';
 import { VideoGenerationsModule } from './video-generations/video-generations.module.js';
 import { PlanningModule } from './planning/planning.module.js';
 import { HealthModule } from './health/health.module.js';
@@ -25,6 +26,7 @@ import { TrendsModule } from './trends/trends.module.js';
  *   generations   -> intake, job status, variant selection and edits
  *   scheduling    -> plan a campaign once, generate + gate every post on approval
  *   social        -> Instagram/Facebook OAuth & posting
+ *   google        -> Google Business Profile OAuth (connect only, for now)
  *   notifications -> push token registration (sending happens in content-worker)
  *   assets        -> public signed reads, for consumers that fetch images themselves
  *   (worker)      -> trends -> brief -> image -> QA -> copy -> (scheduled posts only) notify -> publish
@@ -68,6 +70,7 @@ const GLOBAL_RATE_LIMIT = { ttl: 60_000, limit: 1_000 };
     PlanningModule,
     SchedulingModule,
     SocialModule,
+    GoogleModule,
     NotificationsModule,
     AssetsModule,
   ],

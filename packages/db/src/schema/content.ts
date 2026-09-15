@@ -427,7 +427,7 @@ export const assetEditsRelations = relations(assetEdits, ({ one }) => ({
   }),
 }));
 
-export const socialPlatform = content.enum('social_platform', ['instagram', 'facebook']);
+export const socialPlatform = content.enum('social_platform', ['instagram', 'facebook', 'google']);
 
 export const socialAccountStatus = content.enum('social_account_status', [
   'active',
@@ -448,9 +448,20 @@ export const socialAccounts = content.table(
     /** Facebook Page that owns the account. Null under Instagram Login, where
      *  the Instagram account authenticates directly and no Page is involved. */
     pageId: text('page_id'),
+    /** The external account id for whichever platform this row is — Instagram's
+     *  ig-scoped user id, or (for `platform: 'google'`) the Google account's
+     *  `sub`/id from its userinfo response. Named for its original, Instagram-
+     *  only purpose; kept rather than renamed to avoid touching every existing
+     *  Instagram call site for a cosmetic change. */
     igBusinessId: text('ig_business_id'),
     /** Encrypted at rest with AES-256-GCM. 256-byte strings after encryption. */
     pageAccessToken: text('page_access_token').notNull(),
+    /** Google only: encrypted refresh token, needed to mint a new access token
+     *  once the short-lived one expires. Google returns this only on the first
+     *  consent (`access_type: 'offline'`, `prompt: 'consent'`) — a later
+     *  reconnect that doesn't get one back must keep the existing value rather
+     *  than overwrite it with null. Always null for Instagram/Facebook rows. */
+    refreshToken: text('refresh_token'),
     tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }).notNull(),
     displayName: text('display_name').notNull(),
     connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
@@ -472,6 +483,70 @@ export const socialAccounts = content.table(
 
 export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
   owner: one(users, { fields: [socialAccounts.ownerId], references: [users.id] }),
+}));
+
+export const googleReviewStatus = content.enum('google_review_status', [
+  'needs_reply',
+  'draft_ready',
+  'approved',
+  'published',
+  'dismissed',
+]);
+
+/**
+ * A Google Business Profile customer review, and the brand's automatic
+ * reply to it.
+ *
+ * Replies are fully automatic by design — no draft/edit/approve step for a
+ * person (see GoogleReviewsService.autoReply). `draft_ready` is repurposed as
+ * a transient claim state: `listForBrand` atomically flips `needs_reply` rows
+ * to `draft_ready` before drafting them, so two overlapping calls can't both
+ * claim (and bill for) the same review — a row sits there only for the
+ * duration of one reply's generation, released back to `needs_reply` if that
+ * fails. `published` exists for when live posting lands,
+ * but nothing sets it yet — there is no Google API access to actually
+ * publish through (see GoogleAuthService) — so `approved` is the real end
+ * state today: the reply is finalised and ready to go out, not faked as
+ * already sent. Review text/rating/reviewer name come from Google once that
+ * access exists; until then, seeded fixtures play that role so the rest of
+ * the flow is buildable and testable now.
+ */
+export const googleReviews = content.table(
+  'google_reviews',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    socialAccountId: text('social_account_id')
+      .notNull()
+      .references(() => socialAccounts.id, { onDelete: 'cascade' }),
+    /** Google's own review id — what the unique index below dedupes a
+     *  polling sync on, once one exists. */
+    externalReviewId: text('external_review_id').notNull(),
+    reviewerName: text('reviewer_name').notNull(),
+    rating: integer('rating').notNull(),
+    reviewText: text('review_text').notNull(),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull(),
+    draftReply: text('draft_reply'),
+    status: googleReviewStatus('status').notNull().default('needs_reply'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('google_reviews_brand_status_idx').on(t.brandId, t.status),
+    uniqueIndex('google_reviews_account_external_idx').on(t.socialAccountId, t.externalReviewId),
+  ],
+);
+
+export const googleReviewsRelations = relations(googleReviews, ({ one }) => ({
+  brand: one(brands, { fields: [googleReviews.brandId], references: [brands.id] }),
+  socialAccount: one(socialAccounts, {
+    fields: [googleReviews.socialAccountId],
+    references: [socialAccounts.id],
+  }),
 }));
 
 export const scheduledCampaignStatus = content.enum('scheduled_campaign_status', [
@@ -1918,6 +1993,9 @@ export type NewPoolIntelligenceItemRow = typeof poolIntelligenceItems.$inferInse
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type NewSocialAccount = typeof socialAccounts.$inferInsert;
+
+export type GoogleReview = typeof googleReviews.$inferSelect;
+export type NewGoogleReview = typeof googleReviews.$inferInsert;
 export type Product = typeof products.$inferSelect;
 export type NewProduct = typeof products.$inferInsert;
 export type GenerationJob = typeof generationJobs.$inferSelect;

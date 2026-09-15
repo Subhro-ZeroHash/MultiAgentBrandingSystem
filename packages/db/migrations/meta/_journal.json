@@ -239,6 +239,20 @@
       "when": 1788640067436,
       "tag": "0033_real_black_bolt",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788869313099,
+      "tag": "0034_abandoned_elektra",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788935176212,
+      "tag": "0035_chilly_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }
