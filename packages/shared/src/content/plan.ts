@@ -266,6 +266,9 @@ export const inboxItemSchema = z.object({
    *  identically — see `inboxUrgency`. */
   urgency: z.number().int().min(0).max(100),
   createdAt: z.coerce.date(),
+  /** `kind: 'opportunity'` only — the trend run it was found in, since there
+   *  is no standalone opportunity screen to link to instead. */
+  runId: entityIdSchema.optional(),
 });
 export type InboxItem = z.infer<typeof inboxItemSchema>;
 

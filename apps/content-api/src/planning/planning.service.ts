@@ -471,6 +471,10 @@ export class PlanningService {
         detail: o.recommendation,
         urgency: inboxUrgency('opportunity', o.createdAt, now),
         createdAt: o.createdAt,
+        // The trend run this opportunity was found in — the inbox card links
+        // here, not to the opportunity row itself, since there's no
+        // standalone opportunity screen (see Home's inboxItemRoute).
+        runId: o.runId,
       })),
       ...replies.map((r) => ({
         id: r.id,
@@ -502,6 +506,7 @@ export class PlanningService {
     return this.db
       .select({
         id: schema.trendOpportunities.id,
+        runId: schema.trendOpportunities.runId,
         title: schema.trendOpportunities.title,
         recommendation: schema.trendOpportunities.recommendation,
         createdAt: schema.trendOpportunities.createdAt,
