@@ -7,6 +7,14 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# Node sizes its default heap ceiling off physical RAM alone, ignoring swap —
+# on this box's 1.9GB RAM that ceiling landed below what `nest build`'s
+# TypeScript compilation needs, so it self-terminated with "JavaScript heap
+# out of memory" well before the box's 4GB of swap ever got used. Raising
+# this explicitly is safe: it only changes how much of the already-available
+# RAM+swap V8 is allowed to reach for, not how much the box actually has.
+export NODE_OPTIONS="--max-old-space-size=3072"
+
 echo "==> Pulling latest code..."
 git pull
 
