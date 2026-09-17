@@ -190,7 +190,6 @@ async function loadSiteIdentity(db: Database, brandId: string) {
   };
 }
 
-
 /**
  * Current beliefs: the newest observation per type, dropped if it's below the
  * confidence floor.

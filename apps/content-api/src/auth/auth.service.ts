@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
-import { ConflictException, Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { and, eq, isNull, schema, type Database } from '@bmas/db';
 import type { AuthResponse, AuthUser, LoginInput, SignupInput } from '@bmas/shared';
@@ -263,9 +269,7 @@ export class AuthService {
     await this.db
       .update(schema.refreshTokens)
       .set({ revokedAt: new Date() })
-      .where(
-        and(eq(schema.refreshTokens.userId, user.id), isNull(schema.refreshTokens.revokedAt)),
-      );
+      .where(and(eq(schema.refreshTokens.userId, user.id), isNull(schema.refreshTokens.revokedAt)));
   }
 
   /** SMTP, not REST — Brevo's API is a REST call like Resend's, but the

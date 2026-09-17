@@ -145,7 +145,10 @@ export class GoogleReviewsService {
    * out the moment that access lands," not a claim the reply already
    * reached the customer.
    */
-  private async autoReply(review: GoogleReview, context: ContentTaskContext): Promise<GoogleReview> {
+  private async autoReply(
+    review: GoogleReview,
+    context: ContentTaskContext,
+  ): Promise<GoogleReview> {
     const referenceId = `google-review-reply-${review.id}-${Date.now()}`;
     const { value: reply, cost } = await this.ai.llm().generateText(
       {

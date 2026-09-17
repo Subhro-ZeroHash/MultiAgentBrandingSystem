@@ -91,9 +91,7 @@ export class AuthController {
    *  never reveals whether the email is registered. */
   @Throttle(AUTH_RATE_LIMIT)
   @Post('forgot-password')
-  async forgotPassword(
-    @Body(new ZodValidationPipe(forgotPasswordInputSchema)) body: unknown,
-  ) {
+  async forgotPassword(@Body(new ZodValidationPipe(forgotPasswordInputSchema)) body: unknown) {
     await this.auth.forgotPassword((body as ForgotPasswordInput).email);
     return { ok: true };
   }
