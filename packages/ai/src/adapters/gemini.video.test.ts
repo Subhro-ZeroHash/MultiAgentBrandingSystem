@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nearestVeoDuration, nearestVeoResolution } from './gemini.video.js';
+import { isRetryableVeoError, nearestVeoDuration, nearestVeoResolution } from './gemini.video.js';
 
 describe('nearestVeoResolution', () => {
   it('maps an exact 1080p landscape request to itself', () => {
@@ -53,5 +53,20 @@ describe('nearestVeoDuration', () => {
 
   it('floors at 4 seconds for anything shorter', () => {
     expect(nearestVeoDuration(1)).toBe(4);
+  });
+});
+
+describe('isRetryableVeoError', () => {
+  it("retries INTERNAL (13) and UNAVAILABLE (14) — Veo's own transient hiccups", () => {
+    expect(isRetryableVeoError({ code: 13, message: 'internal server issue' })).toBe(true);
+    expect(isRetryableVeoError({ code: 14, message: 'unavailable' })).toBe(true);
+  });
+
+  it('does not retry a content-policy or bad-prompt rejection', () => {
+    expect(isRetryableVeoError({ code: 3, message: 'invalid argument' })).toBe(false);
+  });
+
+  it('does not retry when the provider sends no code at all', () => {
+    expect(isRetryableVeoError({ message: 'something went wrong' })).toBe(false);
   });
 });

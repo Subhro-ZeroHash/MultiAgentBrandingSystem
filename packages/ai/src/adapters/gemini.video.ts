@@ -85,6 +85,17 @@ export function nearestVeoDuration(seconds: number): 4 | 6 | 8 {
   );
 }
 
+/** Most provider-reported generation failures (content policy, bad prompt)
+ *  aren't fixed by an identical retry — but code 13 (INTERNAL) and 14
+ *  (UNAVAILABLE) are Veo's own transient infrastructure hiccups, the gRPC
+ *  equivalents of the HTTP 500/503 that resilience.ts already retries
+ *  elsewhere. Google's own message on a 13 is literally "please try again
+ *  in a few minutes" — treating it as permanent turns a one-off server blip
+ *  into an immediate, unretried failure surfaced straight to the user. */
+export function isRetryableVeoError(error: Record<string, unknown>): boolean {
+  return error['code'] === 13 || error['code'] === 14;
+}
+
 function toImagePart(frame: VideoFrameImage): { imageBytes: string; mimeType: string } {
   return { imageBytes: frame.data.toString('base64'), mimeType: frame.mediaType };
 }
@@ -236,9 +247,7 @@ export class GeminiVideoAdapter implements VideoGenService {
 
     if (operation.error) {
       throw new ProviderError(`google.video: ${describeError(operation.error)}`, 'google', {
-        // A provider-reported generation failure (content policy, bad
-        // prompt) isn't fixed by an identical retry.
-        retryable: false,
+        retryable: isRetryableVeoError(operation.error),
       });
     }
 
