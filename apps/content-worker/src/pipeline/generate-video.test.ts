@@ -2,7 +2,7 @@ import type { Brand } from '@bmas/db';
 import type { VideoGenerationRequest } from '@bmas/shared';
 import { describe, expect, it } from 'vitest';
 import type { WorkerContext } from '../context.js';
-import { composeVideoBrief, validateVideo } from './generate-video.js';
+import { PROVIDER_FOR_MODE, composeVideoBrief, validateVideo } from './generate-video.js';
 
 /** A minimal, real MP4 header — 'ftyp' at byte offset 4, same as any real
  *  ISO-BMFF file, followed by padding so it clears the size floor. */
@@ -71,6 +71,24 @@ function fakeCtx(
   };
   return { db: { select: () => builder } } as unknown as WorkerContext;
 }
+
+describe('PROVIDER_FOR_MODE', () => {
+  // Pins the one thing that decides which provider renders a job — see the
+  // doc comment above PROVIDER_FOR_MODE for why there is deliberately no
+  // fallback between them. A silent flip here would render `cinematic_broll`
+  // through Gemini or `advertisement` through LTX without any type error.
+  it('routes cinematic_broll to ltx only', () => {
+    expect(PROVIDER_FOR_MODE.cinematic_broll).toBe('ltx');
+  });
+
+  it('routes advertisement to google (Gemini/Veo) only', () => {
+    expect(PROVIDER_FOR_MODE.advertisement).toBe('google');
+  });
+
+  it('defines exactly these two modes, no silent fallthrough for a new one', () => {
+    expect(Object.keys(PROVIDER_FOR_MODE).sort()).toEqual(['advertisement', 'cinematic_broll']);
+  });
+});
 
 describe('composeVideoBrief', () => {
   it('names the product and folds in its description', async () => {

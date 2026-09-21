@@ -80,7 +80,7 @@ async function recordCost(
  * See `videoModeSchema`'s doc comment in packages/shared for the full
  * reasoning.
  */
-const PROVIDER_FOR_MODE: Record<VideoMode, VideoProviderName> = {
+export const PROVIDER_FOR_MODE: Record<VideoMode, VideoProviderName> = {
   cinematic_broll: 'ltx',
   advertisement: 'google',
 };
