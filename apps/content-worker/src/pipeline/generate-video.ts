@@ -26,7 +26,6 @@ import {
   mediaTypeFor,
   toneDirection,
 } from './stages.js';
-import { addEndCard } from './video-endcard.js';
 
 /**
  * Video generation's own pipeline, mirroring `generate.ts`'s shape at the
@@ -75,10 +74,11 @@ async function recordCost(
 /**
  * `videoMode` is the one thing that decides which provider renders a job —
  * two different products, not a quality tier with a fallback between them.
- * `cinematic_broll` needs LTX's image-to-video conditioning and ships its
- * output untouched; `advertisement` needs Veo's stronger prompt adherence
- * for on-brief energy and gets the closing message burned in afterward. See
- * `videoModeSchema`'s doc comment in packages/shared for the full reasoning.
+ * `cinematic_broll` needs LTX's image-to-video conditioning; `advertisement`
+ * needs Veo's stronger prompt adherence for on-brief energy. Both ship
+ * exactly what the provider returned — no pixel touched, no text burned in.
+ * See `videoModeSchema`'s doc comment in packages/shared for the full
+ * reasoning.
  */
 const PROVIDER_FOR_MODE: Record<VideoMode, VideoProviderName> = {
   cinematic_broll: 'ltx',
@@ -281,36 +281,6 @@ async function generateVideoCopy(
 }
 
 /**
- * Burns the closing message on, or returns the clip untouched if it can't.
- *
- * Best-effort for the same reason the copy stage is: the video has already
- * rendered and already cost money by the time this runs, and a missing font
- * or an ffmpeg that isn't installed is an operational problem with the box,
- * not a reason to throw away the thing the user is waiting for. A silent
- * clip is a worse ad than one with a caption, but it is still an ad.
- */
-async function burnEndCard(
-  ctx: WorkerContext,
-  video: Buffer,
-  options: { headline: string; cta?: string | undefined; durationSeconds: number; jobId: string },
-): Promise<Buffer> {
-  try {
-    return await addEndCard(
-      video,
-      { headline: options.headline, cta: options.cta },
-      options.durationSeconds,
-      ctx.videoEndCardFontBold,
-      ctx.videoEndCardFont,
-    );
-  } catch (error) {
-    console.warn(
-      `[content:video] job ${options.jobId}: end card could not be drawn, posting the clip without it — ${describeError(error)}`,
-    );
-    return video;
-  }
-}
-
-/**
  * The real, if smaller, QA check this pipeline stage owes its output — no
  * provider here can read a rendered frame the way `analyzeImage` does for
  * images, so this checks what can be checked without one: the container is
@@ -419,26 +389,9 @@ export async function runVideoGeneration(
     await setStage('copy');
     const copy = await generateVideoCopy(ctx, brand, request, job.jobId);
 
-    // `cinematic_broll` ships exactly what LTX returned — no end card, no
-    // pixel touched. Only `advertisement` gets the closing message burned in,
-    // preferring what the user typed over what the model wrote:
-    // `headlineText` is the one line they chose themselves, and silently
-    // replacing it with a generated alternative would be the app overruling
-    // them.
-    const endCardHeadline = request.headlineText?.trim() || copy?.headline;
-    const finalVideo =
-      request.videoMode === 'advertisement' && endCardHeadline
-        ? await burnEndCard(ctx, video.data, {
-            headline: endCardHeadline,
-            cta: request.ctaText?.trim() || copy?.cta,
-            durationSeconds: video.durationSeconds,
-            jobId: job.jobId,
-          })
-        : video.data;
-
     await setStage('storage');
     const key = `brands/${brand.id}/videos/${job.jobId}/video-1.mp4`;
-    await ctx.storage.put(key, finalVideo, video.mediaType);
+    await ctx.storage.put(key, video.data, video.mediaType);
 
     await ctx.db.transaction(async (tx) => {
       await tx.insert(schema.videoAssets).values({
