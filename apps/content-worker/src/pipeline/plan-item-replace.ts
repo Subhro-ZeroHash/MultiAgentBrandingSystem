@@ -35,7 +35,10 @@ import type { WorkerContext } from '../context.js';
  */
 
 const REPLACE_TIMEOUT_MS = 180_000;
-const MAX_REPLACE_TOKENS = 1_200;
+// The orchestrator model's thinking tokens count against this cap: at 1_200
+// the reasoning ate the budget and every reply was cut off mid-JSON. Matches
+// MAX_PLAN_TOKENS — the cap bounds cost, only tokens actually used are billed.
+const MAX_REPLACE_TOKENS = 4_000;
 /** How far back the rejection memory reaches. Enough that a user dismissing
  *  repeatedly keeps getting new ground; bounded so the prompt cannot grow
  *  without limit on a long-lived brand. */
