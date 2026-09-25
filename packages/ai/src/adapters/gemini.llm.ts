@@ -25,6 +25,22 @@ export interface GeminiLlmConfig {
 }
 
 /**
+ * Zod's `.int()` emits `minimum`/`maximum` of ±Number.MAX_SAFE_INTEGER, and
+ * Gemini rejects those with a bare 400 INVALID_ARGUMENT — which is how every
+ * marketing-plan job was failing. They constrain nothing, so drop them here,
+ * where every JSON call passes, rather than in each schema.
+ */
+export function geminiSafeSchema(schema: unknown): unknown {
+  return JSON.parse(JSON.stringify(schema), (key, value: unknown) =>
+    (key === 'maximum' || key === 'minimum') &&
+    typeof value === 'number' &&
+    Math.abs(value) >= Number.MAX_SAFE_INTEGER
+      ? undefined
+      : value,
+  );
+}
+
+/**
  * Text/vision LLM served by Gemini, so a deployment can run the whole content
  * pipeline on a single Google credential instead of holding an Anthropic key
  * as well. Selected by `LLM_PROVIDER=gemini`; see AiRegistry.
@@ -174,7 +190,7 @@ export class GeminiLlmAdapter implements LlmService {
         // responseJsonSchema requires responseMimeType and forbids the older
         // responseSchema; it takes JSON Schema, which is what callers hold.
         responseMimeType: 'application/json',
-        responseJsonSchema: req.schema,
+        responseJsonSchema: geminiSafeSchema(req.schema),
         ...(req.system ? { systemInstruction: req.system } : {}),
         ...(ctx?.signal ? { abortSignal: ctx.signal } : {}),
       },
