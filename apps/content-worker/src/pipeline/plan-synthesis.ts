@@ -154,8 +154,10 @@ async function draftPlan(
               '- Every item must be justified by something you were actually given — a trend ' +
               'opportunity, a piece of intelligence, a stated goal, or a learned preference. ' +
               'If you cannot point to why, do not propose it.\n' +
-              '- Cite trend opportunities by their [index] in your rationale where you used them, ' +
-              'and set opportunityIndex on the item that came from one.\n' +
+              '- The [n] numbers in the lists are only for opportunityIndex and productIndex. ' +
+              'Never write them in text the owner reads (headline, rationale, evidenceNotes, ' +
+              'titles, angle): name the trend or product instead. Set opportunityIndex on ' +
+              'the item that came from a trend opportunity.\n' +
               '- Respect what this brand has learned it does and does not want. A preference ' +
               'that says a topic was rejected is not a suggestion.\n' +
               '- Never repeat a title the current plan already proposed.\n' +
@@ -185,7 +187,7 @@ async function draftPlan(
                   context.currentPlanHeadline
                     ? `PLAN YOU ARE REPLACING: "${context.currentPlanHeadline}". Titles already ` +
                       `proposed (do not repeat): ${context.currentPlanTitles.join('; ') || 'none'}`
-                    : 'This is the brand&rsquo;s first plan.',
+                    : "This is the brand's first plan.",
                   '',
                   'LIVE TREND OPPORTUNITIES:',
                   opportunityBlock,

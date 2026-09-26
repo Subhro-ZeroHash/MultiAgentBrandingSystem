@@ -211,7 +211,9 @@ async function draftReplacement(
               'If your replacement could be mistaken for the rejected one, it is wrong.\n\n' +
               'Do not reuse any title or premise in the "already proposed" or "previously ' +
               "rejected\" lists. Stay on the plan's subject and respect the brand's banned " +
-              'topics and learned preferences.',
+              'topics and learned preferences.\n\n' +
+              'The [n] numbers in the lists are only for productIndex and opportunityIndex. ' +
+              'Never write them in the title, rationale or angle; name the product or trend instead.',
             messages: [
               {
                 role: 'user',
