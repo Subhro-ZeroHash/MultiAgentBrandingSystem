@@ -8,6 +8,16 @@
 | **Date**   | 17 July 2026 |
 | **Owner**  | Subhrajyoti  |
 
+> **As built (Sep 2026):** this is the July proposal, kept for its reasoning.
+> Where the build diverged: the client is an **Expo React Native app**
+> (`demo-frontend`, separate repo), not a Next.js PWA; `apps/web` is only
+> login, the OAuth callback and legal pages. The LLM is **Gemini** by default
+> (`LLM_PROVIDER`), with Anthropic as an option. Video uses **LTX + Veo**. Auth is
+> **custom JWT + refresh tokens**, not Better Auth. Hosting is **one EC2 box with
+> pm2** + Supabase Postgres + local Redis, not Vercel/Railway/Upstash. Cost
+> telemetry is `core.cost_events`. fal.ai, Seedream, background removal,
+> payments, Sentry and PostHog are not built. See `docs/architecture.md`.
+
 ---
 
 ## Summary Table

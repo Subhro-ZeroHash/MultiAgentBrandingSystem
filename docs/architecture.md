@@ -4,13 +4,17 @@
 
 **No product code imports a provider SDK.** `@anthropic-ai/sdk`, `@google/genai`,
 `@fal-ai/client`, and `openai` may only be imported inside
-`packages/ai/src/adapters/`. Everything else goes through an interface:
+`packages/ai/src/adapters/`. Providers without an SDK (LTX, Tavily, SerpApi,
+Perplexity) are plain `fetch` calls, and those live in the adapters too.
+Everything else goes through an interface:
 
-| Interface            | Used by            | Adapters                                                                                   |
-| -------------------- | ------------------ | ------------------------------------------------------------------------------------------ |
-| `LlmService`         | both systems       | `AnthropicLlmAdapter`                                                                      |
-| `ImageGenService`    | content generation | `GeminiImageAdapter`, `FalImageAdapter`                                                    |
-| `AnswerEngineClient` | GEO                | `ClaudeAnswerEngine`, `PerplexityAnswerEngine`, `OpenAiAnswerEngine`, `GeminiAnswerEngine` |
+| Interface            | Used by                       | Adapters                                                                                          |
+| -------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| `LlmService`         | both systems                  | `GeminiLlmAdapter` (default), `AnthropicLlmAdapter`                                               |
+| `ImageGenService`    | content generation            | `GeminiImageAdapter`, `StubImageAdapter`, `FalImageAdapter` (stub, unimplemented)                 |
+| `VideoGenService`    | video generation              | `LtxVideoAdapter`, `GeminiVideoAdapter` (Veo), `StubVideoAdapter`                                 |
+| `WebSearchService`   | trend / intelligence research | `TavilySearchAdapter`, `SerpApiSearchAdapter`, `StubSearchAdapter`                                |
+| `AnswerEngineClient` | GEO                           | `GeminiAnswerEngine`, `ClaudeAnswerEngine`, `PerplexityAnswerEngine`, `OpenAiAnswerEngine` (stub) |
 
 `AiRegistry` (`packages/ai/src/registry.ts`) is the only place that decides
 which adapter serves which operation, and it is built from environment
@@ -25,15 +29,17 @@ codebase will. The PRD's provider recommendations are explicitly marked
 
 ## Model roles, not model names
 
-Code asks for a _role_; the registry resolves it to a model id:
+Code asks for a _role_; the registry resolves it to a model id for whichever
+provider `LLM_PROVIDER` selects (`gemini` when unset):
 
-| Role           | Default            | Used for                                 |
-| -------------- | ------------------ | ---------------------------------------- |
-| `orchestrator` | `claude-opus-4-8`  | Brief composition, GEO answer analysis   |
-| `volume`       | `claude-haiku-4-5` | Per-platform copy fan-out                |
-| `qa`           | `claude-sonnet-5`  | Vision QA readback on rendered creatives |
+| Role           | Gemini default (`LLM_PROVIDER=gemini`) | Anthropic default  | Used for                                 |
+| -------------- | -------------------------------------- | ------------------ | ---------------------------------------- |
+| `orchestrator` | `gemini-3.1-pro-preview`               | `claude-opus-4-8`  | Brief composition, GEO answer analysis   |
+| `volume`       | `gemini-3.6-flash`                     | `claude-haiku-4-5` | Per-platform copy fan-out                |
+| `qa`           | `gemini-3.6-flash`                     | `claude-sonnet-5`  | Vision QA readback on rendered creatives |
 
-Override per environment with `LLM_MODEL_ORCHESTRATOR` / `_VOLUME` / `_QA`.
+Override per environment with `LLM_MODEL_ORCHESTRATOR` / `_VOLUME` / `_QA`; the
+ids must belong to the selected provider or the call 404s.
 The `volume` default follows the PRD's cost reasoning; `orchestrator` defaults
 to the strongest model because the GEO analyser is the measurement instrument
 and errors there corrupt every downstream score.
@@ -43,13 +49,21 @@ and errors there corrupt every downstream score.
 Three Postgres schemas in one database:
 
 ```
-core     users, brands (Brand Kit), cost_events, brand_site_profiles  <- shared, both owners review
-content  products, product_images, generation_jobs, creative_assets,
-         copy_packs, credit_ledger, brand_context, brand_preferences,
-         automation_settings, context_snapshots, trend_research_runs,
-         trend_signals, trend_opportunities, intelligence_runs,
-         intelligence_items, ai_research_queries                      <- content workstream
-         [Brand Brain tables marked with ✨]
+core     users, refresh_tokens, brands (Brand Kit), cost_events,
+         brand_site_profiles                                          <- shared, both owners review
+content  creative:   products, product_images, generation_jobs, creative_assets,
+                     asset_edits, copy_packs, video_generation_jobs, video_assets
+         brain:      brand_contexts, brand_preferences, automation_settings,
+                     context_snapshots
+         research:   trend_research_runs, trend_signals, trend_opportunities,
+                     intelligence_runs, intelligence_items, ai_research_queries,
+                     pool_trend_runs, pool_trend_items, pool_trend_signals,
+                     pool_intelligence_runs, pool_intelligence_items
+         planning:   marketing_plans, plan_items, plan_directives
+         publishing: scheduled_campaigns, scheduled_posts, social_accounts,
+                     post_insights, post_comments, google_reviews
+         other:      push_tokens, notification_history, credit_ledger (unused)
+                                                                      <- content workstream
 geo      tracked_prompts, competitors, probe_runs, mentions,
          visibility_snapshots                                        <- GEO workstream
 ```
@@ -63,11 +77,11 @@ forget - that's deliberate, per the PRD's "cost telemetry from day one".
 
 ### Brand Brain tables
 
-Four tables (marked ✨ above) implement persistent context and learning:
+Four tables (the `brain` group above) implement persistent context and learning:
 
 | Table                 | Purpose                                                               | Lifespan                |
 | --------------------- | --------------------------------------------------------------------- | ----------------------- |
-| `brand_context`       | Static brand kit: goals, positioning, pillars, competitors, products  | Until user edits        |
+| `brand_contexts`      | Static brand kit: goals, positioning, pillars, competitors, products  | Until user edits        |
 | `brand_preferences`   | Append-only feedback log: rejections, regenerations, edits, approvals | Forever (audit trail)   |
 | `automation_settings` | Publishing policy: auto-publish flag, posting times, research cadence | Until user changes      |
 | `context_snapshots`   | Audit log: what context each generation saw                           | With the generating job |
@@ -105,12 +119,20 @@ Generation and probing are long-running and retry-heavy, so both are queued
 (BullMQ + Redis) rather than served inline:
 
 ```
-content-api  --content-generation-->  content-worker  (brief -> image -> QA -> copy)
+content-api  --content-generation-->  content-worker  (copy -> brief -> image -> QA)
+             --video-generation---->  content-worker  (LTX or Veo, by video mode)
+             --content-edit / trend-research / intelligence-research /
+               content-plan-* / scheduled-post-publish --> content-worker
 geo-api      --geo-probe----------->  geo-worker      (ask engine -> analyse -> store)
              --geo-rollup---------->  geo-worker      (aggregate -> visibility_snapshots)
+
+content-worker also runs its own repeatable ticks: research-scheduler (10h,
+autopilot brands), pool-scheduler (6h, shared research pool), and
+instagram-insights-sync (6h).
 ```
 
-Queue names and job payload schemas live in `@bmas/shared` so an API can enqueue
+Queue names and job payload schemas live in `@bmas/shared` (`src/queues.ts` is
+the full list) so an API can enqueue
 work a worker in a different app consumes without either hard-coding a string.
 Note that BullMQ rejects `:` in queue names and custom job ids - it namespaces
 its own Redis keys with that character - so the separator is `-` throughout.
@@ -121,7 +143,9 @@ Two conventions worth keeping:
   and uses it as the BullMQ job id; GEO derives a job id from
   `prompt-engine-hour`. A retried request never double-charges a provider.
 - **Graceful drain.** Workers `close()` on SIGTERM so a deploy never abandons a
-  job that has already been paid for.
+  job that has already been paid for — bounded by a 15s forced exit, because
+  `close()` hangs forever while Redis is unreachable and a worker that outlives
+  its signal keeps stealing jobs with stale env.
 
 ## GEO scoring
 
@@ -166,11 +190,14 @@ For detailed documentation, see [docs/phase1-signal-intelligence-report.md](phas
 
 ## Deliberately deferred
 
-The skeleton has no auth, payments, storage client, or observability wiring.
-Those are real decisions (Better Auth vs Supabase, Razorpay + Stripe, R2 vs S3,
-Sentry/PostHog) and stubbing them now would bake in a choice nobody has made.
-Placeholders are marked `TODO(content)` / `TODO(geo)` at the call sites that
-need them.
+Decided and built since the skeleton: auth is custom (JWT access tokens +
+revocable refresh tokens in `core.refresh_tokens`, bcrypt, emailed reset codes
+via Brevo); storage is the S3 SDK against MinIO locally and Cloudflare R2 in
+prod; deploy is one EC2 box running pm2 + nginx, with Postgres on Supabase
+(see `deploy.sh`, `ecosystem.config.cjs`, `nginx/`).
+
+Still open: payments (Razorpay + Stripe; `credit_ledger` exists but nothing
+debits it) and observability (Sentry/PostHog).
 
 TikTok/YouTube/Instagram/Facebook/Reddit signal providers are deferred the
 same way: none exposes a free trend-signal API, and building against one that

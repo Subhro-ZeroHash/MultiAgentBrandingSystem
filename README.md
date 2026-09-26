@@ -10,19 +10,19 @@ Two products, one Brand Kit, one repo. The Creative Content Agent now includes t
 
 Both products read the same `core.brands` Brand Kit and share the provider-abstraction
 layer, the database package, and the Zod contracts. The Brand Brain adds four new tables
-(`brand_context`, `brand_preferences`, `automation_settings`, `context_snapshots`) to make brand knowledge persistent and queryable by the content generation pipeline.
+(`brand_contexts`, `brand_preferences`, `automation_settings`, `context_snapshots`) to make brand knowledge persistent and queryable by the content generation pipeline.
 
 ## Layout
 
 ```
 apps/
-  web/             Next.js 15 — /studio (content) and /geo route groups
-  content-api/     NestJS  — brand kit, products, generation intake
-  content-worker/  BullMQ  — brief → image → QA → copy
+  web/             Next.js 16 — login, Instagram OAuth callback, privacy/data-deletion pages
+  content-api/     NestJS  — auth, brand kit, generation intake, research, planning, scheduling, social
+  content-worker/  BullMQ  — copy → brief → image → QA, video, research, planning, publishing
   geo-api/         NestJS  — tracked prompts, visibility reads
   geo-worker/      BullMQ  — probe → analyse → roll-up
 packages/
-  ai/              Provider adapters + LlmService / ImageGenService / AnswerEngineClient
+  ai/              Provider adapters + LLM / image / video / web-search / answer-engine services
   db/              Drizzle schema (core | content | geo) + migrations
   shared/          Zod contracts and queue names shared client ↔ server
   config/          Shared tsconfig + ESLint
@@ -37,7 +37,7 @@ Prerequisites: Node 22+ (see `.nvmrc`), Docker, pnpm via corepack.
 corepack enable
 pnpm install
 
-cp .env.example .env          # fill in at least ANTHROPIC_API_KEY
+cp .env.example .env          # set AUTH_SECRET, ENCRYPTION_KEY, and GOOGLE_API_KEY
 pnpm infra:up                 # postgres + redis + minio
 pnpm db:migrate               # apply migrations
 pnpm db:seed                  # dev user + brand + sample GEO prompts
@@ -49,9 +49,9 @@ The containers bind **5433** (Postgres) and **6380** (Redis), not the defaults �
 a locally-installed Postgres on 5432 otherwise shadows the container and shows
 up as a confusing authentication failure rather than a port clash.
 
-`pnpm db:seed` is what makes the write paths usable before auth exists: the
-APIs have no identity yet, so `POST /api/brands` needs a real `core.users` row
-to reference (`DEV_OWNER_ID`, default `dev-user`).
+`pnpm db:seed` creates fixture data (the `dev-user` owner, the `dev-brand`
+brand, and sample GEO prompts). The seeded user has no password, so to use the
+APIs, sign up through `POST /api/auth/signup` or the app and then create a brand.
 
 Or run one workstream at a time:
 

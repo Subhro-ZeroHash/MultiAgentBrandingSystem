@@ -29,12 +29,12 @@ export const videoGenerationRequestSchema = z.object({
   productId: entityIdSchema,
   campaignType: campaignTypeSchema,
   styleTemplate: styleTemplateSchema,
-  /** Picks both the provider and how the result is finished — not a quality
-   *  tier, two different products. `cinematic_broll` renders on LTX and ships
-   *  exactly what LTX returned, untouched: raw supplementary footage, no
-   *  burnt-in text. `advertisement` renders on Gemini's Veo models and gets
-   *  the closing headline/CTA burned onto the last seconds the way an ad
-   *  needs one. Each mode is pinned to its own provider — see
+  /** Picks the provider — not a quality tier, two different products.
+   *  `cinematic_broll` renders on LTX (raw supplementary footage);
+   *  `advertisement` renders on Gemini's Veo models. Both ship exactly what
+   *  the provider returned, with no burnt-in text: headline/offer/CTA only
+   *  steer the clip's mood in the prompt (see `composeVideoBrief`). Each mode
+   *  is pinned to its own provider — see
    *  `PROVIDER_FOR_MODE` in generate-video.ts — there is no fallback between
    *  them, so a Veo outage doesn't silently hand back LTX footage under an
    *  "advertisement" label or vice versa. */

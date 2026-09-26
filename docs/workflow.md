@@ -79,13 +79,18 @@ refuses to start rather than failing on the first request that needs it.
 
 ## Open decisions
 
-These are deliberately unbuilt — pick them up as their own `shared/` PRs:
+Still unbuilt — pick them up as their own `shared/` PRs:
 
-| Decision                 | Notes                                                           |
-| ------------------------ | --------------------------------------------------------------- |
-| Auth provider            | Better Auth vs Supabase Auth; affects `core.users`              |
-| Object storage client    | S3 SDK against MinIO locally, R2 in prod                        |
-| Payments + credit grants | Razorpay (India) + Stripe; ledger table already exists          |
-| Observability            | Sentry + PostHog wiring                                         |
-| Deploy targets           | Vercel for web; Railway/Fly for APIs and workers                |
-| Provider spike           | Confirm live model ids, per-image pricing, rate limits (PRD Q4) |
+| Decision                 | Notes                                                  |
+| ------------------------ | ------------------------------------------------------ |
+| Payments + credit grants | Razorpay (India) + Stripe; ledger table already exists |
+| Observability            | Sentry + PostHog wiring                                |
+
+Settled since this list was written:
+
+| Decision              | Outcome                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| Auth provider         | Custom JWT + refresh tokens in content-api (`apps/content-api/src/auth`); geo-api verifies |
+| Object storage client | S3 SDK against MinIO locally, Cloudflare R2 in prod                                        |
+| Deploy targets        | One EC2 box: pm2 + nginx, Supabase Postgres, local Redis (`deploy.sh`)                     |
+| Provider spike        | Gemini for LLM/image/Veo, LTX for video — ids in `packages/ai/src/registry.ts`             |

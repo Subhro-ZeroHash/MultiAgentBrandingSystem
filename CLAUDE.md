@@ -12,7 +12,8 @@ structural changes and [docs/workflow.md](docs/workflow.md) before branching.
 ## Hard rules
 
 1. **Never import a provider SDK outside `packages/ai/src/adapters/`.**
-   Use `LlmService`, `ImageGenService`, or `AnswerEngineClient` from `@bmas/ai`.
+   Use `LlmService`, `ImageGenService`, `VideoGenService`, `WebSearchService`, or
+   `AnswerEngineClient` from `@bmas/ai`.
    ESLint fails the build on violations.
 2. **Everything is ESM.** Relative imports need explicit `.js` extensions
    (NodeNext resolution), including in the NestJS apps. This is not a typo.
@@ -24,6 +25,9 @@ structural changes and [docs/workflow.md](docs/workflow.md) before branching.
    persist `cost` to `core.cost_events`.
 6. **New env vars go in three places**: `.env.example`, the app's
    `config/env.ts` Zod schema, and `turbo.json` `globalEnv` if builds read it.
+7. **Auth is per route, not global.** Every non-public controller route needs
+   `@UseGuards(JwtAuthGuard)` plus an ownership check on the brand it touches;
+   a route without the guard is open to anyone.
 
 ## Model selection
 
@@ -45,17 +49,25 @@ See [docs/brand-brain-system.md](docs/brand-brain-system.md) for full architectu
 
 ## Deliberate gaps
 
-Auth, payments, object storage, and observability are unbuilt on purpose — the
-choices haven't been made. Look for `TODO(content)` and `TODO(geo)` markers.
-The image adapters and two GEO engine adapters are stubs pending the provider
-spike (PRD §Q4): confirm live model ids and pricing before filling them in
-rather than guessing from training data.
+Built since the scaffold: auth (custom JWT access + refresh tokens, bcrypt,
+emailed reset codes), S3-compatible storage (MinIO locally, Cloudflare R2 in
+prod), the Gemini image/LLM/video adapters, LTX video, Tavily/SerpApi search,
+and a single-box EC2 deploy (`deploy.sh`, `ecosystem.config.cjs`, `nginx/`).
+
+Still unbuilt on purpose: payments (the `credit_ledger` table exists, nothing
+debits it) and observability (Sentry/PostHog). `FalImageAdapter` and
+`OpenAiAnswerEngine` are `NotImplementedError` stubs. Model ids retire fast —
+confirm a live id with a real call before changing a default in
+`packages/ai/src/registry.ts`, and give every image model a row in
+`packages/ai/src/pricing.ts` or its spend records as $0.
 
 ## Verifying a change
 
 ```bash
-pnpm typecheck && pnpm lint && pnpm build && pnpm test
+pnpm format:check && pnpm typecheck && pnpm lint && pnpm build && pnpm test
 ```
+
+CI runs the same five steps; `pnpm format` fixes the first.
 
 Tests are Vitest, named `*.test.ts` beside the code they cover, and extend the
 shared base at `@bmas/config/vitest/node`. Coverage is deliberate rather than

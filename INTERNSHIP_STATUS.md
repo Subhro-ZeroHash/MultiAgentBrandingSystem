@@ -1,6 +1,6 @@
 # Internship Project Status
 
-**Start Date**: July 2026 | **Current**: August 2026 | **Deadline**: 23 July 2026 ⚠️ (deadline passed, work ongoing)
+**Start Date**: July 2026 | **Last updated**: 25 September 2026 | **Deadline**: 23 July 2026 ⚠️ (deadline passed, work ongoing)
 
 ## Project Overview
 
@@ -9,6 +9,23 @@ Multi-Agent Brand System: a TypeScript + Node.js monorepo holding two products t
 - **Creative Content Agent** (content-api + content-worker) — generates social media creatives
 - **GEO visibility tracker** (geo-api + geo-worker) — measures brand perception
 - **Brand Brain** ✨ (new) — persistent context and learning system
+
+## Since Phase 1 (Aug–Sep 2026)
+
+The Phase 1 report below is kept as written. Shipped after it (see `git log` for detail):
+
+- **Marketing planner** — plan synthesis, a steering chat that researches before re-planning, and per-item replace; nothing generates until a human approves an item
+- **Research rebuild** — shared per-category/market pool (Layer A) + per-brand relevance scoring (Layer B), focused research for a named subject, festival calendar with date verification, date grounding, competitor discovery via web search
+- **Autopilot** — scheduled research, auto-triggered campaigns that still wait for approval, GEO prompt suggestions, inactivity pause
+- **Video** — LTX (`cinematic_broll`) and Veo (`advertisement`) modes, 1080x1920, 10s+, posted as Instagram Reels
+- **Instagram** — account stats, whole-account post insights + comments sync feeding the Brand Brain, scheduled publishing
+- **Google Business Profile** — OAuth connect and AI replies to reviews
+- **Auth & security** — JWT refresh tokens, password reset via emailed code (Brevo), per-account credential throttling, web app auth
+- **Notifications** — Expo push (FCM on Android) for opportunities, signals and posts awaiting review, plus a history list
+- **Deployment** — live on one EC2 box (pm2 + nginx + sslip.io TLS), Supabase Postgres, Cloudflare R2; Android APK via EAS
+- **Perf** — N+1 query fixes, bounded lists, gzip
+
+Still open: payments (credit ledger unused) and observability.
 
 ## Phase 1: Brand Brain & Context System
 
@@ -176,7 +193,7 @@ Find patterns across all brands — which visual styles are common in luxury? Wh
 
 ## Next Steps (Post-Phase 1)
 
-1. **Deploy to staging**: Apply migrations, run smoke tests in pre-prod environment
+1. ~~**Deploy to staging**~~ — done: production runs on EC2 (see `deploy.sh`)
 2. **Load testing**: Verify snapshot queries stay sub-50ms with 100K+ rows per brand
 3. **Retention policy**: Decide how long to keep snapshots (30 days? 1 year?)
 4. **Confidence tuning**: Monitor feedback confidence floor in production; adjust if needed
