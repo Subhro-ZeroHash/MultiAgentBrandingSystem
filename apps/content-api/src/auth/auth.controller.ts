@@ -1,12 +1,14 @@
 import { Body, Controller, Get, Post, Request, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
+  acceptPrivacyInputSchema,
   forgotPasswordInputSchema,
   loginInputSchema,
   logoutInputSchema,
   refreshInputSchema,
   resetPasswordInputSchema,
   signupInputSchema,
+  type AcceptPrivacyInput,
   type AuthUser,
   type ForgotPasswordInput,
   type LogoutInput,
@@ -130,5 +132,17 @@ export class AuthController {
   async me(@Request() req: { user: AuthUser }) {
     await this.autopilotActivity.recordActivity(req.user.id);
     return req.user;
+  }
+
+  /** Records that the signed-in user accepted a privacy policy version — the
+   *  website asks existing users before letting them in, and again whenever
+   *  the policy changes. Returns the updated user. */
+  @UseGuards(JwtAuthGuard)
+  @Post('privacy/accept')
+  acceptPrivacy(
+    @Request() req: { user: AuthUser },
+    @Body(new ZodValidationPipe(acceptPrivacyInputSchema)) body: unknown,
+  ) {
+    return this.auth.acceptPrivacyPolicy(req.user.id, (body as AcceptPrivacyInput).version);
   }
 }

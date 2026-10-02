@@ -32,7 +32,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: JwtPayload): Promise<AuthUser> {
     const [user] = await this.db
-      .select({ id: schema.users.id, email: schema.users.email, name: schema.users.name })
+      .select({
+        id: schema.users.id,
+        email: schema.users.email,
+        name: schema.users.name,
+        privacyPolicyVersion: schema.users.privacyPolicyVersion,
+      })
       .from(schema.users)
       .where(eq(schema.users.id, payload.sub))
       .limit(1);

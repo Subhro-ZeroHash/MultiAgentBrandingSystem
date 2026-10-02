@@ -41,6 +41,11 @@ export const users = core.table(
     resetCodeExpiresAt: timestamp('reset_code_expires_at', { withTimezone: true }),
     emailVerified: boolean('email_verified').notNull().default(false),
     imageUrl: text('image_url'),
+    /** The privacy policy this user last accepted — its "last updated" date,
+     *  YYYY-MM-DD — and when. The record of consent: null until they accept,
+     *  and the website asks again whenever the policy's version moves on. */
+    privacyPolicyVersion: text('privacy_policy_version'),
+    privacyAcceptedAt: timestamp('privacy_accepted_at', { withTimezone: true }),
     /** Stamped on every signup/login/refresh (AuthService.issueTokenPair) —
      *  the one signal content-worker's inactivity sweep needs to decide
      *  whether a user's autopilot brands have gone quiet. `defaultNow()`

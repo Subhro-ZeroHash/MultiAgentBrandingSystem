@@ -5,6 +5,7 @@ import type { AuthUser } from '@bmas/shared';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { DATABASE } from '../core/core.module.js';
 import { loadEnv } from '../config/env.js';
+import { AUTH_USER_COLUMNS } from './auth.service.js';
 
 interface JwtPayload {
   sub: string;
@@ -32,7 +33,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: JwtPayload): Promise<AuthUser> {
     const [user] = await this.db
-      .select({ id: schema.users.id, email: schema.users.email, name: schema.users.name })
+      .select(AUTH_USER_COLUMNS)
       .from(schema.users)
       .where(eq(schema.users.id, payload.sub))
       .limit(1);

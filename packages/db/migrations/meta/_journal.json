@@ -267,6 +267,13 @@
       "when": 1790936725078,
       "tag": "0037_medical_vengeance",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790950851298,
+      "tag": "0038_elite_vivisector",
+      "breakpoints": true
     }
   ]
 }

@@ -61,6 +61,15 @@ function isUniqueViolation(error: unknown): boolean {
   return false;
 }
 
+/** The columns that make up an AuthUser, so every place that loads the signed-in
+ *  user (signup, login, refresh, the JWT strategy) returns the same shape. */
+export const AUTH_USER_COLUMNS = {
+  id: schema.users.id,
+  email: schema.users.email,
+  name: schema.users.name,
+  privacyPolicyVersion: schema.users.privacyPolicyVersion,
+};
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -73,6 +82,17 @@ export class AuthService {
     @Inject(DATABASE) private readonly db: Database,
     private readonly jwt: JwtService,
   ) {}
+
+  /** Records which privacy policy the user accepted, and when. */
+  async acceptPrivacyPolicy(userId: string, version: string): Promise<AuthUser> {
+    const [user] = await this.db
+      .update(schema.users)
+      .set({ privacyPolicyVersion: version, privacyAcceptedAt: new Date(), updatedAt: new Date() })
+      .where(eq(schema.users.id, userId))
+      .returning(AUTH_USER_COLUMNS);
+    if (!user) throw new UnauthorizedException('Account no longer exists');
+    return user;
+  }
 
   private async issueTokenPair(
     user: AuthUser,
@@ -119,8 +139,14 @@ export class AuthService {
           email: input.email,
           name: input.name ?? null,
           passwordHash,
+          ...(input.acceptedPrivacyPolicyVersion
+            ? {
+                privacyPolicyVersion: input.acceptedPrivacyPolicyVersion,
+                privacyAcceptedAt: new Date(),
+              }
+            : {}),
         })
-        .returning({ id: schema.users.id, email: schema.users.email, name: schema.users.name });
+        .returning(AUTH_USER_COLUMNS);
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw new ConflictException('An account with this email already exists.');
@@ -134,12 +160,7 @@ export class AuthService {
 
   async login(input: LoginInput): Promise<AuthResponse> {
     const [row] = await this.db
-      .select({
-        id: schema.users.id,
-        email: schema.users.email,
-        name: schema.users.name,
-        passwordHash: schema.users.passwordHash,
-      })
+      .select({ ...AUTH_USER_COLUMNS, passwordHash: schema.users.passwordHash })
       .from(schema.users)
       .where(eq(schema.users.email, input.email))
       .limit(1);
@@ -152,7 +173,7 @@ export class AuthService {
     const matches = await bcrypt.compare(input.password, row.passwordHash);
     if (!matches) throw invalid();
 
-    const user: AuthUser = { id: row.id, email: row.email, name: row.name };
+    const { passwordHash: _, ...user } = row;
     return { user, ...(await this.issueTokenPair(user)) };
   }
 
@@ -191,7 +212,7 @@ export class AuthService {
     if (!tokenRow || tokenRow.expiresAt < new Date()) throw invalid();
 
     const [user] = await this.db
-      .select({ id: schema.users.id, email: schema.users.email, name: schema.users.name })
+      .select(AUTH_USER_COLUMNS)
       .from(schema.users)
       .where(eq(schema.users.id, tokenRow.userId))
       .limit(1);
