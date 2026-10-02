@@ -33,6 +33,7 @@ import { runScheduledPostPublish } from './pipeline/scheduled-post-publish.js';
 import { runTrendPoolRefresh } from './pipeline/trend-pool-refresh.js';
 import { runPlanDirective } from './pipeline/plan-directive.js';
 import { runPlanItemReplace } from './pipeline/plan-item-replace.js';
+import { schedulePendingPlanItemPosts, schedulePlanItemPost } from './pipeline/plan-item-post.js';
 import { runPlanSynthesis } from './pipeline/plan-synthesis.js';
 import { runTrendResearch } from './pipeline/trend-research.js';
 
@@ -70,14 +71,21 @@ console.warn(
 
 const generationWorker = new Worker(
   QUEUES.contentGeneration,
-  async (job) =>
-    runGeneration(ctx, contentGenerationJobSchema.parse(job.data), {
+  async (job) => {
+    const data = contentGenerationJobSchema.parse(job.data);
+    await runGeneration(ctx, data, {
       // `attemptsStarted` counts the run in progress (1 on the first pass);
       // `attemptsMade` only counts attempts that have already failed, so it
       // reads 0 here and would mark every first failure as terminal.
       attempt: job.attemptsStarted || job.attemptsMade + 1,
       maxAttempts: job.opts.attempts ?? 1,
-    }),
+    });
+    // Best-effort, like the success hook inside runGeneration: a throw here
+    // would make BullMQ re-run (and re-bill) a generation that already succeeded.
+    await schedulePlanItemPost(ctx.db, scheduledPostPublishProducer, data.jobId).catch((error) =>
+      console.error(`[plan-item-post] job ${data.jobId}: ${describeError(error)}`),
+    );
+  },
   { connection: ctx.redis, concurrency: ctx.concurrency },
 );
 
@@ -166,6 +174,12 @@ const contentGenerationProducer = new Queue(QUEUES.contentGeneration, { connecti
 const scheduledPostPublishProducer = new Queue(QUEUES.scheduledPostPublish, {
   connection: ctx.redis,
 });
+
+// Plan items approved before plan-item-post existed, or whose generation
+// finished while this worker was down.
+await schedulePendingPlanItemPosts(ctx.db, scheduledPostPublishProducer).catch((error) =>
+  console.error(`[plan-item-post] startup sweep failed: ${describeError(error)}`),
+);
 
 const trendResearchWorker = new Worker(
   QUEUES.trendResearch,
