@@ -1,5 +1,5 @@
 import { describeError } from '@bmas/ai';
-import { and, eq, gte, inArray, isNotNull, schema, sql, type SocialAccount } from '@bmas/db';
+import { and, eq, gte, inArray, isNotNull, lt, schema, sql, type SocialAccount } from '@bmas/db';
 import {
   graphErrorMessage,
   INSTAGRAM_INSIGHTS_LOOKBACK_DAYS,
@@ -403,11 +403,81 @@ async function syncOneAccount(
   }
 }
 
+/** Renew a long-lived token once it is this close to expiring. Instagram only
+ *  renews a token that is at least a day old and not yet expired, so the
+ *  window has to open well before the 6-hourly ticks could miss it. */
+const TOKEN_RENEW_WINDOW_MS = 10 * 24 * 60 * 60 * 1000;
+
+/**
+ * Keeps every connected account's 60-day token alive. Without this a token
+ * silently dies two months after connecting and publishing, insights and the
+ * inbox all stop until the owner reconnects. Runs over every active account,
+ * not just sync targets: an owner with several brands is skipped by the sync
+ * below but still publishes and receives messages.
+ */
+async function renewExpiringTokens(ctx: WorkerContext, encryption: TokenEncryption) {
+  const accounts = await ctx.db
+    .select()
+    .from(schema.socialAccounts)
+    .where(
+      and(
+        eq(schema.socialAccounts.platform, 'instagram'),
+        eq(schema.socialAccounts.status, 'active'),
+        lt(schema.socialAccounts.tokenExpiresAt, new Date(Date.now() + TOKEN_RENEW_WINDOW_MS)),
+      ),
+    );
+
+  for (const account of accounts) {
+    // Already dead: only a reconnect helps, and the sync marks it for that.
+    if (isTokenExpired(account.tokenExpiresAt)) continue;
+    try {
+      const result = await graphGet('refresh_access_token', {
+        grant_type: 'ig_refresh_token',
+        access_token: encryption.decrypt(account.pageAccessToken),
+      });
+      const token = result.ok ? result.body.access_token : undefined;
+      if (!result.ok || typeof token !== 'string') {
+        console.error(
+          `[instagram-token] ${account.displayName}: renewal failed — ${result.ok ? 'no token returned' : result.message}`,
+        );
+        continue;
+      }
+      const lifetimeSeconds = toNumber(result.body.expires_in) ?? 60 * 24 * 60 * 60;
+      await ctx.db
+        .update(schema.socialAccounts)
+        .set({
+          pageAccessToken: encryption.encrypt(token),
+          tokenExpiresAt: new Date(Date.now() + lifetimeSeconds * 1000),
+        })
+        .where(eq(schema.socialAccounts.id, account.id));
+      console.warn(`[instagram-token] ${account.displayName}: renewed`);
+    } catch (error) {
+      console.error(
+        `[instagram-token] ${account.displayName}: renewal failed — ${describeError(error)}`,
+      );
+    }
+  }
+}
+
+/** How long raw comment/DM notifications are kept. They carry customers'
+ *  messages, and the privacy policy promises they go after 30 days. */
+const WEBHOOK_EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** The tick's processor: find who's due, sync each, log what happened. One
  *  account failing (a revoked token, a rate limit) is logged and skipped
  *  rather than aborting the sweep — the other accounts still deserve their
  *  sync this round. */
 export async function runInstagramInsightsSync(ctx: WorkerContext): Promise<void> {
+  const encryption = new TokenEncryption(ctx.encryptionKey);
+  await ctx.db
+    .delete(schema.instagramWebhookEvents)
+    .where(
+      lt(
+        schema.instagramWebhookEvents.receivedAt,
+        new Date(Date.now() - WEBHOOK_EVENT_RETENTION_MS),
+      ),
+    );
+  await renewExpiringTokens(ctx, encryption);
   const targets = await getSyncTargets(ctx);
 
   if (targets.length === 0) {
@@ -416,8 +486,6 @@ export async function runInstagramInsightsSync(ctx: WorkerContext): Promise<void
   }
 
   console.warn(`[instagram-insights-sync] tick: ${targets.length} account(s) due`);
-
-  const encryption = new TokenEncryption(ctx.encryptionKey);
 
   for (const target of targets) {
     try {

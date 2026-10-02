@@ -69,6 +69,14 @@ const envSchema = z
      *  and secret, which are NOT the same values as the Meta/Facebook app's. */
     INSTAGRAM_APP_ID: optionalText(),
     INSTAGRAM_APP_SECRET: optionalText(),
+    /** Any random string; typed into the dashboard's Instagram → Webhooks
+     *  "Verify token" field so Meta can confirm it owns the callback URL. The
+     *  deliveries themselves are authenticated with INSTAGRAM_APP_SECRET. */
+    INSTAGRAM_WEBHOOK_VERIFY_TOKEN: optionalText(),
+    /** The Meta app's own secret (App settings → Basic). Meta's docs only say
+     *  webhooks are signed with "your app's App Secret", and an Instagram Login
+     *  app has two, so deliveries signed with either are accepted. */
+    META_APP_SECRET: optionalText(),
     /** Encrypts Instagram access tokens at rest (AES-256-GCM via
      *  TokenEncryption) and signs the asset links Instagram fetches images/
      *  videos from. Required rather than optional — it used to be, and a

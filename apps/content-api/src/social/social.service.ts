@@ -40,6 +40,11 @@ const OAUTH_TOKEN = 'https://api.instagram.com/oauth/access_token';
  * profile, its media, and the comments on that media. All are granted on the
  * same consent screen.
  *
+ * The last two power the inbox: replying to (and hiding) comments, and reading
+ * and answering DMs. They must be added to the app in the Meta dashboard
+ * before this list ships, or Instagram rejects the consent screen. Accounts
+ * connected earlier keep working and pick them up on their next reconnect.
+ *
  * `manage_insights` is what unlocks reach, impressions, saves and total
  * interactions — verified against the live API, those return 403 "Application
  * does not have permission" without it, while like/comment counts and comment
@@ -52,6 +57,8 @@ const SCOPES = [
   'instagram_business_basic',
   'instagram_business_content_publish',
   'instagram_business_manage_insights',
+  'instagram_business_manage_comments',
+  'instagram_business_manage_messages',
 ].join(',');
 
 /** Only professional accounts can publish through the API. A personal account
@@ -388,6 +395,25 @@ export class SocialService {
       throw new Error('Failed to create social account record');
     }
 
+    // Meta sends comment and DM webhooks only for accounts subscribed to the
+    // app. Best-effort: until webhooks are configured in the dashboard this
+    // fails, and that must not undo a connection that otherwise works —
+    // reconnecting retries it.
+    // `message_echoes` reports replies typed in the Instagram app itself, so the
+    // inbox knows a person already answered and doesn't reply on top of them.
+    await this.graphPost(
+      'me/subscribed_apps',
+      {
+        subscribed_fields: 'comments,messages,message_echoes',
+        access_token: longLived.access_token,
+      },
+      'subscribe to comment and DM webhooks',
+    ).catch((error: unknown) =>
+      console.warn(
+        `[instagram] ${displayName}: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+
     return accounts[0];
   }
 
@@ -634,9 +660,27 @@ export class SocialService {
     return this.getDecryptedToken(account);
   }
 
+  /**
+   * Insights, synced comments and reviews cascade with the account row. Comment
+   * and DM notifications are keyed by the Instagram id instead (they arrive
+   * before we know which account they belong to), so they are removed here —
+   * unless another user still has the same Instagram account connected, since
+   * those deliveries are theirs too. The privacy policy promises this.
+   */
   async disconnectAccount(accountId: string, userId: string): Promise<void> {
     const account = await this.getAccount(accountId, userId);
     await this.db.delete(schema.socialAccounts).where(eq(schema.socialAccounts.id, account.id));
+    if (!account.igBusinessId) return;
+    const [stillConnected] = await this.db
+      .select({ id: schema.socialAccounts.id })
+      .from(schema.socialAccounts)
+      .where(eq(schema.socialAccounts.igBusinessId, account.igBusinessId))
+      .limit(1);
+    if (!stillConnected) {
+      await this.db
+        .delete(schema.instagramWebhookEvents)
+        .where(eq(schema.instagramWebhookEvents.igAccountId, account.igBusinessId));
+    }
   }
 
   getDecryptedToken(account: SocialAccount): string {

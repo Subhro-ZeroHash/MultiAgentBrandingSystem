@@ -772,6 +772,37 @@ export const postComments = content.table(
   ],
 );
 
+/**
+ * Instagram webhook deliveries (new comments, DMs), stored as Meta sent them.
+ * The webhook route only checks the signature and writes here; the inbox
+ * pipeline works through unprocessed rows, so anything that arrives before it
+ * exists, or while it is down, can still be replayed. Carries customer
+ * messages: deleted after 30 days (instagram-insights-sync) and on disconnect.
+ */
+export const instagramWebhookEvents = content.table(
+  'instagram_webhook_events',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** The Instagram account the event belongs to (`entry[].id`). */
+    igAccountId: text('ig_account_id').notNull(),
+    /** The subscription field that fired: `comments`, `messages`, ... */
+    field: text('field').notNull(),
+    /** The comment id or message id. Unique, because Meta re-sends a delivery
+     *  it did not see acknowledged; null for event kinds without one. */
+    eventKey: text('event_key'),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    error: text('error'),
+  },
+  (t) => [
+    uniqueIndex('instagram_webhook_events_event_key_idx').on(t.eventKey),
+    index('instagram_webhook_events_account_received_idx').on(t.igAccountId, t.receivedAt),
+  ],
+);
+
 /** One Expo push token per device registration; upserted so re-registering the
  *  same device (reinstall, token refresh) doesn't accumulate duplicates. */
 export const pushTokens = content.table(

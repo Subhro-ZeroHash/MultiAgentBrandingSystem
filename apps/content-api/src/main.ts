@@ -20,7 +20,9 @@ loadDotenv({ path: resolve(here, '../../../.env'), quiet: true });
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // rawBody: the Instagram webhook checks Meta's signature over the exact bytes
+  // received (InstagramWebhookController); the parsed body is unaffected.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
   // Every response here is JSON, never HTML the API intends to serve — CSP
   // is locked all the way down rather than tuned for a page that shouldn't

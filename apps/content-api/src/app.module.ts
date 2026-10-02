@@ -11,6 +11,7 @@ import { GoogleModule } from './google/google.module.js';
 import { VideoGenerationsModule } from './video-generations/video-generations.module.js';
 import { PlanningModule } from './planning/planning.module.js';
 import { HealthModule } from './health/health.module.js';
+import { InstagramInboxModule } from './instagram-inbox/instagram-inbox.module.js';
 import { IntelligenceModule } from './intelligence/intelligence.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { SchedulingModule } from './scheduling/scheduling.module.js';
@@ -68,6 +69,7 @@ const GLOBAL_RATE_LIMIT = { ttl: 60_000, limit: 1_000 };
     GenerationsModule,
     VideoGenerationsModule,
     PlanningModule,
+    InstagramInboxModule,
     SchedulingModule,
     SocialModule,
     GoogleModule,
