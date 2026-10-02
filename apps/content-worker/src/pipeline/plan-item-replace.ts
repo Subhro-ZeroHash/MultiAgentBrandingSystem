@@ -35,7 +35,7 @@ import type { WorkerContext } from '../context.js';
  */
 
 const REPLACE_TIMEOUT_MS = 180_000;
-// The orchestrator model's thinking tokens count against this cap: at 1_200
+// The model's thinking tokens count against this cap: at 1_200
 // the reasoning ate the budget and every reply was cut off mid-JSON. Matches
 // MAX_PLAN_TOKENS — the cap bounds cost, only tokens actually used are billed.
 const MAX_REPLACE_TOKENS = 4_000;
@@ -201,7 +201,7 @@ async function draftReplacement(
       withTimeout(
         ctx.ai.llm().generateJson(
           {
-            role: 'orchestrator',
+            role: 'volume', // Flash, like the planner itself — see plan-synthesis.ts
             maxTokens: MAX_REPLACE_TOKENS,
             system:
               'The business owner rejected one proposed piece of content and asked for a different ' +

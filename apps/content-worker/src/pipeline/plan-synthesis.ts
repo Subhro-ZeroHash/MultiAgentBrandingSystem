@@ -45,7 +45,10 @@ import type { WorkerContext } from '../context.js';
  */
 
 const PLAN_TIMEOUT_MS = 300_000;
-const MAX_PLAN_TOKENS = 4_000;
+// Thinking tokens count against this cap. At 4_000 the model's reasoning could
+// use most of it and cut the plan off mid-JSON, which cost a full retry. Only
+// tokens actually generated are billed, so the headroom is free.
+const MAX_PLAN_TOKENS = 12_000;
 /** Enough for a fortnight at a sane cadence, few enough that a user can
  *  actually read and judge every one. A plan nobody reads is not a plan. */
 const DEFAULT_ITEM_TARGET = 5;
@@ -144,7 +147,9 @@ async function draftPlan(
       withTimeout(
         ctx.ai.llm().generateJson(
           {
-            role: 'orchestrator',
+            // Flash, not the Pro orchestrator: measured on the real prompt it drafts an
+            // equally usable plan in 17–27s against Pro's 33–40s.
+            role: 'volume',
             maxTokens: MAX_PLAN_TOKENS,
             system:
               'You are the head of marketing for one brand, writing the plan for the next ' +

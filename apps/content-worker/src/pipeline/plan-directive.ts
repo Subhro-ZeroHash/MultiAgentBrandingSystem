@@ -132,7 +132,7 @@ async function readDirective(
     withTimeout(
       ctx.ai.llm().generateJson(
         {
-          role: 'orchestrator',
+          role: 'volume', // a five-way classification; Flash is plenty and saves ~10s per message
           system:
             'You read one message from a business owner about their marketing plan and decide ' +
             'what they want. Classify it:\n' +
@@ -423,7 +423,7 @@ async function runDirectedResearch(
     withTimeout(
       ctx.ai.llm().generateJson(
         {
-          role: 'orchestrator',
+          role: 'volume',
           system:
             'You are a researcher briefing a marketing planner. From the search results, state ' +
             'what is actually established about this topic — dates, location, who cares, why it ' +
