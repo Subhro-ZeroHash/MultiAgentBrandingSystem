@@ -5,6 +5,9 @@
  * bigger, separate build (see the comment on the contact-email section
  * below), so this is the instructions-URL path Meta's own docs treat as an
  * equally valid alternative.
+ *
+ * Keep in step with section 7 of /privacy and with
+ * SocialService.disconnectAccount, which implements the first section.
  */
 export const metadata = { title: 'Data Deletion — MarketPulse' };
 
@@ -16,9 +19,14 @@ export default function DataDeletionPage() {
       <section className="space-y-2">
         <h2 className="text-lg font-medium">Disconnect Instagram</h2>
         <p className="text-[var(--color-muted)]">
-          Open MarketPulse, go to your connected accounts, and disconnect Instagram. This
-          immediately and permanently deletes your stored access token and every post insight or
-          comment we&apos;d read through that connection — nothing is kept.
+          Open MarketPulse, go to Settings, and disconnect Instagram. This immediately deletes from
+          our database the stored access token, post metrics, synced comments, and the comment and
+          message notifications we received for that account. Posts you already published stay on
+          Instagram.
+        </p>
+        <p className="text-[var(--color-muted)]">
+          You can also remove our access on Instagram&apos;s side at any time, under Settings → Apps
+          and websites.
         </p>
       </section>
 
@@ -30,9 +38,16 @@ export default function DataDeletionPage() {
             privacy@nirvanta.co
           </a>{' '}
           from the address your account is registered under, with the subject &quot;Delete my
-          account&quot;. We&apos;ll confirm your identity and permanently delete your account,
-          connected social accounts, brands, and generated content within 30 days, and reply once
-          it&apos;s done.
+          account&quot;. We&apos;ll confirm your identity and delete your account, connected social
+          accounts, brands, and generated content within 30 days, and reply once it&apos;s done.
+        </p>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-lg font-medium">Backups</h2>
+        <p className="text-[var(--color-muted)]">
+          Deleted data is removed from our database straight away. Our database provider keeps
+          routine backups, and deleted data can remain in them for a limited time until they expire.
         </p>
       </section>
     </div>
