@@ -35,12 +35,12 @@ interface DbMock {
 describe('SocialService - Instagram Posting Logic', () => {
   let dbMock: DbMock;
   let service: SocialService;
-  const encryptionKey = '4b1d1fdd56339823ccde56983c3912b621a6de486b3e49b74dcbb0501499e20d';
+  const encryptionKey = '0123456789abcdef'.repeat(4); // test-only
 
   beforeEach(() => {
     process.env.DATABASE_URL = 'postgres://bmas:bmas@localhost:5433/bmas';
     process.env.REDIS_URL = 'redis://localhost:6380';
-    process.env.AUTH_SECRET = '33d114cedadea6a5383c45ca8256b9a7aa227cf3fb5abad5b9ee8fb1f8128f4e';
+    process.env.AUTH_SECRET = 'test-only-auth-secret-0123456789abcdef'.repeat(2);
     process.env.PUBLIC_ASSET_BASE_URL = 'https://tunnel.example.com';
     process.env.ENCRYPTION_KEY = encryptionKey;
 
