@@ -61,7 +61,7 @@ type GraphResult = { ok: true; body: Record<string, unknown> } | { ok: false; me
  * caller's expected shape, producing a null-property-access crash instead of
  * a clear "could not X" message.
  */
-async function graphGet(path: string, params: Record<string, string>): Promise<GraphResult> {
+export async function graphGet(path: string, params: Record<string, string>): Promise<GraphResult> {
   const response = await fetch(`${GRAPH_BASE}/${path}?${new URLSearchParams(params).toString()}`);
   const body: unknown = await response.json().catch(() => null);
 
@@ -71,7 +71,7 @@ async function graphGet(path: string, params: Record<string, string>): Promise<G
   return { ok: true, body: body as Record<string, unknown> };
 }
 
-interface MediaSummary {
+export interface MediaSummary {
   id: string;
   caption: string | null;
   permalink: string | null;
@@ -86,13 +86,13 @@ function toNumber(value: unknown): number | null {
   return typeof value === 'number' ? value : null;
 }
 
-function toText(value: unknown): string | null {
+export function toText(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
 /** Instagram timestamps are ISO-8601 with a +0000 offset; anything
  *  unparseable becomes null rather than an Invalid Date the DB would reject. */
-function toDate(value: unknown): Date | null {
+export function toDate(value: unknown): Date | null {
   if (typeof value !== 'string') return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
@@ -100,7 +100,7 @@ function toDate(value: unknown): Date | null {
 
 /** The account's recent posts, with the engagement counts that come free on
  *  the media object itself — no `manage_insights` grant needed for these. */
-async function fetchAccountMedia(accessToken: string): Promise<MediaSummary[]> {
+export async function fetchAccountMedia(accessToken: string): Promise<MediaSummary[]> {
   const result = await graphGet('me/media', {
     fields: 'id,caption,media_type,permalink,timestamp,like_count,comments_count',
     limit: String(MEDIA_PAGE_SIZE),

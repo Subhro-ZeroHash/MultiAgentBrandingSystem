@@ -22,6 +22,10 @@ import {
   runInstagramInsightsSync,
   scheduleInstagramInsightsSyncTick,
 } from './pipeline/instagram-insights-sync.js';
+import {
+  runInstagramInboxSync,
+  scheduleInstagramInboxSyncTick,
+} from './pipeline/instagram-inbox-sync.js';
 import { runIntelligencePoolRefresh } from './pipeline/intelligence-pool-refresh.js';
 import { runIntelligenceResearch } from './pipeline/intelligence-research.js';
 import { runPoolSchedulerTick, schedulePoolSchedulerTick } from './pipeline/pool-scheduler.js';
@@ -339,6 +343,19 @@ instagramInsightsSyncWorker.on('failed', (job, error) => {
   console.error(`[instagram-insights-sync] tick ${job?.id} failed: ${describeError(error)}`);
 });
 
+const instagramInboxSyncQueue = new Queue(QUEUES.instagramInboxSync, { connection: ctx.redis });
+await scheduleInstagramInboxSyncTick(instagramInboxSyncQueue);
+
+const instagramInboxSyncWorker = new Worker(
+  QUEUES.instagramInboxSync,
+  async () => runInstagramInboxSync(ctx),
+  { connection: ctx.redis, concurrency: 1 },
+);
+
+instagramInboxSyncWorker.on('failed', (job, error) => {
+  console.error(`[instagram-inbox] tick ${job?.id} failed: ${describeError(error)}`);
+});
+
 // One provider call per job. `runAssetEdit` never rethrows (see its own
 // comment — attempts:1 is a deliberate, capped user-facing budget), so
 // 'failed' here would only ever fire on something outside that try/catch,
@@ -389,6 +406,7 @@ async function shutdown(signal: string): Promise<void> {
       planDirectiveWorker.close(),
       planItemReplaceWorker.close(),
       instagramInsightsSyncWorker.close(),
+      instagramInboxSyncWorker.close(),
       trendResearchProducer.close(),
       intelligenceResearchProducer.close(),
       researchSchedulerQueue.close(),
@@ -398,6 +416,7 @@ async function shutdown(signal: string): Promise<void> {
       contentGenerationProducer.close(),
       scheduledPostPublishProducer.close(),
       instagramInsightsSyncQueue.close(),
+      instagramInboxSyncQueue.close(),
     ]);
     await closeDatabase(ctx.db);
   } catch (error) {

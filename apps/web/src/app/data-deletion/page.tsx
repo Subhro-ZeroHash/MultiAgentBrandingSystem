@@ -20,9 +20,9 @@ export default function DataDeletionPage() {
         <h2 className="text-lg font-medium">Disconnect Instagram</h2>
         <p className="text-[var(--color-muted)]">
           Open MarketPulse, go to Settings, and disconnect Instagram. This immediately deletes from
-          our database the stored access token, post metrics, synced comments, and the comment and
-          message notifications we received for that account. Posts you already published stay on
-          Instagram.
+          our database the stored access token, post metrics, synced comments, Instagram Inbox
+          conversations, and the comment and message notifications we received for that account.
+          Posts you already published stay on Instagram.
         </p>
         <p className="text-[var(--color-muted)]">
           You can also remove our access on Instagram&apos;s side at any time, under Settings → Apps

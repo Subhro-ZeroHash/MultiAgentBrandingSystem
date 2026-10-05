@@ -803,6 +803,114 @@ export const instagramWebhookEvents = content.table(
   ],
 );
 
+/**
+ * A brand's Instagram Inbox switch, and which connected account feeds it —
+ * social accounts belong to a user, not a brand, so this row is the link.
+ * No row, or `enabled` false, means the inbox is off: nothing is fetched or
+ * drafted for the brand, as the privacy policy promises. Deleted with the
+ * account on disconnect.
+ */
+export const inboxSettings = content.table(
+  'inbox_settings',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    socialAccountId: text('social_account_id')
+      .notNull()
+      .references(() => socialAccounts.id, { onDelete: 'cascade' }),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Last time the worker read this account's comments and DMs. */
+    lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('inbox_settings_brand_idx').on(t.brandId),
+    // One account feeds one brand: two inboxes reading the same account would
+    // each draft — and later send — a reply to the same customer.
+    uniqueIndex('inbox_settings_account_idx').on(t.socialAccountId),
+  ],
+);
+
+export const inboxChannel = content.enum('inbox_channel', ['comment', 'dm']);
+
+export const inboxThreadStatus = content.enum('inbox_thread_status', [
+  'needs_reply',
+  'replied',
+  'ignored',
+]);
+
+/** One conversation: a top-level comment with its replies, or a DM chat. */
+export const inboxThreads = content.table(
+  'inbox_threads',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    brandId: text('brand_id')
+      .notNull()
+      .references(() => brands.id, { onDelete: 'cascade' }),
+    socialAccountId: text('social_account_id')
+      .notNull()
+      .references(() => socialAccounts.id, { onDelete: 'cascade' }),
+    channel: inboxChannel('channel').notNull(),
+    /** The top-level comment's id for a comment thread, the customer's
+     *  Instagram-scoped id for a DM thread — a DM webhook names the sender,
+     *  not the conversation, so that is the key both sources share. */
+    externalId: text('external_id').notNull(),
+    /** The post a comment thread is on. Null for DMs. */
+    igMediaId: text('ig_media_id'),
+    customerUsername: text('customer_username'),
+    status: inboxThreadStatus('status').notNull().default('needs_reply'),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull(),
+    /** A DM can only be answered within 24 hours of this (Instagram's rule). */
+    lastCustomerMessageAt: timestamp('last_customer_message_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('inbox_threads_account_channel_external_idx').on(
+      t.socialAccountId,
+      t.channel,
+      t.externalId,
+    ),
+    index('inbox_threads_brand_status_last_idx').on(t.brandId, t.status, t.lastMessageAt),
+  ],
+);
+
+export const inboxDirection = content.enum('inbox_direction', ['in', 'out']);
+
+/** Every message in a thread: the customer's (`in`) and the brand's (`out`),
+ *  including replies typed in the Instagram app itself. */
+export const inboxMessages = content.table(
+  'inbox_messages',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => inboxThreads.id, { onDelete: 'cascade' }),
+    /** Instagram's comment id or DM message id. */
+    igMessageId: text('ig_message_id').notNull(),
+    direction: inboxDirection('direction').notNull(),
+    username: text('username'),
+    /** Null for a DM that is only a photo, sticker or share. */
+    text: text('text'),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The poll and the webhook both deliver the same message; stored once.
+    uniqueIndex('inbox_messages_thread_message_idx').on(t.threadId, t.igMessageId),
+    index('inbox_messages_thread_sent_idx').on(t.threadId, t.sentAt),
+  ],
+);
+
 /** One Expo push token per device registration; upserted so re-registering the
  *  same device (reinstall, token refresh) doesn't accumulate duplicates. */
 export const pushTokens = content.table(
@@ -2024,6 +2132,10 @@ export type NewPoolIntelligenceItemRow = typeof poolIntelligenceItems.$inferInse
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type NewSocialAccount = typeof socialAccounts.$inferInsert;
+
+export type InboxSettingsRow = typeof inboxSettings.$inferSelect;
+export type InboxThread = typeof inboxThreads.$inferSelect;
+export type InboxMessage = typeof inboxMessages.$inferSelect;
 
 export type GoogleReview = typeof googleReviews.$inferSelect;
 export type NewGoogleReview = typeof googleReviews.$inferInsert;

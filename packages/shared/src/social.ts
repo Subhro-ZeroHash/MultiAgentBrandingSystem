@@ -174,3 +174,19 @@ export interface InstagramPerformanceSummary {
   };
   recentComments: StoredComment[];
 }
+
+/** Turns a brand's Instagram Inbox on or off. Turning it on needs the account
+ *  whose comments and DMs it shows, unless one was chosen before. */
+export const updateInboxSettingsSchema = z.object({
+  enabled: z.boolean(),
+  socialAccountId: z.string().min(1).max(64).optional(),
+});
+export type UpdateInboxSettingsInput = z.infer<typeof updateInboxSettingsSchema>;
+
+export interface InboxSettings {
+  enabled: boolean;
+  socialAccountId: string | null;
+  lastPolledAt: string | null;
+  conversations: number;
+  needsReply: number;
+}

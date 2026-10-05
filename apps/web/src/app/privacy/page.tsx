@@ -193,8 +193,9 @@ export default function PrivacyPolicyPage() {
           <li>
             <strong className="font-medium text-[var(--color-ink)]">Disconnect Instagram</strong> in
             MarketPulse&apos;s settings. This immediately deletes from our database the access
-            token, post metrics, synced comments, and stored comment and message notifications for
-            that account. Posts you already published stay on Instagram.
+            token, post metrics, synced comments, Instagram Inbox conversations, and stored comment
+            and message notifications for that account. Posts you already published stay on
+            Instagram.
           </li>
           <li>
             <strong className="font-medium text-[var(--color-ink)]">Remove our access</strong> on

@@ -46,6 +46,9 @@ export const QUEUES = {
    *  Instagram metrics. Same shape as researchScheduler: one repeatable job,
    *  empty payload, re-reads what's due every time it fires. */
   instagramInsightsSync: 'instagram-insights-sync',
+  /** The Instagram Inbox's minute tick: drains webhook events and polls each
+   *  enabled account's comments and DMs when due. */
+  instagramInboxSync: 'instagram-inbox-sync',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
