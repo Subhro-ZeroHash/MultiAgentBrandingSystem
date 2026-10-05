@@ -872,6 +872,22 @@ export const inboxThreads = content.table(
     lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull(),
     /** A DM can only be answered within 24 hours of this (Instagram's rule). */
     lastCustomerMessageAt: timestamp('last_customer_message_at', { withTimezone: true }),
+    /** When the latest customer message reached us. A draft older than this
+     *  doesn't answer it, and content-worker's inbox tick drafts again. Arrival
+     *  time, not Instagram's: a polled message can arrive after a draft
+     *  even though it was written before it. */
+    draftRequestedAt: timestamp('draft_requested_at', { withTimezone: true }),
+    /** The AI's suggested reply. Empty for spam; null if drafting failed. */
+    draftReply: text('draft_reply'),
+    /** question | price_availability | complaint | refund_legal | praise | spam | other */
+    draftCategory: text('draft_category'),
+    /** The language the customer wrote in, which the draft answers in. */
+    draftLanguage: text('draft_language'),
+    /** 0-1: how sure the model is the draft is right from the brand's own facts. */
+    draftConfidence: real('draft_confidence'),
+    /** When the draft's job read the conversation, so a message arriving
+     *  while the model writes makes the draft stale. */
+    draftedAt: timestamp('drafted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -2,10 +2,14 @@ import { describeError } from '@bmas/ai';
 import {
   and,
   asc,
+  desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
+  lt,
+  or,
   schema,
   sql,
   type Database,
@@ -47,6 +51,10 @@ const CONVERSATIONS_POLLED = 20;
 /** Instagram returns details only for a conversation's 20 newest messages. */
 const MESSAGES_PER_CONVERSATION = 20;
 const WEBHOOK_BATCH = 200;
+/** Instagram lets a business answer a DM only this long after the customer's last message. */
+const DM_WINDOW_MS = 24 * 3_600_000;
+/** Drafts queued per tick; the rest follow on later ticks. */
+const DRAFTS_PER_TICK = 10;
 
 export interface InboxItem {
   channel: 'comment' | 'dm';
@@ -324,6 +332,9 @@ async function ingestItems(
           ? {}
           : {
               lastCustomerMessageAt: sql`greatest(${schema.inboxThreads.lastCustomerMessageAt}, ${item.sentAt.toISOString()}::timestamptz)`,
+              // Any new customer message, even one written earlier that the
+              // poll only now saw, makes the current draft out of date.
+              draftRequestedAt: now,
             }),
         updatedAt: now,
       })
@@ -333,23 +344,22 @@ async function ingestItems(
 }
 
 /**
- * Comment counts seen at the last successful poll, per account and post. A
- * post whose count hasn't moved isn't re-read: Instagram limits calls per
- * account, and publishing draws on the same allowance.
+ * Comments actually received at the last successful poll, per account and
+ * post. A post whose `comments_count` matches isn't re-read: Instagram limits
+ * calls per account, and publishing draws on the same allowance. Counted from
+ * what came back, not from `comments_count`: until App Review, Instagram
+ * counts comments from accounts without a role on the app but doesn't return
+ * them, and those posts must keep being read so the comments appear once it does.
  */
 // ponytail: in memory, so a restart re-reads every post once; a deletion and a
 // new comment in the same five minutes leave the count equal and are missed
 // until webhooks are live.
 const commentCountsSeen = new Map<string, number>();
 
-async function pollComments(
-  token: string,
-  own: OwnAccount,
-  socialAccountId: string,
-  read: MediaSummary[],
-): Promise<InboxItem[]> {
+async function pollComments(token: string, own: OwnAccount, socialAccountId: string) {
   const media = (await fetchAccountMedia(token)).slice(0, POSTS_POLLED);
   const items: InboxItem[] = [];
+  const read: { post: MediaSummary; received: number }[] = [];
   for (const post of media) {
     const key = `${socialAccountId}:${post.id}`;
     if (post.commentsCount === 0) continue;
@@ -360,22 +370,42 @@ async function pollComments(
       limit: '50',
       access_token: token,
     });
-    if (!result.ok) throw new Error(`could not read comments — ${result.message}`);
-    items.push(...itemsFromComments(post.id, dataOf(result.body), own));
-    read.push(post);
+    // Skipped, not fatal: one post Instagram won't return comments for must not
+    // stop the others. Left unrecorded, so the next poll tries it again.
+    if (!result.ok) {
+      console.error(
+        `[instagram-inbox] could not read comments on post ${post.id} — ${result.message}`,
+      );
+      continue;
+    }
+    const comments = dataOf(result.body);
+    items.push(...itemsFromComments(post.id, comments, own));
+    read.push({
+      post,
+      received: comments.reduce((n, comment) => n + 1 + dataOf(comment.replies).length, 0),
+    });
   }
-  return items;
+  return { items, read };
 }
 
+/**
+ * When each account's DMs were last read in full. The next read looks back a
+ * little before it; a read that failed or skipped a message doesn't count, so
+ * the gap is read again rather than lost.
+ */
+// ponytail: in memory, so a restart re-reads the whole lookback window once.
+const dmsReadAt = new Map<string, number>();
+
 /** DMs from conversations active since `since`. Messages already stored are
- *  not re-read: each one costs its own Graph call. */
+ *  not re-read: each one costs its own Graph call. One that can't be read is
+ *  skipped and the read reported incomplete, so the next poll tries it again. */
 async function pollDms(
   db: Database,
-  socialAccountId: string,
+  account: SocialAccount,
   token: string,
   own: OwnAccount,
   since: Date,
-): Promise<InboxItem[]> {
+) {
   const list = await graphGet('me/conversations', {
     platform: 'instagram',
     fields: 'id,updated_time',
@@ -385,29 +415,40 @@ async function pollDms(
   if (!list.ok) throw new Error(`could not list conversations — ${list.message}`);
 
   const items: InboxItem[] = [];
+  let complete = true;
+  const skip = (what: string, message: string) => {
+    complete = false;
+    console.error(`[instagram-inbox] ${account.displayName}: could not read ${what} — ${message}`);
+  };
   for (const conversation of dataOf(list.body)) {
     const updated = toTime(conversation.updated_time);
     if (typeof conversation.id !== 'string' || (updated && updated < since)) continue;
 
     const detail = await graphGet(conversation.id, { fields: 'messages', access_token: token });
-    if (!detail.ok) throw new Error(`could not read a conversation — ${detail.message}`);
+    if (!detail.ok) {
+      skip('a conversation', detail.message);
+      continue;
+    }
     const recent = dataOf(detail.body.messages)
       .slice(0, MESSAGES_PER_CONVERSATION)
       .filter((m) => typeof m.id === 'string' && (toTime(m.created_time) ?? since) >= since)
       .map((m) => m.id as string);
 
-    const known = await knownMessageIds(db, socialAccountId, recent);
+    const known = await knownMessageIds(db, account.id, recent);
     for (const id of recent.filter((messageId) => !known.has(messageId))) {
       const message = await graphGet(id, {
         fields: 'id,created_time,from,to,message',
         access_token: token,
       });
-      if (!message.ok) throw new Error(`could not read a message — ${message.message}`);
+      if (!message.ok) {
+        skip('a message', message.message);
+        continue;
+      }
       const item = itemFromDm(message.body, own);
       if (item) items.push(item);
     }
   }
-  return items;
+  return { items, complete };
 }
 
 async function pollAccount(
@@ -422,40 +463,47 @@ async function pollAccount(
     .update(schema.inboxSettings)
     .set({ lastPolledAt: now })
     .where(eq(schema.inboxSettings.id, target.settings.id));
-  // The insights sync marks an expired token for reconnect.
-  if (isTokenExpired(account.tokenExpiresAt)) return;
+  // Same as the insights sync and publishing: an expired token shows as
+  // "reconnect" in Settings rather than the inbox quietly reading nothing.
+  if (isTokenExpired(account.tokenExpiresAt)) {
+    await ctx.db
+      .update(schema.socialAccounts)
+      .set({ status: 'token_expired' as const })
+      .where(eq(schema.socialAccounts.id, account.id));
+    console.warn(`[instagram-inbox] ${account.displayName}: token expired, marked for reconnect`);
+    return;
+  }
 
   const token = encryption.decrypt(account.pageAccessToken);
   const own = ownAccount(account);
-  // Overlaps the previous poll a little, so a message landing mid-poll isn't skipped.
+  // Overlaps the last full read a little, so a message landing mid-read isn't skipped.
   const dmSince = new Date(
-    Math.max(
-      now.getTime() - LOOKBACK_MS,
-      (target.settings.lastPolledAt?.getTime() ?? 0) - 10 * 60_000,
-    ),
+    Math.max(now.getTime() - LOOKBACK_MS, (dmsReadAt.get(account.id) ?? 0) - 10 * 60_000),
   );
 
-  const read: MediaSummary[] = [];
-  const results = await Promise.allSettled([
-    pollComments(token, own, account.id, read),
-    pollDms(ctx.db, account.id, token, own, dmSince),
+  const [comments, dms] = await Promise.allSettled([
+    pollComments(token, own, account.id),
+    pollDms(ctx.db, account, token, own, dmSince),
   ]);
-  const items: InboxItem[] = [];
-  for (const [index, result] of results.entries()) {
-    if (result.status === 'fulfilled') items.push(...result.value);
-    else {
+  for (const [what, result] of [
+    ['comments', comments],
+    ['DMs', dms],
+  ] as const) {
+    if (result.status === 'rejected') {
       console.error(
-        `[instagram-inbox] ${account.displayName}: ${index === 0 ? 'comments' : 'DMs'} ${describeError(result.reason)}`,
+        `[instagram-inbox] ${account.displayName}: ${what} ${describeError(result.reason)}`,
       );
     }
   }
 
-  const stored = await ingestItems(ctx.db, target.settings, items);
-  for (const post of read) {
+  const stored = await ingestItems(ctx.db, target.settings, [
+    ...(comments.status === 'fulfilled' ? comments.value.items : []),
+    ...(dms.status === 'fulfilled' ? dms.value.items : []),
+  ]);
+  if (dms.status === 'fulfilled' && dms.value.complete) dmsReadAt.set(account.id, now.getTime());
+  for (const { post, received } of comments.status === 'fulfilled' ? comments.value.read : []) {
     // Recorded only once the comments are stored, so a failed store re-reads them.
-    if (post.commentsCount !== null) {
-      commentCountsSeen.set(`${account.id}:${post.id}`, post.commentsCount);
-    }
+    commentCountsSeen.set(`${account.id}:${post.id}`, received);
     // Webhooks don't name the post's caption, so threads get it from here.
     await ctx.db
       .update(schema.inboxThreads)
@@ -518,9 +566,64 @@ function getTargets(db: Database) {
     );
 }
 
-/** The tick: webhook events every minute, each account's own poll when due.
- *  One account failing is logged and the rest still run. */
-export async function runInstagramInboxSync(ctx: WorkerContext): Promise<void> {
+/**
+ * Conversations whose latest customer message has no draft yet, newest
+ * first. The job id carries when that message arrived, so later ticks don't
+ * queue the same draft twice. DMs past Instagram's 24-hour reply window are
+ * left out: no reply can be sent, so a draft would be paid for and unused.
+ */
+async function queueDrafts(db: Database, draftQueue: Queue): Promise<void> {
+  const due = await db
+    .select({
+      id: schema.inboxThreads.id,
+      draftRequestedAt: schema.inboxThreads.draftRequestedAt,
+      createdAt: schema.inboxThreads.createdAt,
+    })
+    .from(schema.inboxThreads)
+    .innerJoin(
+      schema.inboxSettings,
+      and(
+        eq(schema.inboxSettings.brandId, schema.inboxThreads.brandId),
+        eq(schema.inboxSettings.enabled, true),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.inboxThreads.status, 'needs_reply'),
+        // Threads from before drafts existed have no request time, only no draft.
+        or(
+          isNull(schema.inboxThreads.draftedAt),
+          lt(schema.inboxThreads.draftedAt, schema.inboxThreads.draftRequestedAt),
+        ),
+        or(
+          eq(schema.inboxThreads.channel, 'comment'),
+          gte(schema.inboxThreads.lastCustomerMessageAt, new Date(Date.now() - DM_WINDOW_MS)),
+        ),
+      ),
+    )
+    .orderBy(desc(schema.inboxThreads.lastMessageAt))
+    .limit(DRAFTS_PER_TICK);
+
+  for (const { id, draftRequestedAt, createdAt } of due) {
+    const requestedAt = draftRequestedAt ?? createdAt;
+    await draftQueue.add(
+      QUEUES.instagramInboxDraft,
+      { threadId: id, requestedAt: requestedAt.toISOString() },
+      {
+        jobId: `draft-${id}-${requestedAt.getTime()}`,
+        attempts: 2,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: 500,
+        removeOnFail: 500,
+      },
+    );
+  }
+}
+
+/** The tick: webhook events every minute, each account's own poll when due,
+ *  then drafts for whatever needs a reply. One account failing is logged and
+ *  the rest still run. */
+export async function runInstagramInboxSync(ctx: WorkerContext, draftQueue: Queue): Promise<void> {
   const targets = await getTargets(ctx.db);
   await drainWebhookEvents(ctx.db, targets);
 
@@ -537,6 +640,7 @@ export async function runInstagramInboxSync(ctx: WorkerContext): Promise<void> {
       );
     }
   }
+  await queueDrafts(ctx.db, draftQueue);
 }
 
 /** Same idempotent repeatable-job registration as the insights sync tick. */

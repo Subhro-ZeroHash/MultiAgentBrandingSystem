@@ -49,9 +49,19 @@ export const QUEUES = {
   /** The Instagram Inbox's minute tick: drains webhook events and polls each
    *  enabled account's comments and DMs when due. */
   instagramInboxSync: 'instagram-inbox-sync',
+  /** One AI reply draft for one inbox conversation. */
+  instagramInboxDraft: 'instagram-inbox-draft',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
+
+/** `requestedAt` lets a stale job see a newer draft already exists and stop:
+ *  the tick asks as of the customer's latest message, Regenerate as of the click. */
+export const instagramInboxDraftJobSchema = z.object({
+  threadId: entityIdSchema,
+  requestedAt: z.iso.datetime(),
+});
+export type InstagramInboxDraftJob = z.infer<typeof instagramInboxDraftJobSchema>;
 
 export const contentGenerationJobSchema = z.object({
   jobId: entityIdSchema,

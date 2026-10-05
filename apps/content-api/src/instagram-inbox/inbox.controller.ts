@@ -2,27 +2,39 @@ import {
   BadRequestException,
   Controller,
   Get,
+  HttpCode,
   Inject,
   NotFoundException,
   Param,
+  Post,
   Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { and, asc, desc, eq, inArray, schema, type Database } from '@bmas/db';
+import { QUEUES, type InstagramInboxDraftJob } from '@bmas/shared';
+import type { Queue } from 'bullmq';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
-import { DATABASE } from '../core/core.module.js';
+import { PerUserRateLimitGuard } from '../common/per-user-rate-limit.guard.js';
+import { DATABASE, INSTAGRAM_INBOX_DRAFT_QUEUE } from '../core/core.module.js';
 
 // ponytail: the 100 most recent conversations; add paging when a brand has more.
 const THREADS_LISTED = 100;
+/** Instagram lets a business answer a DM only this long after the customer's last message. */
+const DM_WINDOW_MS = 24 * 3_600_000;
+/** Each Regenerate is a paid model call. */
+const regenerateLimit = new PerUserRateLimitGuard(60, 3_600_000);
 
-/** The Instagram Inbox, read-only: conversations content-worker collected
- *  (see instagram-inbox-sync.ts), each with its messages. */
+/** The Instagram Inbox: conversations content-worker collected (see
+ *  instagram-inbox-sync.ts), each with its messages and AI draft reply. */
 @UseGuards(JwtAuthGuard)
 @Controller('inbox/threads')
 export class InboxController {
-  constructor(@Inject(DATABASE) private readonly db: Database) {}
+  constructor(
+    @Inject(DATABASE) private readonly db: Database,
+    @Inject(INSTAGRAM_INBOX_DRAFT_QUEUE) private readonly draftQueue: Queue,
+  ) {}
 
   @Get()
   async list(@Query('brandId') brandId: string | undefined, @Request() req: AuthenticatedRequest) {
@@ -63,14 +75,7 @@ export class InboxController {
 
   @Get(':id')
   async get(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
-    const [row] = await this.db
-      .select({ thread: schema.inboxThreads })
-      .from(schema.inboxThreads)
-      .innerJoin(schema.brands, eq(schema.brands.id, schema.inboxThreads.brandId))
-      .where(and(eq(schema.inboxThreads.id, id), eq(schema.brands.ownerId, req.user.id)))
-      .limit(1);
-    if (!row) throw new NotFoundException('Conversation not found');
-
+    const thread = await this.ownedThread(id, req.user.id);
     const messages = await this.db
       .select({
         id: schema.inboxMessages.id,
@@ -82,6 +87,56 @@ export class InboxController {
       .from(schema.inboxMessages)
       .where(eq(schema.inboxMessages.threadId, id))
       .orderBy(asc(schema.inboxMessages.sentAt));
-    return { ...row.thread, messages };
+    return { ...thread, messages };
+  }
+
+  /** Regenerate: content-worker writes a fresh draft (inbox-draft.ts). */
+  @Post(':id/draft')
+  @HttpCode(202)
+  @UseGuards(regenerateLimit)
+  async regenerate(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    const thread = await this.ownedThread(id, req.user.id);
+    if (thread.status !== 'needs_reply') {
+      throw new BadRequestException('This conversation has already been answered.');
+    }
+    // The worker would skip both of these, leaving the page waiting on a draft.
+    if (
+      thread.channel === 'dm' &&
+      (thread.lastCustomerMessageAt?.getTime() ?? 0) < Date.now() - DM_WINDOW_MS
+    ) {
+      throw new BadRequestException(
+        "Instagram only allows a reply within 24 hours of the customer's last message.",
+      );
+    }
+    const [enabled] = await this.db
+      .select({ id: schema.inboxSettings.id })
+      .from(schema.inboxSettings)
+      .where(
+        and(
+          eq(schema.inboxSettings.brandId, thread.brandId),
+          eq(schema.inboxSettings.enabled, true),
+        ),
+      )
+      .limit(1);
+    if (!enabled) throw new BadRequestException('Turn the Instagram Inbox on in Settings first.');
+    const requestedAt = new Date().toISOString();
+    const job: InstagramInboxDraftJob = { threadId: id, requestedAt };
+    await this.draftQueue.add(QUEUES.instagramInboxDraft, job, {
+      jobId: `draft-${id}-r${Date.parse(requestedAt)}`,
+      removeOnComplete: 500,
+      removeOnFail: 500,
+    });
+    return { requestedAt };
+  }
+
+  private async ownedThread(id: string, ownerId: string) {
+    const [row] = await this.db
+      .select({ thread: schema.inboxThreads })
+      .from(schema.inboxThreads)
+      .innerJoin(schema.brands, eq(schema.brands.id, schema.inboxThreads.brandId))
+      .where(and(eq(schema.inboxThreads.id, id), eq(schema.brands.ownerId, ownerId)))
+      .limit(1);
+    if (!row) throw new NotFoundException('Conversation not found');
+    return row.thread;
   }
 }

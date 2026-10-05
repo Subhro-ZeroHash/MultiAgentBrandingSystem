@@ -11,6 +11,7 @@ import {
   contentPlanDirectiveJobSchema,
   contentPlanItemReplaceJobSchema,
   contentPlanSynthesisJobSchema,
+  instagramInboxDraftJobSchema,
   videoGenerationJobSchema,
 } from '@bmas/shared';
 import { Queue, UnrecoverableError, Worker } from 'bullmq';
@@ -26,6 +27,7 @@ import {
   runInstagramInboxSync,
   scheduleInstagramInboxSyncTick,
 } from './pipeline/instagram-inbox-sync.js';
+import { runInboxDraft } from './pipeline/inbox-draft.js';
 import { runIntelligencePoolRefresh } from './pipeline/intelligence-pool-refresh.js';
 import { runIntelligenceResearch } from './pipeline/intelligence-research.js';
 import { runPoolSchedulerTick, schedulePoolSchedulerTick } from './pipeline/pool-scheduler.js';
@@ -345,15 +347,32 @@ instagramInsightsSyncWorker.on('failed', (job, error) => {
 
 const instagramInboxSyncQueue = new Queue(QUEUES.instagramInboxSync, { connection: ctx.redis });
 await scheduleInstagramInboxSyncTick(instagramInboxSyncQueue);
+const instagramInboxDraftProducer = new Queue(QUEUES.instagramInboxDraft, {
+  connection: ctx.redis,
+});
 
 const instagramInboxSyncWorker = new Worker(
   QUEUES.instagramInboxSync,
-  async () => runInstagramInboxSync(ctx),
+  async () => runInstagramInboxSync(ctx, instagramInboxDraftProducer),
   { connection: ctx.redis, concurrency: 1 },
 );
 
 instagramInboxSyncWorker.on('failed', (job, error) => {
   console.error(`[instagram-inbox] tick ${job?.id} failed: ${describeError(error)}`);
+});
+
+const instagramInboxDraftWorker = new Worker(
+  QUEUES.instagramInboxDraft,
+  async (job) =>
+    runInboxDraft(ctx, instagramInboxDraftJobSchema.parse(job.data), {
+      // See the generation worker above on attemptsStarted vs attemptsMade.
+      final: (job.attemptsStarted || job.attemptsMade + 1) >= (job.opts.attempts ?? 1),
+    }),
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+instagramInboxDraftWorker.on('failed', (job, error) => {
+  console.error(`[inbox-draft] job ${job?.id} failed: ${describeError(error)}`);
 });
 
 // One provider call per job. `runAssetEdit` never rethrows (see its own
@@ -407,6 +426,7 @@ async function shutdown(signal: string): Promise<void> {
       planItemReplaceWorker.close(),
       instagramInsightsSyncWorker.close(),
       instagramInboxSyncWorker.close(),
+      instagramInboxDraftWorker.close(),
       trendResearchProducer.close(),
       intelligenceResearchProducer.close(),
       researchSchedulerQueue.close(),
@@ -417,6 +437,7 @@ async function shutdown(signal: string): Promise<void> {
       scheduledPostPublishProducer.close(),
       instagramInsightsSyncQueue.close(),
       instagramInboxSyncQueue.close(),
+      instagramInboxDraftProducer.close(),
     ]);
     await closeDatabase(ctx.db);
   } catch (error) {

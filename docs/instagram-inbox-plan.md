@@ -8,7 +8,15 @@ every 5 minutes; `PUT /brands/:id/inbox-settings` + a switch on the website's Se
 The read-only **Inbox page** followed (website `/inbox`: Needs reply / All, Comments / DMs,
 conversation drawer with the post's caption and the 24 h DM window; API `GET /inbox/threads`,
 `GET /inbox/threads/:id`; migration 0040 adds the post caption and link to comment threads).
-Next: AI drafts (category, language, reply) in that drawer, then sending.
+**AI drafts** followed (`content-worker/src/pipeline/inbox-draft.ts`, migration 0041 draft columns on
+`inbox_threads`, queue `instagram-inbox-draft`, `POST /inbox/threads/:id/draft` to regenerate; editable
+"Suggested reply" box with Copy). Next: sending.
+
+**Confirmed live (5 Oct 2026): Standard Access hides other people's data.** On the real account,
+a post reported `comments_count: 1` while `/comments` returned `[]`: the commenter had no role on
+the Meta app. `me/conversations` also failed with "Application does not have permission for this
+action". So the tester shortcut only works for comments and DMs _from_ tester accounts; a pilot
+with real customers needs **Advanced Access (Business Verification + App Review)** first.
 
 Original plan (2 Oct 2026). A client needs Instagram comments and DMs
 answered in their brand voice, with AI drafting, human approval where it matters, and
