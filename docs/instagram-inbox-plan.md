@@ -5,7 +5,10 @@ built:** `inbox_settings` (per-brand switch + the account it reads), `inbox_thre
 `inbox_messages` (migration 0039); `content-worker/src/pipeline/instagram-inbox-sync.ts` drains
 webhook events every minute and polls each enabled account's comments (10 newest posts) and DMs
 every 5 minutes; `PUT /brands/:id/inbox-settings` + a switch on the website's Settings page.
-Next: AI drafts (category, language, reply), then sending, then the Inbox page.
+The read-only **Inbox page** followed (website `/inbox`: Needs reply / All, Comments / DMs,
+conversation drawer with the post's caption and the 24 h DM window; API `GET /inbox/threads`,
+`GET /inbox/threads/:id`; migration 0040 adds the post caption and link to comment threads).
+Next: AI drafts (category, language, reply) in that drawer, then sending.
 
 Original plan (2 Oct 2026). A client needs Instagram comments and DMs
 answered in their brand voice, with AI drafting, human approval where it matters, and

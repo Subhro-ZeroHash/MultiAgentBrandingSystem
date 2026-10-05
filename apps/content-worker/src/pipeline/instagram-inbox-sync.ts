@@ -14,7 +14,13 @@ import {
 import { isTokenExpired, QUEUES, TokenEncryption } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { WorkerContext } from '../context.js';
-import { fetchAccountMedia, graphGet, toDate, toText } from './instagram-insights-sync.js';
+import {
+  fetchAccountMedia,
+  graphGet,
+  toDate,
+  toText,
+  type MediaSummary,
+} from './instagram-insights-sync.js';
 
 /**
  * Instagram Inbox intake: turns comments and DMs into inbox threads.
@@ -340,7 +346,7 @@ async function pollComments(
   token: string,
   own: OwnAccount,
   socialAccountId: string,
-  counts: Map<string, number>,
+  read: MediaSummary[],
 ): Promise<InboxItem[]> {
   const media = (await fetchAccountMedia(token)).slice(0, POSTS_POLLED);
   const items: InboxItem[] = [];
@@ -356,7 +362,7 @@ async function pollComments(
     });
     if (!result.ok) throw new Error(`could not read comments — ${result.message}`);
     items.push(...itemsFromComments(post.id, dataOf(result.body), own));
-    if (post.commentsCount !== null) counts.set(key, post.commentsCount);
+    read.push(post);
   }
   return items;
 }
@@ -429,10 +435,9 @@ async function pollAccount(
     ),
   );
 
-  // Recorded only once the comments are stored, so a failed store re-reads them.
-  const counts = new Map<string, number>();
+  const read: MediaSummary[] = [];
   const results = await Promise.allSettled([
-    pollComments(token, own, account.id, counts),
+    pollComments(token, own, account.id, read),
     pollDms(ctx.db, account.id, token, own, dmSince),
   ]);
   const items: InboxItem[] = [];
@@ -446,7 +451,22 @@ async function pollAccount(
   }
 
   const stored = await ingestItems(ctx.db, target.settings, items);
-  for (const [key, count] of counts) commentCountsSeen.set(key, count);
+  for (const post of read) {
+    // Recorded only once the comments are stored, so a failed store re-reads them.
+    if (post.commentsCount !== null) {
+      commentCountsSeen.set(`${account.id}:${post.id}`, post.commentsCount);
+    }
+    // Webhooks don't name the post's caption, so threads get it from here.
+    await ctx.db
+      .update(schema.inboxThreads)
+      .set({ postCaption: post.caption, postPermalink: post.permalink })
+      .where(
+        and(
+          eq(schema.inboxThreads.socialAccountId, account.id),
+          eq(schema.inboxThreads.igMediaId, post.id),
+        ),
+      );
+  }
   if (stored > 0)
     console.warn(`[instagram-inbox] ${account.displayName}: ${stored} new message(s)`);
 }

@@ -864,6 +864,9 @@ export const inboxThreads = content.table(
     externalId: text('external_id').notNull(),
     /** The post a comment thread is on. Null for DMs. */
     igMediaId: text('ig_media_id'),
+    /** That post's caption and link, so a reply knows what was asked about. */
+    postCaption: text('post_caption'),
+    postPermalink: text('post_permalink'),
     customerUsername: text('customer_username'),
     status: inboxThreadStatus('status').notNull().default('needs_reply'),
     lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull(),
