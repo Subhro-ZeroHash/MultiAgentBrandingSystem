@@ -18,6 +18,7 @@ import type {
   VideoMode,
 } from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
+import sharp from 'sharp';
 import type { WorkerContext } from '../context.js';
 import {
   CAMPAIGN_INTENT,
@@ -137,36 +138,163 @@ async function loadFrame(
 }
 
 /**
- * The product's photos, as video conditioning frames: the primary photo as
- * `firstFrame`, and — when a product has more than one — a second, distinct
- * photo as `lastFrame`, so both providers' image-to-video path has an actual
- * start and end to interpolate between instead of just one static reference.
- * Never every photo the way image generation conditions on all of them: both
- * LTX and Veo's APIs take exactly two image slots, not an arbitrary list.
+ * The product's primary photo, as the video's first frame. Only one: with a
+ * second photo as the last frame the model has to morph between two
+ * unrelated pictures, which is what turned clips into collages and changed
+ * the product mid-shot. A chosen end frame can come back as an explicit
+ * option, never as "whatever the second photo is".
  *
  * Best-effort: a product with no photos yet generates text-to-video rather
  * than failing the job — the same "a missing reference is a degraded
  * creative, not a failed one" reasoning `loadBrandReferences` uses for images.
  */
-async function loadConditioningFrames(
+async function loadFirstFrame(
   ctx: WorkerContext,
   jobId: string,
   productId: string,
-): Promise<{ firstFrame?: ConditioningFrame; lastFrame?: ConditioningFrame }> {
-  const rows = await ctx.db
+): Promise<ConditioningFrame | undefined> {
+  const [row] = await ctx.db
     .select()
     .from(schema.productImages)
     .where(eq(schema.productImages.productId, productId))
     .orderBy(desc(schema.productImages.isPrimary), asc(schema.productImages.createdAt))
-    .limit(2);
-  if (rows.length === 0) return {};
+    .limit(1);
+  return row ? loadFrame(ctx, jobId, 'first', row) : undefined;
+}
 
-  const [firstFrame, lastRow] = await Promise.all([
-    loadFrame(ctx, jobId, 'first', rows[0]!),
-    rows[1] ? loadFrame(ctx, jobId, 'last', rows[1]) : Promise.resolve(undefined),
-  ]);
+/** How far a first frame's shape may be from the video's: past this Veo pads
+ *  it with grey bars and LTX crops into it. */
+const FRAME_RATIO_TOLERANCE = 0.03;
 
-  return { firstFrame, lastFrame: lastRow };
+const FRAME_CHECK_PROMPT =
+  'Is this a plain photograph? Reply with exactly one word: CLEAN if it shows no text, ' +
+  'letters, numbers, logos with lettering, price tags, stickers, graphic shapes, borders or ' +
+  'collage panels; otherwise EDIT.';
+
+const CLEAN_FRAME_PROMPT = [
+  'Recreate the reference photo as a clean, realistic vertical photograph to be the first frame of a short video.',
+  'Keep the product exactly as it is: the same shape, colours, materials, details and proportions. Do not redesign it.',
+  'If people wear or hold it, keep them natural and in the same pose.',
+  "Remove every piece of text, lettering, numbers, logos, price tags, stickers, graphic shapes, borders and collage panels. Add no signs or other brands' logos.",
+  'Fill the whole frame with an uncluttered, natural setting that suits the product, with realistic light. No text anywhere.',
+].join(' ');
+
+/**
+ * Makes the product photo a good first frame. Two things in it ruin a clip:
+ * text or graphics (posters, price stickers, collages), which the model
+ * animates into garbled letters, and a shape other than the video's. A photo
+ * of the wrong shape is redrawn straight away; one of the right shape gets a
+ * cheap vision check first, and is redrawn only if it isn't a plain photo.
+ * The image model redraws from the photo itself, keeping the product.
+ * Best-effort: any failure here keeps the photo as it was.
+ */
+// ponytail: a redraw per video (~$0.04 against a ~$2 clip); cache it on the
+// product image if the same product is rendered often.
+/**
+ * A first frame for a product with no photo yet: the image model draws one
+ * clean still from the video brief, and the video animates it. Animating a
+ * still gives far more control than text alone, which is where the garbled
+ * ad-style clips came from. Best-effort: on failure the clip is made from
+ * text, as before.
+ */
+export async function createFirstFrame(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  videoPrompt: string,
+  width: number,
+  height: number,
+): Promise<ConditioningFrame | undefined> {
+  try {
+    const {
+      value: [image],
+      cost,
+    } = await withTimeout(
+      ctx.ai.imageGenerator().generate(
+        {
+          // The style's graphic language (colour blocks, shapes) otherwise comes
+          // back as borders around the photo, which the video then keeps.
+          prompt: `A single realistic still photograph of a real scene with one clear subject, not a graphic design: no borders, frames, panels, colour blocks or shapes, and no text, shop signs or brand logos anywhere — including on clothing. It is the opening frame of this video.\n\n${videoPrompt}`,
+          references: [],
+          width,
+          height,
+          count: 1,
+        },
+        { referenceId: jobId, brandId },
+      ),
+      180_000,
+      'video:frame-create',
+    );
+    await recordCost(ctx, brandId, jobId, cost);
+    return image && { data: image.data, mediaType: image.mediaType };
+  } catch (error) {
+    console.warn(
+      `[content:video] job ${jobId}: could not draw a first frame, making the clip from text — ${describeError(error)}`,
+    );
+    return undefined;
+  }
+}
+
+export async function prepareFirstFrame(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  frame: ConditioningFrame,
+  width: number,
+  height: number,
+): Promise<ConditioningFrame> {
+  try {
+    const meta = await sharp(frame.data).metadata();
+    const target = width / height;
+    const shapeOff =
+      !meta.width ||
+      !meta.height ||
+      Math.abs(meta.width / meta.height - target) / target > FRAME_RATIO_TOLERANCE;
+
+    if (!shapeOff) {
+      const { value: verdict, cost } = await withTimeout(
+        ctx.ai
+          .llm()
+          .analyzeImage(
+            { role: 'qa', prompt: FRAME_CHECK_PROMPT, images: [frame] },
+            { referenceId: jobId, brandId },
+          ),
+        60_000,
+        'video:frame-check',
+      );
+      await recordCost(ctx, brandId, jobId, cost);
+      if (/^\W*CLEAN\b/i.test(verdict)) return frame;
+    }
+
+    const {
+      value: [image],
+      cost,
+    } = await withTimeout(
+      ctx.ai.imageGenerator().generate(
+        {
+          prompt: CLEAN_FRAME_PROMPT,
+          references: [{ ...frame, label: 'product photo' }],
+          width,
+          height,
+          count: 1,
+        },
+        { referenceId: jobId, brandId },
+      ),
+      180_000,
+      'video:frame-clean',
+    );
+    await recordCost(ctx, brandId, jobId, cost);
+    if (!image) return frame;
+    console.warn(
+      `[content:video] job ${jobId}: first frame redrawn (${shapeOff ? 'wrong shape' : 'text or graphics'})`,
+    );
+    return { data: image.data, mediaType: image.mediaType };
+  } catch (error) {
+    console.warn(
+      `[content:video] job ${jobId}: could not prepare the first frame, using the photo as is — ${describeError(error)}`,
+    );
+    return frame;
+  }
 }
 
 /**
@@ -182,9 +310,8 @@ async function loadConditioningFrames(
  * rendering than an image model, and this pipeline has no vision-QA pass to
  * catch it getting the text wrong (see `validateVideo` below) — asking for
  * something nobody checks is worse than not asking. `headlineText`/
- * `offerText`/`ctaText` instead inform the mood and message the clip is
- * building toward, the same "let this inform styling, not the subject"
- * treatment `composeBrief` already gives `brand.category`.
+ * `offerText`/`ctaText` are left out altogether — the caption carries them —
+ * because any quoted phrase in a video prompt tends to be rendered, badly.
  *
  * Deterministic templating, not an LLM call — same reasoning `composeBrief`
  * gives for itself, and it means this owes nothing to Gemini: a brand-new
@@ -208,7 +335,9 @@ export async function composeVideoBrief(
   const lines: Array<string | null> = [
     `A short vertical marketing video for ${CAMPAIGN_INTENT[request.campaignType]}.`,
     '',
-    `**Subject:** ${product.name}${description ? ` — ${description}` : ''}.`,
+    // The name is for understanding only: quoted titles are exactly what both
+    // models wrote on screen, garbled ("The Bold Winter Edit").
+    `**Subject** (never write this name in the video): ${product.name}${description ? ` — ${description}` : ''}.`,
     product.sellingPoints.length
       ? `Key selling points: ${product.sellingPoints.join(', ')}. Let the motion and framing bring these out (e.g. a close pass over a material or craft detail) rather than showing them as on-screen text.`
       : null,
@@ -221,15 +350,17 @@ export async function composeVideoBrief(
       : null,
     '',
     `**Look and motion:** ${STYLE_DIRECTION[request.styleTemplate]}`,
-    request.headlineText?.trim()
-      ? `The headline for this campaign is "${request.headlineText.trim()}" — let it inform the mood and pacing, not on-screen text.`
-      : null,
-    request.offerText?.trim()
-      ? `The offer being promoted is "${request.offerText.trim()}" — build energy toward it rather than displaying it as text.`
-      : null,
+    // Headline and offer words stay out entirely — they go in the caption.
+    // Quoted here they came back as garbled on-screen text, Veo's negative
+    // prompt notwithstanding.
     request.extraInstructions?.trim()
       ? `Additional direction: ${request.extraInstructions.trim()}`
       : null,
+    '',
+    // Both models render text badly and break into collages when asked for a
+    // sequence; LTX has no negative prompt, so the rule has to live here.
+    '**Shot:** one continuous shot with smooth, unhurried camera movement — no cuts, no split screens, no collage, no transitions. Keep the product looking exactly the same throughout.',
+    'Never show text, letters, numbers, logos, captions or signs anywhere in frame.',
   ];
 
   return lines.filter((line): line is string => line !== null).join('\n');
@@ -359,10 +490,13 @@ export async function runVideoGeneration(
 
   try {
     await setStage('brief');
-    const [prompt, frames] = await Promise.all([
+    const [prompt, photo] = await Promise.all([
       composeVideoBrief(ctx, brand, request),
-      loadConditioningFrames(ctx, job.jobId, request.productId),
+      loadFirstFrame(ctx, job.jobId, request.productId),
     ]);
+    const firstFrame = photo
+      ? await prepareFirstFrame(ctx, brand.id, job.jobId, photo, request.width, request.height)
+      : await createFirstFrame(ctx, brand.id, job.jobId, prompt, request.width, request.height);
 
     await setStage('generate');
     const { value: video, cost } = await generateVideoForMode(
@@ -370,8 +504,7 @@ export async function runVideoGeneration(
       request.videoMode,
       {
         prompt,
-        ...(frames.firstFrame ? { firstFrame: frames.firstFrame } : {}),
-        ...(frames.lastFrame ? { lastFrame: frames.lastFrame } : {}),
+        ...(firstFrame ? { firstFrame } : {}),
         width: request.width,
         height: request.height,
         durationSeconds: request.durationSeconds,

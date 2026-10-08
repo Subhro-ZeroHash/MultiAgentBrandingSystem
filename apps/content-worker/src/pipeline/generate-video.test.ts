@@ -153,15 +153,19 @@ describe('composeVideoBrief', () => {
     expect(prompt).toMatch(/only to judge tone/i);
   });
 
-  it('folds in the offer and headline as mood, not as text to render', async () => {
+  /** Quoted phrases came back as garbled on-screen text, so the headline and
+   *  offer words stay out of the prompt (the caption carries them) and the
+   *  model is told never to write any. */
+  it('keeps headline and offer words out and forbids on-screen text', async () => {
     const prompt = await composeVideoBrief(fakeCtx({ name: 'Shoes', description: null }), brand, {
       ...baseRequest,
       headlineText: 'Big Sale',
       offerText: '30% off',
     });
-    expect(prompt).toContain('Big Sale');
-    expect(prompt).toContain('30% off');
-    expect(prompt).toMatch(/not on-screen text|not displaying it as text/);
+    expect(prompt).not.toContain('Big Sale');
+    expect(prompt).not.toContain('30% off');
+    expect(prompt).toMatch(/never show text/i);
+    expect(prompt).toMatch(/never write this name/i);
   });
 
   it('carries extraInstructions through verbatim when given', async () => {
