@@ -823,6 +823,10 @@ export const inboxSettings = content.table(
       .notNull()
       .references(() => socialAccounts.id, { onDelete: 'cascade' }),
     enabled: boolean('enabled').notNull().default(true),
+    /** Off by default. On, a confident draft to a simple question, a price or
+     *  stock question, or praise is sent without waiting; everything else —
+     *  complaints and refunds always — waits for a person (inbox-draft.ts). */
+    autoReply: boolean('auto_reply').notNull().default(false),
     /** Last time the worker read this account's comments and DMs. */
     lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -920,6 +924,8 @@ export const inboxMessages = content.table(
     username: text('username'),
     /** Null for a DM that is only a photo, sticker or share. */
     text: text('text'),
+    /** Sent by auto-reply rather than a person — counted against the daily cap. */
+    auto: boolean('auto').notNull().default(false),
     sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

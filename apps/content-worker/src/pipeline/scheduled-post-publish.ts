@@ -8,7 +8,7 @@ import { notifyBrandOwner } from './push.js';
  *  the call passes content-api's JwtAuthGuard as whichever user owns this
  *  brand — required now that `/social/post` is authenticated per-user. Short
  *  TTL: this token only needs to survive the one fetch below. */
-function mintServiceToken(ctx: WorkerContext, ownerId: string): string {
+export function mintServiceToken(ctx: WorkerContext, ownerId: string): string {
   return jwt.sign({ sub: ownerId }, ctx.authSecret, { expiresIn: '5m' });
 }
 

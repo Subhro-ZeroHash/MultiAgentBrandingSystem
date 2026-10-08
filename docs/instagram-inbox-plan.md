@@ -10,7 +10,16 @@ conversation drawer with the post's caption and the 24 h DM window; API `GET /in
 `GET /inbox/threads/:id`; migration 0040 adds the post caption and link to comment threads).
 **AI drafts** followed (`content-worker/src/pipeline/inbox-draft.ts`, migration 0041 draft columns on
 `inbox_threads`, queue `instagram-inbox-draft`, `POST /inbox/threads/:id/draft` to regenerate; editable
-"Suggested reply" box with Copy). Next: sending.
+"Suggested reply" box). Then **Send, Ignore, learning and auto-reply** (7 Oct 2026):
+`POST /inbox/threads/:id/reply` sends through `SocialService.replyToComment` / `sendDirectMessage`
+(JSON body, Bearer token), stores the reply with Instagram's id and marks the thread Replied; an
+in-process lock stops double sends; DMs past 24 h or over 1000 bytes are refused.
+`POST /inbox/threads/:id/ignore`. Drafts take the brand's last 5 human-sent replies as style
+examples. `inbox_settings.auto_reply` (migration 0042, off by default): drafts in question /
+price_availability / praise with confidence ≥ 0.8 are sent by content-worker through the same reply
+route as the owner (minted JWT), capped at 50 a day per brand; Regenerate never auto-sends.
+Left: notifications for conversations needing a person, usernames for webhook-only DMs, and Meta's
+side (testers now; Business Verification + App Review for real customers).
 
 **Confirmed live (5 Oct 2026): Standard Access hides other people's data.** On the real account,
 a post reported `comments_count: 1` while `/comments` returned `[]`: the commenter had no role on

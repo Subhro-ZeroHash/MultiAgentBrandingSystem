@@ -457,6 +457,57 @@ export class SocialService {
     return body as T;
   }
 
+  /** POST with a JSON body and the token as a Bearer header, the form
+   *  Meta documents for the messaging and comment-reply endpoints. */
+  private async graphPostJson<T>(
+    path: string,
+    token: string,
+    payload: Record<string, unknown>,
+    action: string,
+  ): Promise<T> {
+    const response = await fetch(`${GRAPH_BASE}/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+    const body: unknown = await response.json().catch(() => null);
+
+    if (!response.ok || isGraphErrorPayload(body)) {
+      throw new BadRequestException(
+        `Instagram: could not ${action} — ${graphErrorMessage(body, `HTTP ${response.status}`)}`,
+      );
+    }
+    return body as T;
+  }
+
+  /** Replies under a top-level comment, as the account. Returns the reply's
+   *  comment id, which the inbox stores so the next poll doesn't add it twice. */
+  async replyToComment(account: SocialAccount, commentId: string, message: string) {
+    const token = await this.tokenForReading(account);
+    const { id } = await this.graphPostJson<{ id?: string }>(
+      `${commentId}/replies`,
+      token,
+      { message },
+      'reply to the comment',
+    );
+    if (!id) throw new BadRequestException('Instagram did not return the reply.');
+    return id;
+  }
+
+  /** Sends a DM, as the account. Instagram accepts it only within 24 hours of
+   *  the customer's last message; the inbox checks that before calling. */
+  async sendDirectMessage(account: SocialAccount, recipientId: string, text: string) {
+    const token = await this.tokenForReading(account);
+    const { message_id: id } = await this.graphPostJson<{ message_id?: string }>(
+      `${account.igBusinessId ?? 'me'}/messages`,
+      token,
+      { recipient: { id: recipientId }, message: { text } },
+      'send the message',
+    );
+    if (!id) throw new BadRequestException('Instagram did not return the message.');
+    return id;
+  }
+
   async getUserAccounts(userId: string): Promise<SocialAccount[]> {
     return this.db
       .select()

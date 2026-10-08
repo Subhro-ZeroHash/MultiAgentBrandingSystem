@@ -60,6 +60,8 @@ export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 export const instagramInboxDraftJobSchema = z.object({
   threadId: entityIdSchema,
   requestedAt: z.iso.datetime(),
+  /** Asked for by a person looking at the conversation: never auto-sent. */
+  regenerate: z.boolean().optional(),
 });
 export type InstagramInboxDraftJob = z.infer<typeof instagramInboxDraftJobSchema>;
 

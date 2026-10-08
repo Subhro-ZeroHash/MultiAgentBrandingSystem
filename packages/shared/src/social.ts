@@ -180,13 +180,24 @@ export interface InstagramPerformanceSummary {
 export const updateInboxSettingsSchema = z.object({
   enabled: z.boolean(),
   socialAccountId: z.string().min(1).max(64).optional(),
+  autoReply: z.boolean().optional(),
 });
 export type UpdateInboxSettingsInput = z.infer<typeof updateInboxSettingsSchema>;
 
 export interface InboxSettings {
   enabled: boolean;
+  autoReply: boolean;
   socialAccountId: string | null;
   lastPolledAt: string | null;
   conversations: number;
   needsReply: number;
 }
+
+/** A reply sent from the inbox. Instagram's own limits: 2200 characters for a
+ *  comment, 1000 bytes for a DM (checked where the channel is known). */
+export const sendInboxReplySchema = z.object({
+  text: z.string().trim().min(1).max(2200),
+  /** Set by content-worker's auto-reply, so the daily cap can count it. */
+  auto: z.boolean().optional(),
+});
+export type SendInboxReplyInput = z.infer<typeof sendInboxReplySchema>;

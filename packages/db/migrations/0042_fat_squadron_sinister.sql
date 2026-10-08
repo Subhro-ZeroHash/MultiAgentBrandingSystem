@@ -1,0 +1,2 @@
+ALTER TABLE "content"."inbox_messages" ADD COLUMN "auto" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "content"."inbox_settings" ADD COLUMN "auto_reply" boolean DEFAULT false NOT NULL;

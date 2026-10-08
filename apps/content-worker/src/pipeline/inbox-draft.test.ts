@@ -38,16 +38,24 @@ const context = {
 
 describe('draftPrompt', () => {
   it('gives the model the only facts it may state, the post, and who said what', () => {
-    const prompt = draftPrompt(context, { channel: 'comment', postCaption: 'New drop 👟' }, [
-      { direction: 'in', username: 'priya', text: 'Size 8 milega?' },
-      { direction: 'out', username: 'bata', text: 'Haan ji!' },
-      { direction: 'in', username: 'priya', text: null },
-    ]);
+    const prompt = draftPrompt(
+      context,
+      { channel: 'comment', postCaption: 'New drop 👟' },
+      [
+        { direction: 'in', username: 'priya', text: 'Size 8 milega?' },
+        { direction: 'out', username: 'bata', text: 'Haan ji!' },
+        { direction: 'in', username: 'priya', text: null },
+      ],
+      ['Thank you so much! DM us your size 😊'],
+    );
 
     expect(prompt).toContain('- Power Sneaker, ₹1,499.00 — White, sizes 6-10');
     expect(prompt).toContain('- Comfit Sandal\n'); // no price on file → none stated
     expect(prompt).toContain('Never mention: competitor prices.');
     expect(prompt).toContain('"New drop 👟"');
+    expect(prompt).toContain(
+      'take facts only from PRODUCTS):\n- Thank you so much! DM us your size 😊',
+    );
     expect(prompt).toContain(
       'Customer @priya: Size 8 milega?\nBrand: Haan ji!\nCustomer @priya: [photo or attachment]',
     );

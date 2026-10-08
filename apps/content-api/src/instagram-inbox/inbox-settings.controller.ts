@@ -93,12 +93,13 @@ export class InboxSettingsController {
       );
     }
 
+    const autoReply = input.autoReply ?? current.autoReply;
     await this.db
       .insert(schema.inboxSettings)
-      .values({ brandId, socialAccountId, enabled: true })
+      .values({ brandId, socialAccountId, enabled: true, autoReply })
       .onConflictDoUpdate({
         target: schema.inboxSettings.brandId,
-        set: { socialAccountId, enabled: true, updatedAt: new Date() },
+        set: { socialAccountId, enabled: true, autoReply, updatedAt: new Date() },
       });
     return this.read(brandId);
   }
@@ -118,6 +119,7 @@ export class InboxSettingsController {
       .where(eq(schema.inboxThreads.brandId, brandId));
     return {
       enabled: row?.enabled ?? false,
+      autoReply: row?.autoReply ?? false,
       socialAccountId: row?.socialAccountId ?? null,
       lastPolledAt: row?.lastPolledAt?.toISOString() ?? null,
       conversations: threads?.total ?? 0,
