@@ -10,11 +10,14 @@ import {
 } from '@bmas/ai';
 import { and, asc, desc, eq, ne, schema, sql, type Brand } from '@bmas/db';
 import type {
+  CameraMove,
   CopyPack,
   CostEvent,
   CreativeRequest,
+  ReferenceRole,
   VideoGenerationJob,
   VideoGenerationRequest,
+  VideoJobRequest,
   VideoMode,
 } from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
@@ -190,6 +193,12 @@ const CLEAN_FRAME_PROMPT = [
  */
 // ponytail: a redraw per video (~$0.04 against a ~$2 clip); cache it on the
 // product image if the same product is rendered often.
+/** Leads every drawn opening frame. The style's graphic language (colour
+ *  blocks, shapes) otherwise comes back as borders around the photo, which the
+ *  video then keeps. */
+const STILL_PROMPT =
+  'A single realistic still photograph of a real scene with one clear subject, not a graphic design: no borders, frames, panels, colour blocks or shapes, and no text, shop signs or brand logos anywhere — including on clothing. It is the opening frame of this video.';
+
 /**
  * A first frame for a product with no photo yet: the image model draws one
  * clean still from the video brief, and the video animates it. Animating a
@@ -212,9 +221,7 @@ export async function createFirstFrame(
     } = await withTimeout(
       ctx.ai.imageGenerator().generate(
         {
-          // The style's graphic language (colour blocks, shapes) otherwise comes
-          // back as borders around the photo, which the video then keeps.
-          prompt: `A single realistic still photograph of a real scene with one clear subject, not a graphic design: no borders, frames, panels, colour blocks or shapes, and no text, shop signs or brand logos anywhere — including on clothing. It is the opening frame of this video.\n\n${videoPrompt}`,
+          prompt: `${STILL_PROMPT}\n\n${videoPrompt}`,
           references: [],
           width,
           height,
@@ -297,6 +304,179 @@ export async function prepareFirstFrame(
   }
 }
 
+const STUDIO_STILL_COUNT = 4;
+
+const ROLE_TEXT: Record<ReferenceRole, string> = {
+  look: 'a look reference: match its composition, framing, setting, lighting and colours, but none of its products, text or logos',
+  person: 'a person to feature: keep their face, hair, skin tone and build',
+  place: 'the place to set the scene in',
+};
+
+/** A Studio upload. The key came from a client, so it is re-checked against
+ *  the job's own brand here as well as in the request schema. */
+async function loadReference(ctx: WorkerContext, brandId: string, key: string): Promise<Buffer> {
+  if (!key.startsWith(`brands/${brandId}/references/`)) {
+    throw new Error(`Reference ${key} does not belong to brand ${brandId}`);
+  }
+  return ctx.storage.get(key);
+}
+
+/**
+ * Studio step one: four candidate opening frames, drawn with the product photo
+ * and every reference the user gave. The video engines take no reference
+ * images, so this still is how references reach the clip: the engine animates
+ * whichever one the user picks. Returns the stored keys.
+ */
+async function drawStills(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  request: VideoGenerationRequest,
+  prompt: string,
+): Promise<string[]> {
+  const references = request.references ?? [];
+  const [photo, ...uploads] = await Promise.all([
+    loadFirstFrame(ctx, jobId, request.productId),
+    ...references.map((ref) => loadReference(ctx, brandId, ref.key)),
+  ]);
+  const images = [
+    ...(photo
+      ? [
+          {
+            ...photo,
+            role: 'the product: keep it exactly as it is — the same shape, colours, materials, details and proportions — but leave out any text, stickers or price tags on it',
+          },
+        ]
+      : []),
+    ...uploads.map((data, i) => ({
+      data,
+      mediaType: mediaTypeFor(references[i]!.key),
+      role: ROLE_TEXT[references[i]!.role],
+    })),
+  ];
+  const guide = images.map((image, i) => `Image ${i + 1} is ${image.role}.`).join('\n');
+
+  const { value, cost } = await withTimeout(
+    ctx.ai.imageGenerator().generate(
+      {
+        prompt: [STILL_PROMPT, guide, prompt].filter(Boolean).join('\n\n'),
+        references: images.map(({ data, mediaType }) => ({ data, mediaType })),
+        width: request.width,
+        height: request.height,
+        count: STUDIO_STILL_COUNT,
+      },
+      { referenceId: jobId, brandId },
+    ),
+    240_000,
+    'video:stills',
+  );
+  await recordCost(ctx, brandId, jobId, cost);
+  if (value.length === 0) throw new Error('The image model returned no stills');
+
+  return Promise.all(
+    value.map(async (image, i) => {
+      const key = `brands/${brandId}/videos/${jobId}/still-${i + 1}.${image.mediaType === 'image/png' ? 'png' : 'jpg'}`;
+      await ctx.storage.put(key, image.data, image.mediaType);
+      return key;
+    }),
+  );
+}
+
+/** The still a Studio Animate picked, with the brief it was drawn from. */
+async function loadPickedStill(
+  ctx: WorkerContext,
+  brandId: string,
+  { jobId, index }: { jobId: string; index: number },
+): Promise<{ brief: string; frame: ConditioningFrame }> {
+  const [stills] = await ctx.db
+    .select({
+      brandId: schema.videoGenerationJobs.brandId,
+      frames: schema.videoGenerationJobs.frames,
+      brief: schema.videoGenerationJobs.brief,
+    })
+    .from(schema.videoGenerationJobs)
+    .where(eq(schema.videoGenerationJobs.id, jobId))
+    .limit(1);
+  const key = stills?.brandId === brandId ? stills.frames?.[index] : undefined;
+  if (!key || !stills?.brief) throw new Error(`Still ${index + 1} of job ${jobId} not found`);
+  return {
+    brief: stills.brief,
+    frame: { data: await ctx.storage.get(key), mediaType: mediaTypeFor(key) },
+  };
+}
+
+/** The Studio's camera presets, as the one line of direction each becomes. */
+const CAMERA_DIRECTION: Record<CameraMove, string> = {
+  static: 'a locked-off camera on a tripod; only the subject and the light move.',
+  push_in: 'a slow, steady dolly push-in towards the subject.',
+  pull_out: 'a slow pull-back that reveals the setting around the subject.',
+  orbit: 'a smooth half-orbit around the subject at a constant distance.',
+  pan: 'a slow sideways tracking move past the subject.',
+  crane_up: 'a crane move rising up and over the subject.',
+  handheld: 'a gentle handheld camera with natural sway, like a phone video.',
+  top_down: 'an overhead top-down view, slowly rotating.',
+};
+
+/**
+ * Studio "recreate this reel": Gemini watches the sample and writes the
+ * direction for one continuous shot of our product with the same feel. Not
+ * best-effort: a user who asked to recreate a reel and got an unrelated clip
+ * has been charged for the wrong thing, so a failure fails the job.
+ */
+async function watchSampleVideo(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  request: VideoGenerationRequest,
+): Promise<string> {
+  const key = request.sampleVideoKey!;
+  const [data, [product]] = await Promise.all([
+    loadReference(ctx, brandId, key),
+    ctx.db
+      .select({ name: schema.products.name, description: schema.products.description })
+      .from(schema.products)
+      .where(eq(schema.products.id, request.productId))
+      .limit(1),
+  ]);
+  const subject = product
+    ? `${product.name}${product.description ? ` (${product.description.trim()})` : ''}`
+    : 'the product';
+
+  const { value, cost } = await withTimeout(
+    ctx.ai.llm().analyzeImage(
+      {
+        role: 'qa',
+        prompt: [
+          `Watch this sample video. Write the direction for recreating its look and feel as one continuous ${request.durationSeconds}-second shot whose subject is instead: ${subject}.`,
+          'Cover the setting, how the subject is shown or used, camera movement and framing, lighting, colour palette, pace and mood.',
+          'If the sample has several cuts, base it on its most striking shot and keep its overall energy.',
+          // The user's own choices win; the sample fills in everything else.
+          request.prompt
+            ? `The user's own scene comes first — keep it and adapt the sample around it: ${request.prompt.replace(/@product\b/gi, 'the product')}.`
+            : null,
+          request.camera
+            ? `Use this camera move instead of the sample's: ${CAMERA_DIRECTION[request.camera]}`
+            : null,
+          "Never mention the sample's own products, brands, logos, on-screen text, captions or people's names.",
+          'Reply with 4 to 6 plain sentences and nothing else.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+        images: [],
+        video: { data, mediaType: key.endsWith('.mov') ? 'video/quicktime' : 'video/mp4' },
+        // Thinking tokens count against this cap; only used tokens are billed.
+        maxTokens: 8_192,
+      },
+      { referenceId: jobId, brandId },
+    ),
+    180_000,
+    'video:watch-sample',
+  );
+  await recordCost(ctx, brandId, jobId, cost);
+  if (!value.trim()) throw new Error('Gemini returned no direction for the sample video');
+  return value.trim();
+}
+
 /**
  * Video's counterpart to `composeBrief` — turns the same structured intake
  * (product, style, campaign type, offer/headline/extra instructions) plus
@@ -322,6 +502,8 @@ export async function composeVideoBrief(
   ctx: WorkerContext,
   brand: Brand,
   request: VideoGenerationRequest,
+  /** What `watchSampleVideo` wrote, when the Studio was given a reel. */
+  sampleDirection?: string,
 ): Promise<string> {
   const [product] = await ctx.db
     .select()
@@ -333,7 +515,7 @@ export async function composeVideoBrief(
   const description = product.description?.trim().replace(/[.\s]+$/, '');
 
   const lines: Array<string | null> = [
-    `A short vertical marketing video for ${CAMPAIGN_INTENT[request.campaignType]}.`,
+    `A short ${request.height > request.width ? 'vertical' : 'horizontal'} marketing video for ${CAMPAIGN_INTENT[request.campaignType]}.`,
     '',
     // The name is for understanding only: quoted titles are exactly what both
     // models wrote on screen, garbled ("The Bold Winter Edit").
@@ -343,6 +525,10 @@ export async function composeVideoBrief(
       : null,
     `${product.name} is the single subject of the clip. If it is a service, trip, or experience rather ` +
       'than a physical object, depict the experience itself — do not invent a physical object to stand in for it.',
+    request.prompt ? `**Scene:** ${request.prompt.replace(/@product\b/gi, 'the product')}` : null,
+    sampleDirection
+      ? `**Recreate the sample video's look and feel** (this leads over the look below): ${sampleDirection}`
+      : null,
     '',
     `**Brand:** ${brand.name}, tone ${toneDirection(brand.tone)}.`,
     brand.category
@@ -359,7 +545,8 @@ export async function composeVideoBrief(
     '',
     // Both models render text badly and break into collages when asked for a
     // sequence; LTX has no negative prompt, so the rule has to live here.
-    '**Shot:** one continuous shot with smooth, unhurried camera movement — no cuts, no split screens, no collage, no transitions. Keep the product looking exactly the same throughout.',
+    request.camera ? `**Camera:** ${CAMERA_DIRECTION[request.camera]}` : null,
+    `**Shot:** one continuous shot${request.camera ? '' : ' with smooth, unhurried camera movement'} — no cuts, no split screens, no collage, no transitions. Keep the product looking exactly the same throughout.`,
     'Never show text, letters, numbers, logos, captions or signs anywhere in frame.',
   ];
 
@@ -468,7 +655,7 @@ export async function runVideoGeneration(
     .limit(1);
   if (!brand) throw new Error(`Brand ${row.brandId} not found`);
 
-  const request = row.request as unknown as VideoGenerationRequest;
+  const request = row.request as unknown as VideoJobRequest;
 
   const setStage = async (stage: string) => {
     const [updated] = await ctx.db
@@ -490,13 +677,44 @@ export async function runVideoGeneration(
 
   try {
     await setStage('brief');
-    const [prompt, photo] = await Promise.all([
-      composeVideoBrief(ctx, brand, request),
-      loadFirstFrame(ctx, job.jobId, request.productId),
-    ]);
-    const firstFrame = photo
-      ? await prepareFirstFrame(ctx, brand.id, job.jobId, photo, request.width, request.height)
-      : await createFirstFrame(ctx, brand.id, job.jobId, prompt, request.width, request.height);
+    let prompt: string;
+    let firstFrame: ConditioningFrame | undefined;
+    if (request.fromStills) {
+      // Studio Animate: the picked still is already clean and the right shape.
+      ({ brief: prompt, frame: firstFrame } = await loadPickedStill(
+        ctx,
+        brand.id,
+        request.fromStills,
+      ));
+    } else {
+      const sampleDirection = request.sampleVideoKey
+        ? await watchSampleVideo(ctx, brand.id, job.jobId, request)
+        : undefined;
+      prompt = await composeVideoBrief(ctx, brand, request, sampleDirection);
+
+      if (request.stillsOnly) {
+        await setStage('stills');
+        const frames = await drawStills(ctx, brand.id, job.jobId, request, prompt);
+        await ctx.db
+          .update(schema.videoGenerationJobs)
+          .set({
+            status: 'succeeded',
+            stage: null,
+            error: null,
+            frames,
+            brief: prompt,
+            finishedAt: new Date(),
+          })
+          .where(eq(schema.videoGenerationJobs.id, job.jobId));
+        console.warn(`[content:video] job ${job.jobId}: ${frames.length} stills ready`);
+        return;
+      }
+
+      const photo = await loadFirstFrame(ctx, job.jobId, request.productId);
+      firstFrame = photo
+        ? await prepareFirstFrame(ctx, brand.id, job.jobId, photo, request.width, request.height)
+        : await createFirstFrame(ctx, brand.id, job.jobId, prompt, request.width, request.height);
+    }
 
     await setStage('generate');
     const { value: video, cost } = await generateVideoForMode(

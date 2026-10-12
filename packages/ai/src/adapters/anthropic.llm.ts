@@ -1,5 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ProviderNotConfiguredError, ProviderError, describeError } from '../errors.js';
+import {
+  NotImplementedError,
+  ProviderNotConfiguredError,
+  ProviderError,
+  describeError,
+} from '../errors.js';
 import type {
   LlmJsonRequest,
   LlmService,
@@ -172,6 +177,8 @@ export class AnthropicLlmAdapter implements LlmService {
     req: LlmVisionRequest,
     ctx?: ProviderContext,
   ): Promise<ProviderResult<string>> {
+    // Claude reads no video; only the Studio's sample-reel step sends one.
+    if (req.video) throw new NotImplementedError('anthropic', 'video analysis');
     const model = this.modelFor(req.role);
     const startedAt = Date.now();
 

@@ -43,6 +43,12 @@ const productImageUploadSchema = z.object({
 });
 type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 
+/** A Studio reference image or sample reel; sizes are checked in the service. */
+const referenceUploadSchema = z.object({
+  base64: z.string().min(1),
+  mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/quicktime']),
+});
+
 @UseGuards(JwtAuthGuard)
 @Controller('brands')
 export class BrandsController {
@@ -229,5 +235,14 @@ export class BrandsController {
     @Body(new ZodValidationPipe(productImageUploadSchema)) body: unknown,
   ) {
     return this.brands.addProductImage(id, productId, req.user.id, body as ProductImageUploadInput);
+  }
+
+  @Post(':id/references')
+  addReference(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+    @Body(new ZodValidationPipe(referenceUploadSchema)) body: unknown,
+  ) {
+    return this.brands.addReference(id, req.user.id, body as z.infer<typeof referenceUploadSchema>);
   }
 }

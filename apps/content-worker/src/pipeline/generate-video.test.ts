@@ -56,6 +56,8 @@ const baseRequest = {
   productId: 'product-1',
   campaignType: 'generic',
   styleTemplate: 'studio_white',
+  width: 1080,
+  height: 1920,
 } as unknown as VideoGenerationRequest;
 
 /** Only what composeVideoBrief actually reads: one product row off `productId`.
@@ -174,6 +176,36 @@ describe('composeVideoBrief', () => {
       extraInstructions: 'Set against a rainy monsoon backdrop',
     });
     expect(prompt).toContain('Set against a rainy monsoon backdrop');
+  });
+
+  it('folds in the Studio scene, camera, sample direction and shape', async () => {
+    const plain = await composeVideoBrief(
+      fakeCtx({ name: 'Shoes', description: null }),
+      brand,
+      baseRequest,
+    );
+    expect(plain).toContain('short vertical marketing video');
+    expect(plain).toContain('smooth, unhurried camera movement');
+
+    const prompt = await composeVideoBrief(
+      fakeCtx({ name: 'Shoes', description: null }),
+      brand,
+      {
+        ...baseRequest,
+        width: 1920,
+        height: 1080,
+        prompt: '@product on a café table',
+        camera: 'orbit',
+      },
+      'A warm kitchen at dawn, slow and calm.',
+    );
+    expect(prompt).toContain('short horizontal marketing video');
+    expect(prompt).toContain('**Scene:** the product on a café table');
+    expect(prompt).not.toContain('@product');
+    expect(prompt).toMatch(/Recreate the sample video's look and feel.*A warm kitchen at dawn/);
+    expect(prompt).toContain('**Camera:** a smooth half-orbit');
+    // A chosen camera move replaces the default one rather than fighting it.
+    expect(prompt).not.toContain('smooth, unhurried camera movement');
   });
 
   it('throws when the product does not exist', async () => {

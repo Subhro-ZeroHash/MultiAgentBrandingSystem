@@ -10,7 +10,12 @@ import {
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { videoGenerationRequestSchema, type VideoGenerationRequest } from '@bmas/shared';
+import {
+  animateStillSchema,
+  videoGenerationRequestSchema,
+  type AnimateStillInput,
+  type VideoGenerationRequest,
+} from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { PerUserRateLimitGuard } from '../common/per-user-rate-limit.guard.js';
@@ -20,6 +25,15 @@ import { VideoGenerationsService } from './video-generations.service.js';
 /** Same key shape and reasoning as GenerationsController's — a BullMQ job id
  *  doubles as this, so the same restricted alphabet applies. */
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9._-]{8,128}$/;
+
+function requireIdempotencyKey(key: string | undefined): string {
+  if (!key || !IDEMPOTENCY_KEY.test(key)) {
+    throw new BadRequestException(
+      'Idempotency-Key header is required and must be 8–128 characters of [A-Za-z0-9._-]',
+    );
+  }
+  return key;
+}
 
 /** See GenerationsController's identical guard for why this is its own
  *  standalone limiter rather than an @nestjs/throttler override, and why the
@@ -41,14 +55,26 @@ export class VideoGenerationsController {
     @Body(new ZodValidationPipe(videoGenerationRequestSchema)) body: unknown,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    if (!idempotencyKey || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
-      throw new BadRequestException(
-        'Idempotency-Key header is required and must be 8–128 characters of [A-Za-z0-9._-]',
-      );
-    }
     return this.videoGenerations.enqueue(
       body as VideoGenerationRequest,
-      idempotencyKey,
+      requireIdempotencyKey(idempotencyKey),
+      req.user.id,
+    );
+  }
+
+  /** Studio: render one still from a stills job. Shares the create budget. */
+  @UseGuards(videoGenerationRateLimitGuard)
+  @Post(':id/animate')
+  animate(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+    @Body(new ZodValidationPipe(animateStillSchema)) body: unknown,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.videoGenerations.animate(
+      id,
+      body as AnimateStillInput,
+      requireIdempotencyKey(idempotencyKey),
       req.user.id,
     );
   }

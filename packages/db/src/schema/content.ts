@@ -288,6 +288,11 @@ export const videoGenerationJobs = content.table(
      *  copy is best-effort — a rendered video is not thrown away because the
      *  caption call failed. */
     copy: jsonb('copy').$type<CopyPack>(),
+    /** A Studio stills job's candidate opening frames (storage keys), and the
+     *  brief they were drawn from — Animate renders the picked one with the
+     *  same brief, so a sample reel is watched once, not again per clip. */
+    frames: jsonb('frames').$type<string[]>(),
+    brief: text('brief'),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

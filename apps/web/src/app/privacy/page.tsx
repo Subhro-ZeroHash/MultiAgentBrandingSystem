@@ -32,7 +32,7 @@ export default function PrivacyPolicyPage() {
     <div className="max-w-2xl space-y-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Privacy Policy</h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">Last updated October 2, 2026</p>
+        <p className="mt-1 text-sm text-[var(--color-muted)]">Last updated October 12, 2026</p>
       </div>
 
       <p className="text-[var(--color-muted)]">
@@ -46,7 +46,8 @@ export default function PrivacyPolicyPage() {
           <li>Your account: name, email address and password (stored only as a one-way hash).</li>
           <li>
             Your brands: brand details (name, colours, tone, audience, location, goals), products
-            and product photos, your instructions for content, and any website you ask us to import.
+            and product photos, reference images and sample videos you upload in the Studio, your
+            instructions for content, and any website you ask us to import.
           </li>
           <li>
             Your activity: the posters, videos, captions, plans and campaigns we generate for you,
@@ -125,8 +126,8 @@ export default function PrivacyPolicyPage() {
         <p>What we send them:</p>
         <List>
           <li>
-            To create content: your brand details, product descriptions and photos, your
-            instructions, and content from a website you imported.
+            To create content: your brand details, product descriptions and photos, Studio reference
+            images and sample videos, your instructions, and content from a website you imported.
           </li>
           <li>
             To draft a reply: the comment, message or review being answered, earlier messages in

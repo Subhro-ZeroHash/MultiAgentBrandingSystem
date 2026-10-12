@@ -18,6 +18,16 @@ import { BrandContextService } from './brand-context.service.js';
  *  models accept. */
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const ALLOWED_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+/** A Studio sample reel goes to Gemini inline, whose request limit is 20 MB
+ *  after base64 — this keeps it under that, and under the JSON body limit. */
+const MAX_VIDEO_BYTES = 14 * 1024 * 1024;
+const REFERENCE_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+};
 
 export interface ProductImageUpload {
   base64: string;
@@ -322,5 +332,51 @@ export class BrandsService {
 
     if (!row) throw new Error('Insert returned no row');
     return row;
+  }
+
+  /**
+   * A Studio reference: an image (look, person, place) or a sample reel. Not
+   * tied to a product and kept as a bare storage key the client sends back in
+   * a video request; the request schema only accepts this brand's keys.
+   */
+  async addReference(
+    brandId: string,
+    ownerId: string,
+    input: { base64: string; mediaType: string },
+  ): Promise<{ key: string }> {
+    await this.assertBrandOwned(brandId, ownerId);
+
+    const ext = REFERENCE_EXT[input.mediaType];
+    if (!ext)
+      throw new BadRequestException('Use a PNG, JPG or WEBP image, or an MP4 or MOV video.');
+    const video = input.mediaType.startsWith('video/');
+    const max = video ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+    const tooBig = `File exceeds the maximum size (${max / 1024 / 1024} MB).`;
+    if (input.base64.length > max * 1.4) throw new BadRequestException(tooBig);
+
+    const bytes = Buffer.from(input.base64, 'base64');
+    if (bytes.length === 0) throw new BadRequestException('File is empty or not valid base64.');
+    if (bytes.length > max) throw new BadRequestException(tooBig);
+
+    // Proof of type, as for product photos: sharp decodes an image; MP4 and
+    // MOV are both ISO-BMFF, which always carries 'ftyp' at byte 4.
+    if (video) {
+      if (bytes.subarray(4, 8).toString('ascii') !== 'ftyp') {
+        throw new BadRequestException('The uploaded file is not a valid MP4 or MOV video.');
+      }
+    } else {
+      try {
+        const meta = await sharp(bytes, { failOn: 'none' }).metadata();
+        if (!meta.width || !meta.height) throw new Error('no dimensions');
+      } catch {
+        throw new BadRequestException('The uploaded file is not a valid image.');
+      }
+    }
+
+    // ponytail: uploads are never deleted; add a sweep of old
+    // brands/*/references/ keys if storage cost ever shows up.
+    const key = `brands/${brandId}/references/${crypto.randomUUID()}.${ext}`;
+    await this.store.put(key, bytes, input.mediaType);
+    return { key };
   }
 }

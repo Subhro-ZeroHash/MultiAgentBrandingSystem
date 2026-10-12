@@ -272,6 +272,17 @@ export class GeminiLlmAdapter implements LlmService {
       ...req.images.map((image) => ({
         inlineData: { mimeType: image.mediaType, data: image.data.toString('base64') },
       })),
+      // Gemini names QuickTime 'video/mov', not the browser's 'video/quicktime'.
+      ...(req.video
+        ? [
+            {
+              inlineData: {
+                mimeType: req.video.mediaType === 'video/quicktime' ? 'video/mov' : 'video/mp4',
+                data: req.video.data.toString('base64'),
+              },
+            },
+          ]
+        : []),
       { text: req.prompt },
     ];
 

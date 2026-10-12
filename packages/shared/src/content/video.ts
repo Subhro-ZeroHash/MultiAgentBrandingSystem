@@ -8,13 +8,14 @@ import { entityIdSchema } from '../common.js';
  * Deliberately the same structured vocabulary `creativeRequestSchema` uses —
  * `campaignType`, `styleTemplate`, `headlineText`/`offerText`/`ctaText`,
  * `extraInstructions` — rather than a raw prompt the client writes itself.
- * The app never shows a "describe your video" box: a video is what a Story/
+ * The Create page has no "describe your video" box: a video is what a Story/
  * Reel selection on the same product-and-style form the image path already
  * uses produces, so the worker needs the same structured intake to compose a
  * real brief from (see `composeVideoBrief` in generate-video.ts, the video
- * counterpart of `composeBrief`). `outputFormat` itself isn't part of it —
- * every video is Reel-shaped by construction, there is no second format to
- * choose between the way images have four.
+ * counterpart of `composeBrief`). The website's Studio adds an optional
+ * `prompt` and the other Studio fields below; the worker still composes the
+ * brief around them. `outputFormat` isn't part of it — a video is a Reel
+ * (or, from the Studio, a 16:9 wide clip).
  *
  * `productId` is required, unlike an early version of this schema: a video
  * always comes from the same "create a product, then generate" flow images
@@ -24,40 +25,112 @@ import { entityIdSchema } from '../common.js';
 export const videoModeSchema = z.enum(['cinematic_broll', 'advertisement']);
 export type VideoMode = z.infer<typeof videoModeSchema>;
 
-export const videoGenerationRequestSchema = z.object({
-  brandId: entityIdSchema,
-  productId: entityIdSchema,
-  campaignType: campaignTypeSchema,
-  styleTemplate: styleTemplateSchema,
-  /** Picks the provider — not a quality tier, two different products.
-   *  `cinematic_broll` renders on LTX (raw supplementary footage);
-   *  `advertisement` renders on Gemini's Veo models. Both ship exactly what
-   *  the provider returned, with no burnt-in text: headline/offer/CTA only
-   *  steer the clip's mood in the prompt (see `composeVideoBrief`). Each mode
-   *  is pinned to its own provider — see
-   *  `PROVIDER_FOR_MODE` in generate-video.ts — there is no fallback between
-   *  them, so a Veo outage doesn't silently hand back LTX footage under an
-   *  "advertisement" label or vice versa. */
-  videoMode: videoModeSchema.default('cinematic_broll'),
-  headlineText: z.string().max(80).optional(),
-  offerText: z.string().max(40).optional(),
-  ctaText: z.string().max(40).optional(),
-  /** FR-2.4-equivalent escape hatch, same role it plays for images. */
-  extraInstructions: z.string().max(500).optional(),
-  /** Every video this pipeline makes is at least 10s. LTX renders this exactly
-   *  (its own ceiling is 20s). Veo has no 10s tier at all — the closest it has
-   *  is 8s — so an `advertisement` request is accepted here and then snapped
-   *  down to its nearest option (8s) by `nearestVeoDuration` in
-   *  gemini.video.ts; that's an accepted provider ceiling, not a bug, and the
-   *  one case where the finished video is shorter than requested. */
-  durationSeconds: z.number().int().min(10).max(20).default(10),
-  /** The one shape a video from this pipeline is ever asked for, matching
-   *  `OUTPUT_FORMAT_DIMENSIONS.story_reel_cover` — fixed rather than just
-   *  defaulted, since nothing in the app ever asks for another size. */
-  width: z.literal(1080).default(1080),
-  height: z.literal(1920).default(1920),
-});
+/** Studio camera presets. Prompt-level for both engines: neither API takes a
+ *  camera parameter. */
+export const cameraMoveSchema = z.enum([
+  'static',
+  'push_in',
+  'pull_out',
+  'orbit',
+  'pan',
+  'crane_up',
+  'handheld',
+  'top_down',
+]);
+export type CameraMove = z.infer<typeof cameraMoveSchema>;
+
+/** What a Studio reference image is for: a look to copy, a person to feature,
+ *  or a place to set the scene in. */
+export const referenceRoleSchema = z.enum(['look', 'person', 'place']);
+export type ReferenceRole = z.infer<typeof referenceRoleSchema>;
+
+/** A file uploaded through POST /brands/:id/references. The brand segment is
+ *  checked against the request's brandId below, so a request can only point at
+ *  its own brand's uploads. */
+const REFERENCE_KEY =
+  /^brands\/([A-Za-z0-9-]+)\/references\/[A-Za-z0-9-]+\.(png|jpg|webp|mp4|mov)$/;
+const referenceImageKey = z
+  .string()
+  .regex(REFERENCE_KEY)
+  .refine((key) => !/\.(mp4|mov)$/.test(key));
+const referenceVideoKey = z
+  .string()
+  .regex(REFERENCE_KEY)
+  .refine((key) => /\.(mp4|mov)$/.test(key));
+const keyBrand = (key: string) => REFERENCE_KEY.exec(key)?.[1];
+
+export const videoGenerationRequestSchema = z
+  .object({
+    brandId: entityIdSchema,
+    productId: entityIdSchema,
+    campaignType: campaignTypeSchema,
+    styleTemplate: styleTemplateSchema,
+    /** Picks the provider — not a quality tier, two different products.
+     *  `cinematic_broll` renders on LTX (raw supplementary footage);
+     *  `advertisement` renders on Gemini's Veo models. Both ship exactly what
+     *  the provider returned, with no burnt-in text: headline/offer/CTA only
+     *  steer the clip's mood in the prompt (see `composeVideoBrief`). Each mode
+     *  is pinned to its own provider — see
+     *  `PROVIDER_FOR_MODE` in generate-video.ts — there is no fallback between
+     *  them, so a Veo outage doesn't silently hand back LTX footage under an
+     *  "advertisement" label or vice versa. */
+    videoMode: videoModeSchema.default('cinematic_broll'),
+    headlineText: z.string().max(80).optional(),
+    offerText: z.string().max(40).optional(),
+    ctaText: z.string().max(40).optional(),
+    /** FR-2.4-equivalent escape hatch, same role it plays for images. */
+    extraInstructions: z.string().max(500).optional(),
+    /** Every video this pipeline makes is at least 10s. LTX renders this exactly
+     *  (its own ceiling is 20s). Veo has no 10s tier at all — the closest it has
+     *  is 8s — so an `advertisement` request is accepted here and then snapped
+     *  down to its nearest option (8s) by `nearestVeoDuration` in
+     *  gemini.video.ts; that's an accepted provider ceiling, not a bug, and the
+     *  one case where the finished video is shorter than requested. */
+    durationSeconds: z.number().int().min(10).max(20).default(10),
+    /** 1080×1920 (a Reel, the default) or 1920×1080 — the only two shapes
+     *  both providers render; a square refine below rules out 1080×1080. */
+    width: z.union([z.literal(1080), z.literal(1920)]).default(1080),
+    height: z.union([z.literal(1920), z.literal(1080)]).default(1920),
+
+    // Studio fields — all optional, so the Create page's requests are unchanged.
+    /** The user's own scene direction. '@product' stands for the product. */
+    prompt: z.string().trim().max(1000).optional(),
+    camera: cameraMoveSchema.optional(),
+    /** Feed the stills only: the video engines take no reference images, so
+     *  they reach the clip through the still it animates. */
+    references: z
+      .array(z.object({ key: referenceImageKey, role: referenceRoleSchema }))
+      .max(3)
+      .optional(),
+    /** A reel to recreate: Gemini watches it and writes the shot's direction. */
+    sampleVideoKey: referenceVideoKey.optional(),
+    /** Draw four candidate opening frames and stop; the user picks one and
+     *  POST /video-generations/:id/animate renders it. */
+    stillsOnly: z.boolean().optional(),
+  })
+  .refine((r) => r.width !== r.height, { message: 'Video must be 1080×1920 or 1920×1080' })
+  .refine(
+    (r) =>
+      [...(r.references ?? []).map((ref) => ref.key), r.sampleVideoKey]
+        .filter((key): key is string => Boolean(key))
+        .every((key) => keyBrand(key) === r.brandId),
+    { message: 'References must be uploads of this brand' },
+  );
 export type VideoGenerationRequest = z.infer<typeof videoGenerationRequestSchema>;
+
+/** A video job row's stored request: what the client sent, plus the still it
+ *  animates when the Studio's Animate made it. `fromStills` is set server-side
+ *  only — the public schema above strips it. */
+export type VideoJobRequest = VideoGenerationRequest & {
+  fromStills?: { jobId: string; index: number };
+};
+
+export const animateStillSchema = z.object({
+  index: z.number().int().min(0).max(3),
+  videoMode: videoModeSchema.default('cinematic_broll'),
+  durationSeconds: z.number().int().min(10).max(20).default(10),
+});
+export type AnimateStillInput = z.infer<typeof animateStillSchema>;
 
 export const videoAssetSchema = z.object({
   id: entityIdSchema,

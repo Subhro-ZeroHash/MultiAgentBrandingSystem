@@ -1,14 +1,22 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import {
+  and,
   asc,
   desc,
   eq,
   inArray,
   reapStalledVideoGenerationJob,
   schema,
+  sql,
   type Database,
 } from '@bmas/db';
-import { QUEUES, type CopyPack, type VideoGenerationRequest } from '@bmas/shared';
+import {
+  QUEUES,
+  type AnimateStillInput,
+  type CopyPack,
+  type VideoGenerationRequest,
+  type VideoJobRequest,
+} from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
 import { ASSET_URLS, DATABASE, VIDEO_GENERATION_QUEUE } from '../core/core.module.js';
@@ -64,6 +72,55 @@ export class VideoGenerationsService {
       );
     }
 
+    return this.insertAndQueue(request, idempotencyKey);
+  }
+
+  /**
+   * Studio step two: renders the still the user picked from a stills job,
+   * as a new video job. The request is copied from the stills job server-side
+   * rather than resent by the client, so the clip always matches the still.
+   */
+  async animate(
+    stillsJobId: string,
+    input: AnimateStillInput,
+    idempotencyKey: string,
+    ownerId: string,
+  ) {
+    const [stills] = await this.db
+      .select()
+      .from(schema.videoGenerationJobs)
+      .where(eq(schema.videoGenerationJobs.id, stillsJobId))
+      .limit(1);
+    if (!stills) throw new NotFoundException(`Video generation job ${stillsJobId} not found`);
+    await this.assertBrandOwned(stills.brandId, ownerId);
+
+    const existing = await this.db
+      .select()
+      .from(schema.videoGenerationJobs)
+      .where(eq(schema.videoGenerationJobs.idempotencyKey, idempotencyKey))
+      .limit(1);
+    if (existing[0]) return existing[0];
+
+    const { stillsOnly, ...base } = stills.request as VideoJobRequest;
+    if (!stillsOnly || stills.status !== 'succeeded' || !stills.frames?.[input.index]) {
+      throw new BadRequestException('That still is not ready to animate.');
+    }
+    if (!stills.productId) {
+      throw new BadRequestException('The product for these stills was deleted.');
+    }
+
+    return this.insertAndQueue(
+      {
+        ...base,
+        videoMode: input.videoMode,
+        durationSeconds: input.durationSeconds,
+        fromStills: { jobId: stills.id, index: input.index },
+      },
+      idempotencyKey,
+    );
+  }
+
+  private async insertAndQueue(request: VideoJobRequest, idempotencyKey: string) {
     const [job] = await this.db
       .insert(schema.videoGenerationJobs)
       .values({
@@ -130,7 +187,11 @@ export class VideoGenerationsService {
       })),
     );
 
-    return { ...job, assets: signed };
+    const frames = job.frames
+      ? await Promise.all(job.frames.map((key) => this.assetUrls.sign(key)))
+      : null;
+
+    return { ...job, frames, assets: signed };
   }
 
   /**
@@ -170,7 +231,13 @@ export class VideoGenerationsService {
     const jobs = await this.db
       .select()
       .from(schema.videoGenerationJobs)
-      .where(eq(schema.videoGenerationJobs.brandId, brandId))
+      .where(
+        and(
+          eq(schema.videoGenerationJobs.brandId, brandId),
+          // A Studio stills job has no video; its clips are their own jobs.
+          sql`coalesce((${schema.videoGenerationJobs.request} ->> 'stillsOnly')::boolean, false) = false`,
+        ),
+      )
       .orderBy(desc(schema.videoGenerationJobs.createdAt))
       .limit(limit);
 
