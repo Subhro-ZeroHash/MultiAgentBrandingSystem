@@ -46,8 +46,9 @@ export default function PrivacyPolicyPage() {
           <li>Your account: name, email address and password (stored only as a one-way hash).</li>
           <li>
             Your brands: brand details (name, colours, tone, audience, location, goals), products
-            and product photos, reference images and sample videos you upload in the Studio, your
-            instructions for content, and any website you ask us to import.
+            and product photos, reference images and sample videos you add in the Studio (uploaded,
+            or fetched from a link you paste, including your own Instagram posts), your instructions
+            for content, and any website you ask us to import.
           </li>
           <li>
             Your activity: the posters, videos, captions, plans and campaigns we generate for you,
@@ -127,7 +128,8 @@ export default function PrivacyPolicyPage() {
         <List>
           <li>
             To create content: your brand details, product descriptions and photos, Studio reference
-            images and sample videos, your instructions, and content from a website you imported.
+            images and sample videos (or a YouTube link to one), your instructions, and content from
+            a website you imported.
           </li>
           <li>
             To draft a reply: the comment, message or review being answered, earlier messages in

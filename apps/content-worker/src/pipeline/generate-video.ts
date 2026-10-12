@@ -4,6 +4,7 @@ import {
   withRetry,
   withTimeout,
   type GeneratedVideo,
+  type LlmVisionRequest,
   type ProviderResult,
   type VideoGenerateRequest,
   type VideoProviderName,
@@ -32,7 +33,7 @@ import {
   mediaTypeFor,
   toneDirection,
 } from './stages.js';
-import { joinClips, lastFrame } from './video-edit.js';
+import { joinClips, lastFrame, shrinkVideo } from './video-edit.js';
 
 /**
  * Video generation's own pipeline, mirroring `generate.ts`'s shape at the
@@ -407,6 +408,24 @@ async function loadJobRow(ctx: WorkerContext, brandId: string, jobId: string) {
   return row;
 }
 
+const INLINE_VIDEO_BYTES = 14 * 1024 * 1024;
+
+/** The sample reel for Gemini to watch: an upload's bytes, or a YouTube link. */
+async function loadSampleVideo(
+  ctx: WorkerContext,
+  brandId: string,
+  request: VideoGenerationRequest,
+): Promise<LlmVisionRequest['video']> {
+  if (request.sampleVideoUrl) return { url: request.sampleVideoUrl };
+  const key = request.sampleVideoKey;
+  if (!key) return undefined;
+  const data = await loadReference(ctx, brandId, key);
+  // A linked reel may be up to 50 MB; Gemini takes it inline only when small.
+  if (data.length > INLINE_VIDEO_BYTES)
+    return { data: await shrinkVideo(data), mediaType: 'video/mp4' };
+  return { data, mediaType: key.endsWith('.mov') ? 'video/quicktime' : 'video/mp4' };
+}
+
 /** One storyboard shot's prompt: the shared brief, then what this shot shows. */
 export function shotPrompt(brief: string, shot: StoryboardShot, i: number, total: number): string {
   return `${brief}\n\n**This shot (${i + 1} of ${total}, ${shot.seconds} seconds):** ${shot.direction}`;
@@ -445,14 +464,7 @@ export async function planShots(
   brief: string,
   count: number,
 ): Promise<StoryboardShot[]> {
-  const video = request.sampleVideoKey
-    ? {
-        data: await loadReference(ctx, brandId, request.sampleVideoKey),
-        mediaType: request.sampleVideoKey.endsWith('.mov')
-          ? ('video/quicktime' as const)
-          : ('video/mp4' as const),
-      }
-    : undefined;
+  const video = await loadSampleVideo(ctx, brandId, request);
 
   const { value, cost } = await withTimeout(
     ctx.ai.llm().analyzeImage(
@@ -515,9 +527,8 @@ async function watchSampleVideo(
   jobId: string,
   request: VideoGenerationRequest,
 ): Promise<string> {
-  const key = request.sampleVideoKey!;
-  const [data, [product]] = await Promise.all([
-    loadReference(ctx, brandId, key),
+  const [video, [product]] = await Promise.all([
+    loadSampleVideo(ctx, brandId, request),
     ctx.db
       .select({ name: schema.products.name, description: schema.products.description })
       .from(schema.products)
@@ -549,7 +560,7 @@ async function watchSampleVideo(
           .filter(Boolean)
           .join(' '),
         images: [],
-        video: { data, mediaType: key.endsWith('.mov') ? 'video/quicktime' : 'video/mp4' },
+        ...(video ? { video } : {}),
         // Thinking tokens count against this cap; only used tokens are billed.
         maxTokens: 8_192,
       },
@@ -950,7 +961,7 @@ export async function runVideoGeneration(
     } else {
       // A storyboard watches the sample itself, to follow its cuts.
       const sampleDirection =
-        request.sampleVideoKey && !request.shots
+        (request.sampleVideoKey || request.sampleVideoUrl) && !request.shots
           ? await watchSampleVideo(ctx, brand.id, job.jobId, request)
           : undefined;
       brief = await composeVideoBrief(ctx, brand, request, sampleDirection);

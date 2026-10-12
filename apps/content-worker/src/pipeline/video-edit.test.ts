@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { joinArgs, joinClips, lastFrame } from './video-edit.js';
+import { joinArgs, joinClips, lastFrame, shrinkVideo } from './video-edit.js';
 
 const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
 
@@ -79,5 +79,39 @@ describe.skipIf(!hasFfmpeg)('joinClips and lastFrame (real ffmpeg)', () => {
   it("takes a clip's last frame as a JPEG", async () => {
     const frame = await lastFrame(clip(2, false));
     expect(frame.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
+  });
+
+  it('shrinks a reel to 480p for Gemini', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'video-edit-test-'));
+    const big = join(dir, 'big.mp4');
+    execFileSync('ffmpeg', [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc=size=1280x720:rate=24:duration=2',
+      '-pix_fmt',
+      'yuv420p',
+      big,
+    ]);
+    const small = await shrinkVideo(readFileSync(big));
+    rmSync(dir, { recursive: true, force: true });
+    const file = join(mkdtempSync(join(tmpdir(), 'video-edit-test-')), 'small.mp4');
+    writeFileSync(file, small);
+    const height = execFileSync('ffprobe', [
+      '-v',
+      'error',
+      '-select_streams',
+      'v',
+      '-show_entries',
+      'stream=height',
+      '-of',
+      'csv=p=0',
+      file,
+    ])
+      .toString()
+      .trim();
+    expect(height).toBe('480');
   });
 });

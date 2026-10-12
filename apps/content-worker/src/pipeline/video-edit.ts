@@ -138,6 +138,22 @@ export async function joinClips(
   });
 }
 
+/** A reel cut down to send Gemini inline (it takes 20 MB a request): the
+ *  first minute at 480p, which is plenty to read setting, camera and pace. */
+export async function shrinkVideo(clip: Buffer): Promise<Buffer> {
+  return withTempDir(async (dir) => {
+    const input = join(dir, 'in.mp4');
+    const output = join(dir, 'small.mp4');
+    await writeFile(input, clip);
+    await run('ffmpeg', [
+      ...['-y', '-i', input, '-t', '60', '-vf', 'scale=-2:480'],
+      ...['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-threads', '2'],
+      ...['-c:a', 'aac', '-b:a', '64k', '-movflags', '+faststart', output],
+    ]);
+    return readFile(output);
+  });
+}
+
 /** The clip's final frame as a JPEG: the opening frame of its continuation. */
 export async function lastFrame(clip: Buffer): Promise<Buffer> {
   return withTempDir(async (dir) => {

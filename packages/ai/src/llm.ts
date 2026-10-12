@@ -27,9 +27,10 @@ export interface LlmJsonRequest<T> extends LlmTextRequest {
 export interface LlmVisionRequest extends Omit<LlmTextRequest, 'messages'> {
   prompt: string;
   images: Array<{ data: Buffer; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' }>;
-  /** A short clip to watch alongside the images. Sent inline, so the caller
-   *  keeps it under ~14 MB (the request limit is 20 MB after base64). */
-  video?: { data: Buffer; mediaType: 'video/mp4' | 'video/quicktime' };
+  /** A short clip to watch alongside the images: inline bytes (the caller
+   *  keeps them under ~14 MB; the request limit is 20 MB after base64), or a
+   *  public YouTube link, which Gemini fetches itself. */
+  video?: { data: Buffer; mediaType: 'video/mp4' | 'video/quicktime' } | { url: string };
 }
 
 /**

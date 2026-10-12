@@ -508,6 +508,46 @@ export class SocialService {
     return id;
   }
 
+  /**
+   * One of the user's own Instagram posts, found by the shortcode in its
+   * link. Instagram's API gives out media only for the connected account, so
+   * this is how a pasted Instagram link legitimately becomes a file. Null when
+   * none of the user's connected accounts posted it (newest 200 per account);
+   * `url` is null when Instagram withholds the file (licensed music).
+   */
+  async findOwnInstagramMedia(
+    userId: string,
+    shortcode: string,
+  ): Promise<{ url: string | null; video: boolean } | null> {
+    const accounts = (await this.getUserAccounts(userId)).filter(
+      (account) => account.platform === 'instagram' && account.status === 'active',
+    );
+    for (const account of accounts) {
+      const token = await this.tokenForReading(account);
+      let after: string | undefined;
+      for (let page = 0; page < 4; page++) {
+        const media = await this.graphGet<{
+          data?: InstagramMediaItem[];
+          paging?: { next?: string; cursors?: { after?: string } };
+        }>(
+          'me/media',
+          {
+            fields: 'media_type,media_url,permalink',
+            limit: '50',
+            access_token: token,
+            ...(after ? { after } : {}),
+          },
+          'read your Instagram posts',
+        );
+        const item = media.data?.find((m) => m.permalink?.includes(`/${shortcode}/`));
+        if (item) return { url: item.media_url ?? null, video: item.media_type === 'VIDEO' };
+        after = media.paging?.next ? media.paging.cursors?.after : undefined;
+        if (!after) break;
+      }
+    }
+    return null;
+  }
+
   async getUserAccounts(userId: string): Promise<SocialAccount[]> {
     return this.db
       .select()

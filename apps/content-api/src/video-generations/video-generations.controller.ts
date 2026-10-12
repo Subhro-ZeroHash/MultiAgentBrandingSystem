@@ -103,6 +103,7 @@ export class VideoGenerationsController {
     @Query('brandId') brandId: string | undefined,
     @Query('limit') limitStr: string | undefined,
     @Request() req: AuthenticatedRequest,
+    @Query('kind') kind?: string,
   ) {
     if (!brandId) {
       throw new BadRequestException('brandId query param is required');
@@ -111,7 +112,7 @@ export class VideoGenerationsController {
     if (Number.isNaN(limit) || limit < 1 || limit > 100) {
       throw new BadRequestException('limit must be a number between 1 and 100');
     }
-    return this.videoGenerations.listForBrand(brandId, req.user.id, limit);
+    return this.videoGenerations.listForBrand(brandId, req.user.id, limit, kind === 'stills');
   }
 
   @Get(':id')

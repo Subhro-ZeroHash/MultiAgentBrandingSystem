@@ -46,4 +46,15 @@ describe('videoGenerationRequestSchema', () => {
     );
     expect(ok({ sampleVideoKey: 'brands/brand-1/references/../x.mp4' })).toBe(false);
   });
+
+  it('takes a YouTube watch link as the sample, but not alongside an upload', () => {
+    const youtube = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+    const ok = (extra: object) =>
+      videoGenerationRequestSchema.safeParse({ ...base, ...extra }).success;
+    expect(ok({ sampleVideoUrl: youtube })).toBe(true);
+    expect(ok({ sampleVideoUrl: 'https://evil.example/watch?v=dQw4w9WgXcQ' })).toBe(false);
+    expect(ok({ sampleVideoUrl: youtube, sampleVideoKey: 'brands/brand-1/references/x.mp4' })).toBe(
+      false,
+    );
+  });
 });

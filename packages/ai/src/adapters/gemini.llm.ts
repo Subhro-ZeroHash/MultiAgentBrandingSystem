@@ -272,17 +272,20 @@ export class GeminiLlmAdapter implements LlmService {
       ...req.images.map((image) => ({
         inlineData: { mimeType: image.mediaType, data: image.data.toString('base64') },
       })),
-      // Gemini names QuickTime 'video/mov', not the browser's 'video/quicktime'.
-      ...(req.video
-        ? [
-            {
-              inlineData: {
-                mimeType: req.video.mediaType === 'video/quicktime' ? 'video/mov' : 'video/mp4',
-                data: req.video.data.toString('base64'),
+      ...(!req.video
+        ? []
+        : 'url' in req.video
+          ? // Only the first two minutes: a long YouTube video costs tokens per second.
+            [{ fileData: { fileUri: req.video.url }, videoMetadata: { endOffset: '120s' } }]
+          : [
+              {
+                inlineData: {
+                  // Gemini names QuickTime 'video/mov', not the browser's 'video/quicktime'.
+                  mimeType: req.video.mediaType === 'video/quicktime' ? 'video/mov' : 'video/mp4',
+                  data: req.video.data.toString('base64'),
+                },
               },
-            },
-          ]
-        : []),
+            ]),
       { text: req.prompt },
     ];
 

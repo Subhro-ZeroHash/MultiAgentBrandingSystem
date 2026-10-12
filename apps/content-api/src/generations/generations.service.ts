@@ -3,6 +3,7 @@ import { desc, eq, inArray, recordFeedbackSignal, schema, type Database } from '
 import { QUEUES, type CreativeRequest } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
+import { friendlyError } from '../common/friendly-error.js';
 import { ASSET_URLS, CONTENT_EDIT_QUEUE, DATABASE, GENERATION_QUEUE } from '../core/core.module.js';
 
 /** FR-3.3: at most this many regenerations per image slot — a capped,
@@ -188,7 +189,13 @@ export class GenerationsService {
     // Clients get a URL they can load directly; `storageKey` alone is unusable
     // outside the cluster. Signed per request rather than stored, so the link
     // expires and the bucket can stay private.
-    return { ...job, assets: await this.assetUrls.signAll(assets), copy, assetEdits };
+    return {
+      ...job,
+      error: friendlyError(job.error),
+      assets: await this.assetUrls.signAll(assets),
+      copy,
+      assetEdits: assetEdits.map((edit) => ({ ...edit, error: friendlyError(edit.error) })),
+    };
   }
 
   /**
@@ -352,7 +359,11 @@ export class GenerationsService {
     return Promise.all(
       jobs.map(async (job) => {
         const storageKey = thumbnailByJob.get(job.id);
-        return { ...job, thumbnailUrl: storageKey ? await this.assetUrls.sign(storageKey) : null };
+        return {
+          ...job,
+          error: friendlyError(job.error),
+          thumbnailUrl: storageKey ? await this.assetUrls.sign(storageKey) : null,
+        };
       }),
     );
   }

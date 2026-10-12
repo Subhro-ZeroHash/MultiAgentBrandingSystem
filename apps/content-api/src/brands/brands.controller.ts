@@ -43,6 +43,12 @@ const productImageUploadSchema = z.object({
 });
 type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 
+/** A reference given as a link; `as` says which box it was pasted in. */
+const referenceLinkSchema = z.object({
+  url: z.string().trim().min(1).max(2000),
+  as: z.enum(['image', 'video']).optional(),
+});
+
 /** A Studio reference image or sample reel; sizes are checked in the service. */
 const referenceUploadSchema = z.object({
   base64: z.string().min(1),
@@ -235,6 +241,31 @@ export class BrandsController {
     @Body(new ZodValidationPipe(productImageUploadSchema)) body: unknown,
   ) {
     return this.brands.addProductImage(id, productId, req.user.id, body as ProductImageUploadInput);
+  }
+
+  /** A Studio reference image or reel given as a link instead of a file. */
+  @Post(':id/references/from-url')
+  addReferenceFromUrl(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+    @Body(new ZodValidationPipe(referenceLinkSchema)) body: unknown,
+  ) {
+    const { url, as } = body as z.infer<typeof referenceLinkSchema>;
+    return this.brands.addReferenceFromUrl(id, req.user.id, url, as);
+  }
+
+  /** Copies a generated poster of this brand into its Studio references. */
+  @Post(':id/references/from-asset')
+  addReferenceFromAsset(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+    @Body(new ZodValidationPipe(z.object({ assetId: z.string().min(1).max(64) }))) body: unknown,
+  ) {
+    return this.brands.addReferenceFromAsset(
+      id,
+      req.user.id,
+      (body as { assetId: string }).assetId,
+    );
   }
 
   @Post(':id/references')

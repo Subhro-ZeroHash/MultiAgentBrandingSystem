@@ -20,6 +20,7 @@ import {
 } from '@bmas/shared';
 import type { Queue } from 'bullmq';
 import type { AssetUrls } from '../core/asset-urls.js';
+import { friendlyError } from '../common/friendly-error.js';
 import { ASSET_URLS, DATABASE, VIDEO_GENERATION_QUEUE } from '../core/core.module.js';
 
 /**
@@ -247,7 +248,7 @@ export class VideoGenerationsService {
       ? await Promise.all(job.frames.map((key) => this.assetUrls.sign(key)))
       : null;
 
-    return { ...job, frames, assets: signed };
+    return { ...job, error: friendlyError(job.error), frames, assets: signed };
   }
 
   /**
@@ -266,6 +267,8 @@ export class VideoGenerationsService {
     brandId: string,
     ownerId: string,
     limit: number,
+    /** The Studio's drafts (stills jobs) instead of finished videos. */
+    stills = false,
   ): Promise<
     Array<{
       id: string;
@@ -279,6 +282,7 @@ export class VideoGenerationsService {
       videoUrl: string | null;
       thumbnailUrl: string | null;
       copy: CopyPack | null;
+      shots: number | null;
     }>
   > {
     await this.assertBrandOwned(brandId, ownerId);
@@ -291,7 +295,7 @@ export class VideoGenerationsService {
         and(
           eq(schema.videoGenerationJobs.brandId, brandId),
           // A Studio stills job has no video; its clips are their own jobs.
-          sql`coalesce((${schema.videoGenerationJobs.request} ->> 'stillsOnly')::boolean, false) = false`,
+          sql`coalesce((${schema.videoGenerationJobs.request} ->> 'stillsOnly')::boolean, false) = ${stills}`,
         ),
       )
       .orderBy(desc(schema.videoGenerationJobs.createdAt))
@@ -344,16 +348,20 @@ export class VideoGenerationsService {
           id: job.id,
           status: job.status,
           stage: job.stage,
-          error: job.error,
+          error: friendlyError(job.error),
           createdAt: job.createdAt,
           finishedAt: job.finishedAt ?? null,
           durationSeconds: asset?.durationSeconds ?? null,
           productName: job.productId ? (productNameById.get(job.productId) ?? null) : null,
           videoUrl: asset ? await this.assetUrls.sign(asset.storageKey) : null,
+          // A draft's thumbnail is its first still.
           thumbnailUrl: asset?.thumbnailStorageKey
             ? await this.assetUrls.sign(asset.thumbnailStorageKey)
-            : null,
+            : job.frames?.[0]
+              ? await this.assetUrls.sign(job.frames[0])
+              : null,
           copy,
+          shots: job.shots?.length ?? null,
         };
       }),
     );

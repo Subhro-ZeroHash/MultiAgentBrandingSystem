@@ -104,6 +104,11 @@ export const videoGenerationRequestSchema = z
       .optional(),
     /** A reel to recreate: Gemini watches it and writes the shot's direction. */
     sampleVideoKey: referenceVideoKey.optional(),
+    /** Or a public YouTube video, which Gemini watches from the link itself. */
+    sampleVideoUrl: z
+      .string()
+      .regex(/^https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}$/)
+      .optional(),
     /** Draw four candidate opening frames and stop; the user picks one and
      *  POST /video-generations/:id/animate renders it. */
     stillsOnly: z.boolean().optional(),
@@ -114,6 +119,7 @@ export const videoGenerationRequestSchema = z
   })
   .refine((r) => r.width !== r.height, { message: 'Video must be 1080×1920 or 1920×1080' })
   .refine((r) => !r.shots || r.stillsOnly, { message: 'shots needs stillsOnly' })
+  .refine((r) => !(r.sampleVideoKey && r.sampleVideoUrl), { message: 'One sample reel at a time' })
   .refine(
     (r) =>
       [...(r.references ?? []).map((ref) => ref.key), r.sampleVideoKey]

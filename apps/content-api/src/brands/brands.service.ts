@@ -6,10 +6,15 @@ import type { CreateBrandKitInput, CreateProductInput, UpdateBrandKitInput } fro
 import {
   DATABASE,
   GENERATION_QUEUE,
+  ASSET_URLS,
   OBJECT_STORE,
   SCHEDULED_POST_PUBLISH_QUEUE,
 } from '../core/core.module.js';
+import type { AssetUrls } from '../core/asset-urls.js';
 import { productImageKey, type ObjectStore } from '../core/object-store.js';
+import { BlockedAddressError } from '../brand-site/net-guard.js';
+import { SocialService } from '../social/social.service.js';
+import { classifyReferenceLink, fetchReferenceLink, TooBigError } from './reference-link.js';
 import { AutomationSettingsService } from './automation-settings.service.js';
 import { BrandContextService } from './brand-context.service.js';
 
@@ -21,6 +26,9 @@ const ALLOWED_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 /** A Studio sample reel goes to Gemini inline, whose request limit is 20 MB
  *  after base64 — this keeps it under that, and under the JSON body limit. */
 const MAX_VIDEO_BYTES = 14 * 1024 * 1024;
+/** A linked reel is downloaded server-side, not sent as JSON, so it may be
+ *  bigger; the worker shrinks anything over the inline limit before Gemini. */
+const MAX_LINKED_VIDEO_BYTES = 50 * 1024 * 1024;
 const REFERENCE_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -48,6 +56,8 @@ export class BrandsService {
   constructor(
     @Inject(DATABASE) private readonly db: Database,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
+    @Inject(ASSET_URLS) private readonly assetUrls: AssetUrls,
+    private readonly social: SocialService,
     @Inject(SCHEDULED_POST_PUBLISH_QUEUE) private readonly publishQueue: Queue,
     @Inject(GENERATION_QUEUE) private readonly generationQueue: Queue,
     private readonly context: BrandContextService,
@@ -378,5 +388,128 @@ export class BrandsService {
     const key = `brands/${brandId}/references/${crypto.randomUUID()}.${ext}`;
     await this.store.put(key, bytes, input.mediaType);
     return { key };
+  }
+
+  /**
+   * Copies one of this brand's generated posters into its Studio references,
+   * so "Make a video" from a result can use the poster's look. Server-side
+   * because the bucket is private and sends no CORS headers to the browser.
+   */
+  async addReferenceFromAsset(
+    brandId: string,
+    ownerId: string,
+    assetId: string,
+  ): Promise<{ key: string; url: string }> {
+    await this.assertBrandOwned(brandId, ownerId);
+    const [asset] = await this.db
+      .select({ storageKey: schema.creativeAssets.storageKey })
+      .from(schema.creativeAssets)
+      .innerJoin(schema.generationJobs, eq(schema.generationJobs.id, schema.creativeAssets.jobId))
+      .where(and(eq(schema.creativeAssets.id, assetId), eq(schema.generationJobs.brandId, brandId)))
+      .limit(1);
+    if (!asset) throw new NotFoundException(`Asset ${assetId} not found for brand ${brandId}`);
+
+    const object = await this.assetUrls.read(asset.storageKey);
+    const bytes = Buffer.concat(await object.body.toArray());
+    const ext = asset.storageKey.split('.').pop()?.toLowerCase();
+    const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const key = `brands/${brandId}/references/${crypto.randomUUID()}.${REFERENCE_EXT[mediaType]}`;
+    await this.store.put(key, bytes, mediaType);
+    return { key, url: await this.assetUrls.sign(key) };
+  }
+
+  /**
+   * A Studio reference given as a link. A YouTube link goes to Gemini as it
+   * is (or, wanted as a photo, becomes its thumbnail); an Instagram link must
+   * be one of the user's own posts, fetched through their connection; any
+   * other link is downloaded here, guarded against private addresses. What
+   * comes back is checked to really be an image or MP4/MOV and stored like an
+   * upload.
+   */
+  async addReferenceFromUrl(
+    brandId: string,
+    ownerId: string,
+    rawUrl: string,
+    as: 'image' | 'video' = 'video',
+  ): Promise<{ kind: 'image' | 'video' | 'youtube'; key?: string; url: string }> {
+    await this.assertBrandOwned(brandId, ownerId);
+    const link = classifyReferenceLink(rawUrl);
+    if (link.kind === 'refused') throw new BadRequestException(link.reason);
+
+    let targets: URL[];
+    if (link.kind === 'youtube') {
+      if (as === 'video') return { kind: 'youtube', url: link.url };
+      // Not every video has the large thumbnail; the smaller one always exists.
+      const id = new URL(link.url).searchParams.get('v');
+      targets = ['maxresdefault', 'hqdefault'].map(
+        (size) => new URL(`https://i.ytimg.com/vi/${id}/${size}.jpg`),
+      );
+    } else if (link.kind === 'instagram') {
+      const media = await this.social.findOwnInstagramMedia(ownerId, link.shortcode);
+      if (!media) {
+        throw new BadRequestException(
+          "That post isn't from an Instagram account you've connected in Settings. Instagram only lets apps use your own posts: for someone else's, save it and upload the file, or use a YouTube link.",
+        );
+      }
+      if (!media.url) {
+        throw new BadRequestException(
+          "Instagram doesn't share this reel's video (it may use licensed music). Save it from Instagram and upload the file instead.",
+        );
+      }
+      targets = [new URL(media.url)];
+    } else {
+      targets = [link.url];
+    }
+
+    let bytes: Buffer | undefined;
+    for (const [i, target] of targets.entries()) {
+      try {
+        bytes = await fetchReferenceLink(target, MAX_LINKED_VIDEO_BYTES);
+        break;
+      } catch (error) {
+        if (i < targets.length - 1) continue;
+        throw new BadRequestException(
+          error instanceof TooBigError
+            ? 'That file is over 50 MB. Use a shorter or smaller version.'
+            : error instanceof BlockedAddressError
+              ? "That link points somewhere we can't fetch from."
+              : `We couldn't download that link${error instanceof Error ? ` (${error.message})` : ''}.`,
+        );
+      }
+    }
+    if (!bytes) throw new BadRequestException("We couldn't download that link.");
+
+    let mediaType: string;
+    if (bytes.subarray(4, 8).toString('ascii') === 'ftyp') {
+      // The ISO-BMFF major brand says which of the two it is.
+      mediaType =
+        bytes.subarray(8, 12).toString('ascii') === 'qt  ' ? 'video/quicktime' : 'video/mp4';
+    } else {
+      const meta = await sharp(bytes, { failOn: 'none' })
+        .metadata()
+        .catch(() => null);
+      if (!meta?.width || !meta.height) {
+        throw new BadRequestException(
+          'That link isn\'t an image or an MP4/MOV video. For an image, right-click it and choose "Copy image address".',
+        );
+      }
+      if (bytes.length > MAX_IMAGE_BYTES)
+        throw new BadRequestException('That image is over 12 MB.');
+      // GIF, AVIF, SVG and the like become a JPEG the image model takes.
+      if (meta.format === 'jpeg' || meta.format === 'png' || meta.format === 'webp') {
+        mediaType = `image/${meta.format}`;
+      } else {
+        bytes = await sharp(bytes).jpeg({ quality: 90 }).toBuffer();
+        mediaType = 'image/jpeg';
+      }
+    }
+
+    const key = `brands/${brandId}/references/${crypto.randomUUID()}.${REFERENCE_EXT[mediaType]}`;
+    await this.store.put(key, bytes, mediaType);
+    return {
+      kind: mediaType.startsWith('video/') ? 'video' : 'image',
+      key,
+      url: await this.assetUrls.sign(key),
+    };
   }
 }
