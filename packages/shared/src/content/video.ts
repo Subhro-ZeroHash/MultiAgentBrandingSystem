@@ -107,8 +107,13 @@ export const videoGenerationRequestSchema = z
     /** Draw four candidate opening frames and stop; the user picks one and
      *  POST /video-generations/:id/animate renders it. */
     stillsOnly: z.boolean().optional(),
+    /** With stillsOnly: plan a storyboard of this many shots (following a
+     *  sample reel's cuts when there is one), one still each. Animate then
+     *  renders every shot and joins them into one video. */
+    shots: z.number().int().min(2).max(4).optional(),
   })
   .refine((r) => r.width !== r.height, { message: 'Video must be 1080×1920 or 1920×1080' })
+  .refine((r) => !r.shots || r.stillsOnly, { message: 'shots needs stillsOnly' })
   .refine(
     (r) =>
       [...(r.references ?? []).map((ref) => ref.key), r.sampleVideoKey]
@@ -118,19 +123,34 @@ export const videoGenerationRequestSchema = z
   );
 export type VideoGenerationRequest = z.infer<typeof videoGenerationRequestSchema>;
 
-/** A video job row's stored request: what the client sent, plus the still it
- *  animates when the Studio's Animate made it. `fromStills` is set server-side
- *  only — the public schema above strips it. */
+/** A video job row's stored request: what the client sent, plus what the
+ *  Studio's Animate or a video's Extend set server-side — the public schema
+ *  above strips both. `index` is unset when a storyboard renders every shot. */
 export type VideoJobRequest = VideoGenerationRequest & {
-  fromStills?: { jobId: string; index: number };
+  fromStills?: { jobId: string; index?: number };
+  extend?: { jobId: string; prompt?: string };
 };
 
+/** One planned shot of a Studio storyboard. */
+export interface StoryboardShot {
+  direction: string;
+  seconds: number;
+}
+
 export const animateStillSchema = z.object({
-  index: z.number().int().min(0).max(3),
+  /** Which still to animate; leave unset for a storyboard, which renders all. */
+  index: z.number().int().min(0).max(3).optional(),
   videoMode: videoModeSchema.default('cinematic_broll'),
   durationSeconds: z.number().int().min(10).max(20).default(10),
 });
 export type AnimateStillInput = z.infer<typeof animateStillSchema>;
+
+/** Continue a finished video from its last frame. */
+export const extendVideoSchema = z.object({
+  /** What happens next; empty continues the shot as it was. */
+  prompt: z.string().trim().max(500).optional(),
+});
+export type ExtendVideoInput = z.infer<typeof extendVideoSchema>;
 
 export const videoAssetSchema = z.object({
   id: entityIdSchema,

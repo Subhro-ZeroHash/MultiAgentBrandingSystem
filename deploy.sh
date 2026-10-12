@@ -27,6 +27,10 @@ pnpm build
 echo "==> Applying any new database migrations..."
 pnpm db:migrate
 
+echo "==> Checking ffmpeg (the worker joins Studio storyboards and extensions with it)..."
+command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
+  || { sudo apt-get update -qq && sudo apt-get install -y ffmpeg; }
+
 echo "==> Installing / reloading nginx config..."
 # One file per subdomain (content-api/geo-api/web all share this box but
 # route by server_name, not by path) — mirrors the box's actual Certbot

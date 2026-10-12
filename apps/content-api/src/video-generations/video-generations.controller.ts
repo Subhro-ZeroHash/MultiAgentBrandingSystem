@@ -12,8 +12,10 @@ import {
 } from '@nestjs/common';
 import {
   animateStillSchema,
+  extendVideoSchema,
   videoGenerationRequestSchema,
   type AnimateStillInput,
+  type ExtendVideoInput,
   type VideoGenerationRequest,
 } from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -74,6 +76,23 @@ export class VideoGenerationsController {
     return this.videoGenerations.animate(
       id,
       body as AnimateStillInput,
+      requireIdempotencyKey(idempotencyKey),
+      req.user.id,
+    );
+  }
+
+  /** Continue a finished video from its last frame. Shares the create budget. */
+  @UseGuards(videoGenerationRateLimitGuard)
+  @Post(':id/extend')
+  extend(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+    @Body(new ZodValidationPipe(extendVideoSchema)) body: unknown,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.videoGenerations.extend(
+      id,
+      body as ExtendVideoInput,
       requireIdempotencyKey(idempotencyKey),
       req.user.id,
     );

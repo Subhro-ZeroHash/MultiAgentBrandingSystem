@@ -15,6 +15,7 @@ import type {
   CostEvent,
   CreativeRequest,
   ReferenceRole,
+  StoryboardShot,
   VideoGenerationJob,
   VideoGenerationRequest,
   VideoJobRequest,
@@ -22,6 +23,7 @@ import type {
 } from '@bmas/shared';
 import { UnrecoverableError } from 'bullmq';
 import sharp from 'sharp';
+import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
 import {
   CAMPAIGN_INTENT,
@@ -30,6 +32,7 @@ import {
   mediaTypeFor,
   toneDirection,
 } from './stages.js';
+import { joinClips, lastFrame } from './video-edit.js';
 
 /**
  * Video generation's own pipeline, mirroring `generate.ts`'s shape at the
@@ -322,17 +325,19 @@ async function loadReference(ctx: WorkerContext, brandId: string, key: string): 
 }
 
 /**
- * Studio step one: four candidate opening frames, drawn with the product photo
- * and every reference the user gave. The video engines take no reference
- * images, so this still is how references reach the clip: the engine animates
- * whichever one the user picks. Returns the stored keys.
+ * Studio step one: opening frames drawn with the product photo and every
+ * reference the user gave — four candidates of one shot, or one per
+ * storyboard shot. The video engines take no reference images, so a still is
+ * how references reach the clip: the engine animates it. Returns the stored
+ * keys, in prompt order.
  */
 async function drawStills(
   ctx: WorkerContext,
   brandId: string,
   jobId: string,
   request: VideoGenerationRequest,
-  prompt: string,
+  prompts: string[],
+  countEach: number,
 ): Promise<string[]> {
   const references = request.references ?? [];
   const [photo, ...uploads] = await Promise.all([
@@ -344,7 +349,7 @@ async function drawStills(
       ? [
           {
             ...photo,
-            role: 'the product: keep it exactly as it is — the same shape, colours, materials, details and proportions — but leave out any text, stickers or price tags on it',
+            role: 'the product: keep it exactly as it is — the same shape, colours, materials, details and proportions. Take only the product from this photo, not its background, layout, props, text or stickers; the scene comes from the direction below',
           },
         ]
       : []),
@@ -356,25 +361,30 @@ async function drawStills(
   ];
   const guide = images.map((image, i) => `Image ${i + 1} is ${image.role}.`).join('\n');
 
-  const { value, cost } = await withTimeout(
-    ctx.ai.imageGenerator().generate(
-      {
-        prompt: [STILL_PROMPT, guide, prompt].filter(Boolean).join('\n\n'),
-        references: images.map(({ data, mediaType }) => ({ data, mediaType })),
-        width: request.width,
-        height: request.height,
-        count: STUDIO_STILL_COUNT,
-      },
-      { referenceId: jobId, brandId },
-    ),
-    240_000,
-    'video:stills',
+  const drawn = await Promise.all(
+    prompts.map(async (prompt) => {
+      const { value, cost } = await withTimeout(
+        ctx.ai.imageGenerator().generate(
+          {
+            prompt: [STILL_PROMPT, guide, prompt].filter(Boolean).join('\n\n'),
+            references: images.map(({ data, mediaType }) => ({ data, mediaType })),
+            width: request.width,
+            height: request.height,
+            count: countEach,
+          },
+          { referenceId: jobId, brandId },
+        ),
+        240_000,
+        'video:stills',
+      );
+      await recordCost(ctx, brandId, jobId, cost);
+      if (value.length === 0) throw new Error('The image model returned no stills');
+      return value;
+    }),
   );
-  await recordCost(ctx, brandId, jobId, cost);
-  if (value.length === 0) throw new Error('The image model returned no stills');
 
   return Promise.all(
-    value.map(async (image, i) => {
+    drawn.flat().map(async (image, i) => {
       const key = `brands/${brandId}/videos/${jobId}/still-${i + 1}.${image.mediaType === 'image/png' ? 'png' : 'jpg'}`;
       await ctx.storage.put(key, image.data, image.mediaType);
       return key;
@@ -382,27 +392,103 @@ async function drawStills(
   );
 }
 
-/** The still a Studio Animate picked, with the brief it was drawn from. */
-async function loadPickedStill(
-  ctx: WorkerContext,
-  brandId: string,
-  { jobId, index }: { jobId: string; index: number },
-): Promise<{ brief: string; frame: ConditioningFrame }> {
-  const [stills] = await ctx.db
-    .select({
-      brandId: schema.videoGenerationJobs.brandId,
-      frames: schema.videoGenerationJobs.frames,
-      brief: schema.videoGenerationJobs.brief,
-    })
+async function loadStoredFrame(ctx: WorkerContext, key: string): Promise<ConditioningFrame> {
+  return { data: await ctx.storage.get(key), mediaType: mediaTypeFor(key) };
+}
+
+/** A finished stills job (or any finished job, for Extend) of this brand. */
+async function loadJobRow(ctx: WorkerContext, brandId: string, jobId: string) {
+  const [row] = await ctx.db
+    .select()
     .from(schema.videoGenerationJobs)
     .where(eq(schema.videoGenerationJobs.id, jobId))
     .limit(1);
-  const key = stills?.brandId === brandId ? stills.frames?.[index] : undefined;
-  if (!key || !stills?.brief) throw new Error(`Still ${index + 1} of job ${jobId} not found`);
-  return {
-    brief: stills.brief,
-    frame: { data: await ctx.storage.get(key), mediaType: mediaTypeFor(key) },
-  };
+  if (!row || row.brandId !== brandId) throw new Error(`Video job ${jobId} not found`);
+  return row;
+}
+
+/** One storyboard shot's prompt: the shared brief, then what this shot shows. */
+export function shotPrompt(brief: string, shot: StoryboardShot, i: number, total: number): string {
+  return `${brief}\n\n**This shot (${i + 1} of ${total}, ${shot.seconds} seconds):** ${shot.direction}`;
+}
+
+/** The JSON object in a model reply, ignoring any code fence around it. */
+function parseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+  } catch {
+    return null;
+  }
+}
+
+const storyboardSchema = z.object({
+  shots: z
+    .array(
+      z.object({
+        direction: z.string().trim().min(1).max(800),
+        seconds: z.coerce.number(),
+      }),
+    )
+    .min(2),
+});
+
+/**
+ * Plans a storyboard: Gemini reads the brief (and watches the sample reel,
+ * when there is one, mirroring its cuts) and returns the shots as JSON. Goes
+ * through the vision call because that is the one that takes a video.
+ */
+export async function planShots(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  request: VideoGenerationRequest,
+  brief: string,
+  count: number,
+): Promise<StoryboardShot[]> {
+  const video = request.sampleVideoKey
+    ? {
+        data: await loadReference(ctx, brandId, request.sampleVideoKey),
+        mediaType: request.sampleVideoKey.endsWith('.mov')
+          ? ('video/quicktime' as const)
+          : ('video/mp4' as const),
+      }
+    : undefined;
+
+  const { value, cost } = await withTimeout(
+    ctx.ai.llm().analyzeImage(
+      {
+        role: 'qa',
+        prompt: [
+          `Plan a ${count}-shot marketing video from the brief below: exactly ${count} shots that together tell one short story about the product.`,
+          video
+            ? "Watch the sample video and mirror its cuts — its shot order, framing, camera moves and pacing — with our product as the subject. Never carry over the sample's own products, brands, text or people's names."
+            : null,
+          'Each shot is one continuous camera move with no cut inside it. The last shot shows the product clearly.',
+          'Reply with JSON only, no other text: {"shots":[{"direction":"...","seconds":4}]}.',
+          `"direction" is 1 to 3 sentences on what is in frame, what happens and how the camera moves. "seconds" is a whole number from 2 to 8${video ? ", matching the sample's pacing" : ', usually 3 to 5'}.`,
+          `\nBRIEF:\n${brief}`,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        images: [],
+        ...(video ? { video } : {}),
+        // Thinking tokens count against this cap; only used tokens are billed.
+        maxTokens: 8_192,
+      },
+      { referenceId: jobId, brandId },
+    ),
+    180_000,
+    'video:plan-shots',
+  );
+  await recordCost(ctx, brandId, jobId, cost);
+
+  const parsed = storyboardSchema.safeParse(parseJsonObject(value));
+  if (!parsed.success)
+    throw new Error(`Gemini returned an unusable shot plan: ${value.slice(0, 200)}`);
+  return parsed.data.shots.slice(0, count).map((shot) => ({
+    direction: shot.direction,
+    seconds: Math.min(8, Math.max(2, Math.round(shot.seconds) || 4)),
+  }));
 }
 
 /** The Studio's camera presets, as the one line of direction each becomes. */
@@ -627,6 +713,150 @@ export function validateVideo(data: Buffer, durationSeconds: number, requestedMa
   }
 }
 
+interface RenderedVideo {
+  data: Buffer;
+  width: number;
+  height: number;
+  durationSeconds: number;
+  provider: string;
+  model: string;
+}
+
+type SetStage = (stage: string) => Promise<void>;
+
+/** One render on the job's engine, its cost recorded and its file checked. */
+async function renderOne(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  request: VideoGenerationRequest,
+  prompt: string,
+  firstFrame: ConditioningFrame | undefined,
+  durationSeconds: number,
+): Promise<RenderedVideo> {
+  const { value: video, cost } = await generateVideoForMode(
+    ctx,
+    request.videoMode,
+    {
+      prompt,
+      ...(firstFrame ? { firstFrame } : {}),
+      width: request.width,
+      height: request.height,
+      durationSeconds,
+    },
+    jobId,
+    brandId,
+  );
+  await recordCost(ctx, brandId, jobId, cost);
+  // Veo snaps to its own lengths, up to 8s, whatever was asked.
+  validateVideo(video.data, video.durationSeconds, Math.max(durationSeconds, 8));
+  return {
+    data: video.data,
+    width: video.width,
+    height: video.height,
+    durationSeconds: video.durationSeconds,
+    // From the result, not the configured primary.
+    provider: cost.provider,
+    model: video.model,
+  };
+}
+
+/**
+ * A storyboard's Animate: every shot rendered from its own still, in
+ * parallel, then joined in order. Each finished shot is stored first, so a
+ * retry after one shot fails reuses the others instead of paying for them
+ * again.
+ */
+async function renderStoryboard(
+  ctx: WorkerContext,
+  brandId: string,
+  jobId: string,
+  request: VideoGenerationRequest,
+  stills: { brief: string; frames: string[]; shots: StoryboardShot[] },
+  setStage: SetStage,
+): Promise<RenderedVideo> {
+  const { brief, frames, shots } = stills;
+  await setStage('generate');
+  const clips = await Promise.all(
+    shots.map(async (shot, i): Promise<Partial<RenderedVideo> & { data: Buffer }> => {
+      const key = `brands/${brandId}/videos/${jobId}/shot-${i + 1}.mp4`;
+      const stored = await ctx.storage.get(key).catch(() => null);
+      if (stored) return { data: stored };
+      const frame = await loadStoredFrame(ctx, frames[i]!);
+      const prompt = shotPrompt(brief, shot, i, shots.length);
+      const clip = await renderOne(ctx, brandId, jobId, request, prompt, frame, shot.seconds);
+      await ctx.storage.put(key, clip.data, 'video/mp4');
+      return clip;
+    }),
+  );
+
+  await setStage('stitch');
+  const joined = await joinClips(
+    clips.map((clip) => clip.data),
+    shots.map((shot) => shot.seconds),
+    request.width,
+    request.height,
+  );
+  const fresh = clips.find((clip) => clip.model);
+  return {
+    ...joined,
+    width: request.width,
+    height: request.height,
+    provider: fresh?.provider ?? PROVIDER_FOR_MODE[request.videoMode],
+    model: fresh?.model ?? 'reused shots',
+  };
+}
+
+const EXTEND_SECONDS = 6;
+
+/**
+ * A video's Extend: its last frame opens a new clip that carries on the same
+ * shot, and the two are joined. Works on either engine with no extend API —
+ * Veo's only extends clips Veo made, and only for two days. The extension
+ * keeps the source's caption.
+ */
+async function renderExtension(
+  ctx: WorkerContext,
+  brand: Brand,
+  jobId: string,
+  request: VideoJobRequest,
+  setStage: SetStage,
+): Promise<{ video: RenderedVideo; brief: string; copy: CopyPack | null | undefined }> {
+  const source = await loadJobRow(ctx, brand.id, request.extend!.jobId);
+  const [asset] = await ctx.db
+    .select()
+    .from(schema.videoAssets)
+    .where(eq(schema.videoAssets.jobId, source.id))
+    .orderBy(asc(schema.videoAssets.createdAt))
+    .limit(1);
+  if (!asset) throw new Error(`Video job ${source.id} has no video to extend`);
+
+  const original = await ctx.storage.get(asset.storageKey);
+  // Videos made before briefs were stored get theirs recomposed.
+  const brief =
+    source.brief ??
+    (await composeVideoBrief(ctx, brand, source.request as unknown as VideoGenerationRequest));
+  const next = request.extend!.prompt;
+  const prompt = `${brief}\n\n**Continue the shot:** this clip starts exactly where the previous one ended, from this frame — the same subject, setting, light and camera direction, with no cut.${next ? ` Then: ${next}` : ''}`;
+
+  await setStage('generate');
+  const frame = { data: await lastFrame(original), mediaType: 'image/jpeg' as const };
+  const clip = await renderOne(ctx, brand.id, jobId, request, prompt, frame, EXTEND_SECONDS);
+
+  await setStage('stitch');
+  const joined = await joinClips(
+    [original, clip.data],
+    [asset.durationSeconds, EXTEND_SECONDS],
+    asset.width,
+    asset.height,
+  );
+  return {
+    video: { ...clip, ...joined, width: asset.width, height: asset.height },
+    brief,
+    copy: source.copy ?? undefined,
+  };
+}
+
 /** Where this run sits in BullMQ's retry sequence, both 1-based — same shape
  *  as generate.ts's own `AttemptInfo`. */
 export interface AttemptInfo {
@@ -677,24 +907,71 @@ export async function runVideoGeneration(
 
   try {
     await setStage('brief');
-    let prompt: string;
-    let firstFrame: ConditioningFrame | undefined;
-    if (request.fromStills) {
-      // Studio Animate: the picked still is already clean and the right shape.
-      ({ brief: prompt, frame: firstFrame } = await loadPickedStill(
-        ctx,
-        brand.id,
-        request.fromStills,
-      ));
+    let video: RenderedVideo;
+    let brief: string;
+    /** Left undefined to have a caption written; an extension keeps its source's. */
+    let copy: CopyPack | null | undefined;
+
+    if (request.extend) {
+      ({ video, brief, copy } = await renderExtension(ctx, brand, job.jobId, request, setStage));
+    } else if (request.fromStills) {
+      const stills = await loadJobRow(ctx, brand.id, request.fromStills.jobId);
+      if (!stills.brief || !stills.frames) throw new Error(`Job ${stills.id} has no stills`);
+      brief = stills.brief;
+      if (stills.shots) {
+        video = await renderStoryboard(
+          ctx,
+          brand.id,
+          job.jobId,
+          request,
+          {
+            brief,
+            frames: stills.frames,
+            shots: stills.shots,
+          },
+          setStage,
+        );
+      } else {
+        const key = stills.frames[request.fromStills.index ?? -1];
+        if (!key) throw new Error(`Job ${stills.id} has no still ${request.fromStills.index}`);
+        // Studio Animate: the picked still is already clean and the right shape.
+        await setStage('generate');
+        const frame = await loadStoredFrame(ctx, key);
+        video = await renderOne(
+          ctx,
+          brand.id,
+          job.jobId,
+          request,
+          brief,
+          frame,
+          request.durationSeconds,
+        );
+      }
     } else {
-      const sampleDirection = request.sampleVideoKey
-        ? await watchSampleVideo(ctx, brand.id, job.jobId, request)
-        : undefined;
-      prompt = await composeVideoBrief(ctx, brand, request, sampleDirection);
+      // A storyboard watches the sample itself, to follow its cuts.
+      const sampleDirection =
+        request.sampleVideoKey && !request.shots
+          ? await watchSampleVideo(ctx, brand.id, job.jobId, request)
+          : undefined;
+      brief = await composeVideoBrief(ctx, brand, request, sampleDirection);
 
       if (request.stillsOnly) {
+        let shots: StoryboardShot[] | null = null;
+        if (request.shots) {
+          await setStage('plan');
+          shots = await planShots(ctx, brand.id, job.jobId, request, brief, request.shots);
+        }
         await setStage('stills');
-        const frames = await drawStills(ctx, brand.id, job.jobId, request, prompt);
+        const frames = shots
+          ? await drawStills(
+              ctx,
+              brand.id,
+              job.jobId,
+              request,
+              shots.map((shot, i) => shotPrompt(brief, shot, i, shots.length)),
+              1,
+            )
+          : await drawStills(ctx, brand.id, job.jobId, request, [brief], STUDIO_STILL_COUNT);
         await ctx.db
           .update(schema.videoGenerationJobs)
           .set({
@@ -702,7 +979,8 @@ export async function runVideoGeneration(
             stage: null,
             error: null,
             frames,
-            brief: prompt,
+            brief,
+            shots,
             finishedAt: new Date(),
           })
           .where(eq(schema.videoGenerationJobs.id, job.jobId));
@@ -711,52 +989,43 @@ export async function runVideoGeneration(
       }
 
       const photo = await loadFirstFrame(ctx, job.jobId, request.productId);
-      firstFrame = photo
+      const firstFrame = photo
         ? await prepareFirstFrame(ctx, brand.id, job.jobId, photo, request.width, request.height)
-        : await createFirstFrame(ctx, brand.id, job.jobId, prompt, request.width, request.height);
+        : await createFirstFrame(ctx, brand.id, job.jobId, brief, request.width, request.height);
+      await setStage('generate');
+      video = await renderOne(
+        ctx,
+        brand.id,
+        job.jobId,
+        request,
+        brief,
+        firstFrame,
+        request.durationSeconds,
+      );
     }
-
-    await setStage('generate');
-    const { value: video, cost } = await generateVideoForMode(
-      ctx,
-      request.videoMode,
-      {
-        prompt,
-        ...(firstFrame ? { firstFrame } : {}),
-        width: request.width,
-        height: request.height,
-        durationSeconds: request.durationSeconds,
-      },
-      job.jobId,
-      brand.id,
-    );
-    await recordCost(ctx, brand.id, job.jobId, cost);
-
-    await setStage('qa');
-    validateVideo(video.data, video.durationSeconds, request.durationSeconds);
 
     // After the render, not alongside it: copy is cheap but not free, and a
     // job that fails to produce a video has no use for a caption.
-    await setStage('copy');
-    const copy = await generateVideoCopy(ctx, brand, request, job.jobId);
+    if (copy === undefined) {
+      await setStage('copy');
+      copy = await generateVideoCopy(ctx, brand, request, job.jobId);
+    }
 
     await setStage('storage');
     const key = `brands/${brand.id}/videos/${job.jobId}/video-1.mp4`;
-    await ctx.storage.put(key, video.data, video.mediaType);
+    await ctx.storage.put(key, video.data, 'video/mp4');
 
     await ctx.db.transaction(async (tx) => {
       await tx.insert(schema.videoAssets).values({
         jobId: job.jobId,
         storageKey: key,
-        // Extracting a thumbnail frame needs a decoder this pipeline doesn't
-        // have — see the schema comment on `videoAssets.thumbnailStorageKey`.
+        // ponytail: no thumbnail yet; video-edit.ts's lastFrame shows how
+        // ffmpeg could take one if a list ever needs it.
         thumbnailStorageKey: null,
         width: video.width,
         height: video.height,
         durationSeconds: video.durationSeconds,
-        // From the result, not the configured primary — a fallback run
-        // means this is whichever provider in the chain actually succeeded.
-        provider: cost.provider,
+        provider: video.provider,
         model: video.model,
       });
 
@@ -767,6 +1036,8 @@ export async function runVideoGeneration(
           stage: null,
           error: null,
           copy,
+          // Kept so the video can be extended with the same direction.
+          brief,
           finishedAt: new Date(),
         })
         .where(eq(schema.videoGenerationJobs.id, job.jobId));

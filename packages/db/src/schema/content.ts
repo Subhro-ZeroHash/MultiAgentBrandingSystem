@@ -23,6 +23,7 @@ import type {
   IntelligenceScore,
   PlanEvidence,
   PreferenceValue,
+  StoryboardShot,
   TrendPoolScore,
   TrendScore,
   TrendSource,
@@ -293,6 +294,8 @@ export const videoGenerationJobs = content.table(
      *  same brief, so a sample reel is watched once, not again per clip. */
     frames: jsonb('frames').$type<string[]>(),
     brief: text('brief'),
+    /** A Studio storyboard's planned shots, one per frame in `frames`. */
+    shots: jsonb('shots').$type<StoryboardShot[]>(),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

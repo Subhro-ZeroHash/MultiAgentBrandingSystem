@@ -13,6 +13,7 @@ import {
 import {
   QUEUES,
   type AnimateStillInput,
+  type ExtendVideoInput,
   type CopyPack,
   type VideoGenerationRequest,
   type VideoJobRequest,
@@ -28,6 +29,9 @@ import { ASSET_URLS, DATABASE, VIDEO_GENERATION_QUEUE } from '../core/core.modul
  * no asset-edit concept yet, and a cancel button is a UI affordance this
  * feature doesn't have a screen to hang it on. Add them the day either does.
  */
+/** Extend stops here: a Reel this long is already past what holds attention. */
+const MAX_EXTENDED_SECONDS = 60;
+
 @Injectable()
 export class VideoGenerationsService {
   constructor(
@@ -101,9 +105,15 @@ export class VideoGenerationsService {
       .limit(1);
     if (existing[0]) return existing[0];
 
-    const { stillsOnly, ...base } = stills.request as VideoJobRequest;
-    if (!stillsOnly || stills.status !== 'succeeded' || !stills.frames?.[input.index]) {
-      throw new BadRequestException('That still is not ready to animate.');
+    const { stillsOnly, shots: _shots, ...base } = stills.request as VideoJobRequest;
+    if (!stillsOnly || stills.status !== 'succeeded' || !stills.frames) {
+      throw new BadRequestException('These stills are not ready to animate.');
+    }
+    // A storyboard animates every shot; a set of candidates, the one picked.
+    if (stills.shots ? input.index !== undefined : !stills.frames[input.index ?? -1]) {
+      throw new BadRequestException(
+        stills.shots ? 'A storyboard animates all its shots.' : 'Pick one of the stills.',
+      );
     }
     if (!stills.productId) {
       throw new BadRequestException('The product for these stills was deleted.');
@@ -114,8 +124,54 @@ export class VideoGenerationsService {
         ...base,
         videoMode: input.videoMode,
         durationSeconds: input.durationSeconds,
-        fromStills: { jobId: stills.id, index: input.index },
+        fromStills: {
+          jobId: stills.id,
+          ...(input.index !== undefined ? { index: input.index } : {}),
+        },
       },
+      idempotencyKey,
+    );
+  }
+
+  /** Continues a finished video from its last frame, as a new video job. */
+  async extend(sourceId: string, input: ExtendVideoInput, idempotencyKey: string, ownerId: string) {
+    const [source] = await this.db
+      .select()
+      .from(schema.videoGenerationJobs)
+      .where(eq(schema.videoGenerationJobs.id, sourceId))
+      .limit(1);
+    if (!source) throw new NotFoundException(`Video generation job ${sourceId} not found`);
+    await this.assertBrandOwned(source.brandId, ownerId);
+
+    const existing = await this.db
+      .select()
+      .from(schema.videoGenerationJobs)
+      .where(eq(schema.videoGenerationJobs.idempotencyKey, idempotencyKey))
+      .limit(1);
+    if (existing[0]) return existing[0];
+
+    const [asset] = await this.db
+      .select({ durationSeconds: schema.videoAssets.durationSeconds })
+      .from(schema.videoAssets)
+      .where(eq(schema.videoAssets.jobId, source.id))
+      .limit(1);
+    if (source.status !== 'succeeded' || !asset) {
+      throw new BadRequestException('Only a finished video can be extended.');
+    }
+    if (asset.durationSeconds >= MAX_EXTENDED_SECONDS) {
+      throw new BadRequestException('This video is already a minute long.');
+    }
+    if (!source.productId) throw new BadRequestException('The product for this video was deleted.');
+
+    const {
+      stillsOnly: _stillsOnly,
+      shots: _shots,
+      fromStills: _fromStills,
+      extend: _extend,
+      ...base
+    } = source.request as VideoJobRequest;
+    return this.insertAndQueue(
+      { ...base, extend: { jobId: source.id, ...(input.prompt ? { prompt: input.prompt } : {}) } },
       idempotencyKey,
     );
   }

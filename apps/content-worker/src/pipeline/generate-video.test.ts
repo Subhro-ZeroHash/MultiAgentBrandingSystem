@@ -2,7 +2,12 @@ import type { Brand } from '@bmas/db';
 import type { VideoGenerationRequest } from '@bmas/shared';
 import { describe, expect, it } from 'vitest';
 import type { WorkerContext } from '../context.js';
-import { PROVIDER_FOR_MODE, composeVideoBrief, validateVideo } from './generate-video.js';
+import {
+  PROVIDER_FOR_MODE,
+  composeVideoBrief,
+  planShots,
+  validateVideo,
+} from './generate-video.js';
 
 /** A minimal, real MP4 header — 'ftyp' at byte offset 4, same as any real
  *  ISO-BMFF file, followed by padding so it clears the size floor. */
@@ -210,5 +215,33 @@ describe('composeVideoBrief', () => {
 
   it('throws when the product does not exist', async () => {
     await expect(composeVideoBrief(fakeCtx(null), brand, baseRequest)).rejects.toThrow(/not found/);
+  });
+});
+
+describe('planShots', () => {
+  /** Gemini's reply, as the vision call returns it; costs go nowhere. */
+  function planCtx(reply: string) {
+    return {
+      ai: {
+        llm: () => ({ analyzeImage: async () => ({ value: reply, cost: { costMicroUsd: 0 } }) }),
+      },
+      db: { insert: () => ({ values: async () => undefined }) },
+    } as unknown as WorkerContext;
+  }
+
+  it('reads a fenced JSON plan, keeps the asked-for count and clamps seconds', async () => {
+    const reply =
+      '```json\n{"shots":[{"direction":"A","seconds":12},{"direction":"B","seconds":"3"},{"direction":"C","seconds":1}]}\n```';
+    const shots = await planShots(planCtx(reply), 'brand-1', 'job-1', baseRequest, 'brief', 2);
+    expect(shots).toEqual([
+      { direction: 'A', seconds: 8 },
+      { direction: 'B', seconds: 3 },
+    ]);
+  });
+
+  it('fails the job on a reply that is not a plan', async () => {
+    await expect(
+      planShots(planCtx('Sorry, I cannot help.'), 'brand-1', 'job-1', baseRequest, 'brief', 3),
+    ).rejects.toThrow(/unusable shot plan/);
   });
 });
