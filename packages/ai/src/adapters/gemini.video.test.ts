@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isRetryableVeoError, nearestVeoDuration, nearestVeoResolution } from './gemini.video.js';
+import {
+  isRetryableVeoError,
+  nearestVeoDuration,
+  nearestVeoResolution,
+  veoFormat,
+} from './gemini.video.js';
 
 describe('nearestVeoResolution', () => {
   it('maps an exact 1080p landscape request to itself', () => {
@@ -68,5 +73,25 @@ describe('isRetryableVeoError', () => {
 
   it('does not retry when the provider sends no code at all', () => {
     expect(isRetryableVeoError({ message: 'something went wrong' })).toBe(false);
+  });
+});
+
+describe('veoFormat', () => {
+  it('keeps 1080p for 8-second clips', () => {
+    expect(veoFormat(1080, 1920, 10)).toMatchObject({
+      duration: 8,
+      resolved: { resolution: '1080p' },
+    });
+  });
+
+  it('drops shorter clips to 720p, which Veo refuses at 1080p', () => {
+    expect(veoFormat(1080, 1920, 4)).toMatchObject({
+      duration: 4,
+      resolved: { resolution: '720p', aspectRatio: '9:16', width: 720, height: 1280 },
+    });
+    expect(veoFormat(1920, 1080, 6)).toMatchObject({
+      duration: 6,
+      resolved: { resolution: '720p', aspectRatio: '16:9' },
+    });
   });
 });

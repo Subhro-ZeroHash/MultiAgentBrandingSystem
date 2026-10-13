@@ -85,6 +85,22 @@ export function nearestVeoDuration(seconds: number): 4 | 6 | 8 {
   );
 }
 
+/** Veo renders 1080p only at 8 seconds ("1080p is not supported for a
+ *  duration of 4 seconds"), so a shorter clip — a storyboard shot, an
+ *  extension — is made at 720p, which the joiner scales back up. */
+export function veoFormat(width: number, height: number, seconds: number) {
+  const duration = nearestVeoDuration(seconds);
+  const resolved = nearestVeoResolution(width, height);
+  if (resolved.tier === 1080 && duration < 8) {
+    const portrait = height > width;
+    return {
+      duration,
+      resolved: nearestVeoResolution(portrait ? 720 : 1280, portrait ? 1280 : 720),
+    };
+  }
+  return { duration, resolved };
+}
+
 /** Most provider-reported generation failures (content policy, bad prompt)
  *  aren't fixed by an identical retry — but code 13 (INTERNAL) and 14
  *  (UNAVAILABLE) are Veo's own transient infrastructure hiccups, the gRPC
@@ -195,8 +211,7 @@ export class GeminiVideoAdapter implements VideoGenService {
   ): Promise<ProviderResult<GeneratedVideo>> {
     const startedAt = Date.now();
     const client = this.require();
-    const resolved = nearestVeoResolution(req.width, req.height);
-    const duration = nearestVeoDuration(req.durationSeconds);
+    const { resolved, duration } = veoFormat(req.width, req.height, req.durationSeconds);
 
     let operation: GenerateVideosOperation;
     try {
