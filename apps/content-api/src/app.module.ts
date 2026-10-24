@@ -17,6 +17,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { SchedulingModule } from './scheduling/scheduling.module.js';
 import { SocialModule } from './social/social.module.js';
 import { TrendsModule } from './trends/trends.module.js';
+import { TemplatesModule } from './templates/templates.module.js';
 
 /**
  * One module per pipeline concern, mirroring the creative flow:
@@ -75,6 +76,7 @@ const GLOBAL_RATE_LIMIT = { ttl: 60_000, limit: 1_000 };
     GoogleModule,
     NotificationsModule,
     AssetsModule,
+    TemplatesModule,
   ],
   // Global rather than per-controller: a route added later is rate limited by
   // default instead of by remembering to opt in. Opt *out* is explicit

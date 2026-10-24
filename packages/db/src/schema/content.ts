@@ -2188,3 +2188,33 @@ export type PostCommentRow = typeof postComments.$inferSelect;
 export type NewPostCommentRow = typeof postComments.$inferInsert;
 export type PushToken = typeof pushTokens.$inferSelect;
 export type NewPushToken = typeof pushTokens.$inferInsert;
+
+/**
+ * Curated video templates shown on the "Trending Content Library" page.
+ * Each template pre-fills the Studio intake form so users can recreate a
+ * specific style with a single click ("Recreate"). No brand FK — templates
+ * are global, not per-brand.
+ *
+ * `camera` mirrors `cameraMoveSchema` values from @bmas/shared.
+ * `style` mirrors `styleTemplate` enum values.
+ */
+export const videoTemplates = content.table('video_templates', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  title: text('title').notNull(),
+  /** Public URL (R2 / any CDN) to the card's preview thumbnail image. */
+  thumbnailUrl: text('thumbnail_url').notNull(),
+  /** Public URL to the reference video/reel the template is built around. */
+  referenceVideoUrl: text('reference_video_url').notNull(),
+  /** Pre-filled "Describe the scene" value for Studio. Optional — can be empty. */
+  sceneDirection: text('scene_direction').notNull().default(''),
+  /** Pre-filled camera move id (e.g. 'push_in', 'orbit'). Null → Auto. */
+  camera: text('camera'),
+  /** Pre-filled style template id (e.g. 'lifestyle_in_use'). */
+  style: text('style').notNull().default('lifestyle_in_use'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type VideoTemplate = typeof videoTemplates.$inferSelect;
+export type NewVideoTemplate = typeof videoTemplates.$inferInsert;

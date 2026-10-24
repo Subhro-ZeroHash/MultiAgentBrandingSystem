@@ -232,8 +232,75 @@ try {
     ])
     .onConflictDoNothing();
 
+  // ── Video templates (global, not brand-scoped) ──────────────────────────
+  await db
+    .insert(schema.videoTemplates)
+    .values([
+      {
+        id: 'tpl-lifestyle-golden-hour',
+        title: 'Golden Hour Lifestyle',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/1536619/pexels-photo-1536619.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/mov_bbb.mp4',
+        sceneDirection:
+          '@product held up against a golden-hour sunset on an open rooftop, soft bokeh background, warm orange tones.',
+        camera: 'push_in',
+        style: 'lifestyle_in_use',
+      },
+      {
+        id: 'tpl-minimal-luxury-studio',
+        title: 'Minimal Luxury Reveal',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/3965545/pexels-photo-3965545.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/movie.mp4',
+        sceneDirection:
+          '@product placed on polished marble, slow 360 reveal, muted cream and charcoal backdrop, single rim light.',
+        camera: 'orbit',
+        style: 'minimal_luxury',
+      },
+      {
+        id: 'tpl-tech-dark-gradient',
+        title: 'Tech Dark Launch',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/1714208/pexels-photo-1714208.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/mov_bbb.mp4',
+        sceneDirection:
+          '@product emerging from darkness with a crisp rim light, dark navy gradient background, electronic ambient feel.',
+        camera: 'pull_out',
+        style: 'tech_dark_gradient',
+      },
+      {
+        id: 'tpl-outdoor-natural-light',
+        title: 'Outdoor Natural Flow',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/1234567/pexels-photo-1234567.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/movie.mp4',
+        sceneDirection:
+          '@product photographed outdoors in dappled natural light, surrounded by fresh greenery, airy and fresh mood.',
+        camera: 'pan',
+        style: 'outdoor_natural_light',
+      },
+      {
+        id: 'tpl-festive-vibrant',
+        title: 'Festive Celebration',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/7180617/pexels-photo-7180617.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/mov_bbb.mp4',
+        sceneDirection:
+          '@product displayed at the centre of a festive setup — marigolds, diyas, rich jewel tones — warm celebratory mood.',
+        camera: 'crane_up',
+        style: 'festive',
+      },
+    ])
+    .onConflictDoNothing();
+
   console.warn(
-    `Seeded dev user (${DEV_USER_ID}), brand (${DEV_BRAND_ID}), and a fixture Google connection with ${DEV_REVIEW_IDS.length} reviews.`,
+    `Seeded dev user (${DEV_USER_ID}), brand (${DEV_BRAND_ID}), a fixture Google connection with ${DEV_REVIEW_IDS.length} reviews, and 5 video templates.`,
   );
 } catch (error) {
   console.error('Seed failed:', error);
