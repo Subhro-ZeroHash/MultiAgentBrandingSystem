@@ -296,6 +296,42 @@ try {
         camera: 'crane_up',
         style: 'festive',
       },
+      {
+        id: 'tpl-neon-cyber-drop',
+        title: 'Neon Cyber Launch',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/2047905/pexels-photo-2047905.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/movie.mp4',
+        sceneDirection:
+          '@product floating against a glowing cybernetic neon backdrop with electric blue and magenta pulses, reflections on wet asphalt.',
+        camera: 'orbit',
+        style: 'neon_gaming',
+      },
+      {
+        id: 'tpl-bold-sale-reveal',
+        title: 'High-Energy Flash Sale',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/5632402/pexels-photo-5632402.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/mov_bbb.mp4',
+        sceneDirection:
+          '@product bursting into frame through bright geometric shapes and typography, vibrant contrast, fast-paced retail urgency.',
+        camera: 'push_in',
+        style: 'bold_discount',
+      },
+      {
+        id: 'tpl-studio-white-hero',
+        title: 'Clean Minimal Studio',
+        thumbnailUrl:
+          'https://images.pexels.com/photos/3373736/pexels-photo-3373736.jpeg?auto=compress&cs=tinysrgb&w=800',
+        referenceVideoUrl:
+          'https://www.w3schools.com/html/movie.mp4',
+        sceneDirection:
+          '@product resting on pure white studio surface with soft natural shadow falloff, subtle slow panning motion, pristine clarity.',
+        camera: 'top_down',
+        style: 'studio_white',
+      },
     ])
     .onConflictDoNothing();
 

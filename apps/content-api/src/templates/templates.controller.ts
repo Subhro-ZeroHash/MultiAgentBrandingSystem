@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { TemplatesService } from './templates.service.js';
 
@@ -13,4 +13,11 @@ export class TemplatesController {
   list() {
     return this.templates.list();
   }
+
+  /** Returns a single video template by its id. */
+  @Get(':id')
+  getById(@Param('id') id: string) {
+    return this.templates.getById(id);
+  }
 }
+
