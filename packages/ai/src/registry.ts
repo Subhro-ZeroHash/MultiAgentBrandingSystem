@@ -6,6 +6,7 @@ import { GeminiAnswerEngine } from './adapters/gemini.engine.js';
 import { GeminiImageAdapter } from './adapters/gemini.image.js';
 import { GeminiLlmAdapter } from './adapters/gemini.llm.js';
 import { GeminiVideoAdapter } from './adapters/gemini.video.js';
+import { HiggsfieldVideoAdapter } from './adapters/higgsfield.video.js';
 import { LtxVideoAdapter } from './adapters/ltx.video.js';
 import { OpenAiAnswerEngine } from './adapters/openai.engine.js';
 import { PerplexityAnswerEngine } from './adapters/perplexity.engine.js';
@@ -30,7 +31,7 @@ export type ImageProviderName = 'gemini' | 'fal' | 'stub';
  *  fallback — see `videoGenerator()`'s optional argument and
  *  `PROVIDER_FOR_MODE` in generate-video.ts, which picks one deterministically
  *  from the request's `videoMode`. */
-export type VideoProviderName = 'ltx' | 'google' | 'stub';
+export type VideoProviderName = 'ltx' | 'google' | 'higgsfield' | 'stub';
 
 /** Which provider serves `LlmService` — text, JSON, and vision QA. */
 export type LlmProviderName = 'anthropic' | 'gemini';
@@ -47,6 +48,7 @@ export interface AiConfig {
   tavilyApiKey?: string;
   serpApiKey?: string;
   ltxApiKey?: string;
+  higgsfieldApiKey?: string;
 
   /** Local-only API host overrides; see AnthropicAdapterConfig.baseUrl. */
   anthropicBaseUrl?: string;
@@ -57,6 +59,8 @@ export interface AiConfig {
   falEditModel?: string;
   ltxModel?: string;
   ltxBaseUrl?: string;
+  higgsfieldModel?: string;
+  higgsfieldBaseUrl?: string;
   /**
    * Model the Gemini *answer engine* asks during a GEO probe — distinct from
    * both the image model and the LLM role models. Grounded calls on the 3.x
@@ -166,6 +170,11 @@ export class AiRegistry {
         apiKey: config.googleApiKey,
         ...(config.googleBaseUrl ? { baseUrl: config.googleBaseUrl } : {}),
       }),
+      higgsfield: new HiggsfieldVideoAdapter({
+        apiKey: config.higgsfieldApiKey,
+        model: config.higgsfieldModel,
+        ...(config.higgsfieldBaseUrl ? { baseUrl: config.higgsfieldBaseUrl } : {}),
+      }),
       stub: new StubVideoAdapter(),
     };
 
@@ -254,6 +263,10 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     tavilyApiKey: env.TAVILY_API_KEY,
     serpApiKey: env.SERPAPI_KEY,
     ltxApiKey: env.LTX_API_KEY,
+    higgsfieldApiKey:
+      env.HIGGSFIELD_API_KEY && (env.HIGGSFIELD_API_KEY_SECRET || env.HIGGSFIELD_API_SECRET)
+        ? `${env.HIGGSFIELD_API_KEY}:${env.HIGGSFIELD_API_KEY_SECRET || env.HIGGSFIELD_API_SECRET}`
+        : env.HIGGSFIELD_API_KEY,
     ...(env.ANTHROPIC_BASE_URL ? { anthropicBaseUrl: env.ANTHROPIC_BASE_URL } : {}),
     ...(env.GOOGLE_API_BASE_URL ? { googleBaseUrl: env.GOOGLE_API_BASE_URL } : {}),
     models: {
@@ -267,6 +280,8 @@ export function createAiRegistryFromEnv(env: NodeJS.ProcessEnv = process.env): A
     ...(env.IMAGE_STUB_LATENCY_MS ? { stubImageLatencyMs: Number(env.IMAGE_STUB_LATENCY_MS) } : {}),
     ltxModel: env.VIDEO_MODEL_LTX,
     ...(env.LTX_BASE_URL ? { ltxBaseUrl: env.LTX_BASE_URL } : {}),
+    higgsfieldModel: env.VIDEO_MODEL_HIGGSFIELD,
+    ...(env.HIGGSFIELD_BASE_URL ? { higgsfieldBaseUrl: env.HIGGSFIELD_BASE_URL } : {}),
     imageProviderPrimary: env.IMAGE_PROVIDER_PRIMARY as ImageProviderName | undefined,
     imageProviderEdit: env.IMAGE_PROVIDER_EDIT as ImageProviderName | undefined,
     videoProviderPrimary: env.VIDEO_PROVIDER_PRIMARY as VideoProviderName | undefined,

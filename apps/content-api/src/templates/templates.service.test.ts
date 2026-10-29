@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
+import type { Database } from '@bmas/db';
 import { TemplatesService } from './templates.service.js';
 
 describe('TemplatesService', () => {
@@ -14,7 +15,7 @@ describe('TemplatesService', () => {
       orderBy: vi.fn().mockResolvedValue(mockRows),
     };
 
-    const service = new TemplatesService(mockDb as any);
+    const service = new TemplatesService(mockDb as unknown as Database);
     const result = await service.list();
 
     expect(result).toEqual(mockRows);
@@ -30,7 +31,7 @@ describe('TemplatesService', () => {
       limit: vi.fn().mockResolvedValue([mockRow]),
     };
 
-    const service = new TemplatesService(mockDb as any);
+    const service = new TemplatesService(mockDb as unknown as Database);
     const result = await service.getById('tpl-1');
 
     expect(result).toEqual(mockRow);
@@ -44,7 +45,7 @@ describe('TemplatesService', () => {
       limit: vi.fn().mockResolvedValue([]),
     };
 
-    const service = new TemplatesService(mockDb as any);
+    const service = new TemplatesService(mockDb as unknown as Database);
     await expect(service.getById('non-existent')).rejects.toThrow(NotFoundException);
   });
 });

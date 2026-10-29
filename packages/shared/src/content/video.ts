@@ -22,7 +22,7 @@ import { entityIdSchema } from '../common.js';
  * do now, so there is always one to condition on and to read
  * name/description/sellingPoints from.
  */
-export const videoModeSchema = z.enum(['cinematic_broll', 'advertisement']);
+export const videoModeSchema = z.enum(['cinematic_broll', 'advertisement', 'higgsfield_story']);
 export type VideoMode = z.infer<typeof videoModeSchema>;
 
 /** Studio camera presets. Prompt-level for both engines: neither API takes a
@@ -67,13 +67,11 @@ export const videoGenerationRequestSchema = z
     styleTemplate: styleTemplateSchema,
     /** Picks the provider — not a quality tier, two different products.
      *  `cinematic_broll` renders on LTX (raw supplementary footage);
-     *  `advertisement` renders on Gemini's Veo models. Both ship exactly what
-     *  the provider returned, with no burnt-in text: headline/offer/CTA only
-     *  steer the clip's mood in the prompt (see `composeVideoBrief`). Each mode
-     *  is pinned to its own provider — see
+     *  `advertisement` renders on Gemini's Veo models;
+     *  `higgsfield_story` renders on Higgsfield AI (social-first vertical clips).
+     *  Each mode is pinned to its own provider — see
      *  `PROVIDER_FOR_MODE` in generate-video.ts — there is no fallback between
-     *  them, so a Veo outage doesn't silently hand back LTX footage under an
-     *  "advertisement" label or vice versa. */
+     *  them, so an outage doesn't silently hand back a different engine's footage. */
     videoMode: videoModeSchema.default('cinematic_broll'),
     headlineText: z.string().max(80).optional(),
     offerText: z.string().max(40).optional(),

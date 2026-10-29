@@ -38,7 +38,8 @@ const envSchema = z
      *  "three places" rule — createAiRegistryFromEnv reads process.env
      *  directly, same as every other provider key in this schema. */
     LTX_API_KEY: optionalText(),
-    VIDEO_PROVIDER_PRIMARY: z.enum(['ltx', 'stub']).default('stub'),
+    HIGGSFIELD_API_KEY: optionalText(),
+    VIDEO_PROVIDER_PRIMARY: z.enum(['ltx', 'google', 'higgsfield', 'stub']).default('stub'),
 
     /** Real-time web search for the Trend Research Agent. Declared here purely
      *  for startup validation and the "three places" rule (CLAUDE.md) —

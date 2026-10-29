@@ -20,6 +20,7 @@ export const PLAN_DIRECTIVE_QUEUE = Symbol('PLAN_DIRECTIVE_QUEUE');
 export const PLAN_ITEM_REPLACE_QUEUE = Symbol('PLAN_ITEM_REPLACE_QUEUE');
 export const INSTAGRAM_INSIGHTS_SYNC_QUEUE = Symbol('INSTAGRAM_INSIGHTS_SYNC_QUEUE');
 export const INSTAGRAM_INBOX_DRAFT_QUEUE = Symbol('INSTAGRAM_INBOX_DRAFT_QUEUE');
+export const AD_OPTIMIZATION_QUEUE = Symbol('AD_OPTIMIZATION_QUEUE');
 export const ASSET_URLS = Symbol('ASSET_URLS');
 export const OBJECT_STORE = Symbol('OBJECT_STORE');
 
@@ -128,6 +129,10 @@ function redisConnection() {
       provide: INSTAGRAM_INBOX_DRAFT_QUEUE,
       useFactory: () => new Queue(QUEUES.instagramInboxDraft, { connection: redisConnection() }),
     },
+    {
+      provide: AD_OPTIMIZATION_QUEUE,
+      useFactory: () => new Queue(QUEUES.adOptimization, { connection: redisConnection() }),
+    },
   ],
   exports: [
     DATABASE,
@@ -143,6 +148,7 @@ function redisConnection() {
     PLAN_ITEM_REPLACE_QUEUE,
     INSTAGRAM_INSIGHTS_SYNC_QUEUE,
     INSTAGRAM_INBOX_DRAFT_QUEUE,
+    AD_OPTIMIZATION_QUEUE,
     ASSET_URLS,
     OBJECT_STORE,
   ],
@@ -161,6 +167,7 @@ export class CoreModule implements OnApplicationShutdown {
     @Inject(PLAN_ITEM_REPLACE_QUEUE) private readonly planItemReplaceQueue: Queue,
     @Inject(INSTAGRAM_INSIGHTS_SYNC_QUEUE) private readonly instagramInsightsSyncQueue: Queue,
     @Inject(INSTAGRAM_INBOX_DRAFT_QUEUE) private readonly instagramInboxDraftQueue: Queue,
+    @Inject(AD_OPTIMIZATION_QUEUE) private readonly adOptimizationQueue: Queue,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
@@ -177,6 +184,7 @@ export class CoreModule implements OnApplicationShutdown {
       this.planItemReplaceQueue.close(),
       this.instagramInsightsSyncQueue.close(),
       this.instagramInboxDraftQueue.close(),
+      this.adOptimizationQueue.close(),
     ]);
   }
 }

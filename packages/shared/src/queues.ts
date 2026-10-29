@@ -51,6 +51,8 @@ export const QUEUES = {
   instagramInboxSync: 'instagram-inbox-sync',
   /** One AI reply draft for one inbox conversation. */
   instagramInboxDraft: 'instagram-inbox-draft',
+  /** Performance marketing AI optimization agent. */
+  adOptimization: 'ad-optimization',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -246,3 +248,9 @@ export const INSTAGRAM_INSIGHTS_LOOKBACK_DAYS = 30;
  *  re-reads which posts are due fresh every time it fires. */
 export const instagramInsightsSyncTickJobSchema = z.object({});
 export type InstagramInsightsSyncTickJob = z.infer<typeof instagramInsightsSyncTickJobSchema>;
+
+export const adOptimizationJobSchema = z.object({
+  brandId: entityIdSchema,
+  trigger: z.enum(['scheduled', 'manual']).default('scheduled'),
+});
+export type AdOptimizationJob = z.infer<typeof adOptimizationJobSchema>;

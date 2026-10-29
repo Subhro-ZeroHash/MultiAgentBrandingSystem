@@ -13,6 +13,12 @@ describe('AiRegistry.videoGenerator', () => {
     const registry = new AiRegistry({ videoProviderPrimary: 'ltx' });
     expect(registry.videoGenerator('google').provider).toBe('google');
     expect(registry.videoGenerator('ltx').provider).toBe('ltx');
+    expect(registry.videoGenerator('higgsfield').provider).toBe('higgsfield');
+  });
+
+  it('supports setting higgsfield as the primary provider', () => {
+    const registry = new AiRegistry({ videoProviderPrimary: 'higgsfield' });
+    expect(registry.videoGenerator().provider).toBe('higgsfield');
   });
 
   it('falls back to ltx with no config and no argument at all', () => {

@@ -9,3 +9,4 @@ export * from './category.js';
 export * from './research-pool.js';
 export * from './plan.js';
 export * from './video.js';
+export * from './ads.js';

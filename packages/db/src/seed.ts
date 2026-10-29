@@ -335,8 +335,92 @@ try {
     ])
     .onConflictDoNothing();
 
+  await db
+    .insert(schema.adCampaigns)
+    .values([
+      {
+        id: 'dev-ad-google-1',
+        brandId: DEV_BRAND_ID,
+        platform: 'google',
+        campaignName: 'High-Intent Silk Sarees Search',
+        status: 'active',
+        dailyBudget: 45,
+        spendToDate: 1240,
+        roas: 4.2,
+        keywords: [
+          'banarasi silk saree jaipur',
+          'pure katan silk buy online',
+          'wedding saree boutique jaipur',
+          'handcrafted bridal sarees',
+        ],
+      },
+      {
+        id: 'dev-ad-meta-1',
+        brandId: DEV_BRAND_ID,
+        platform: 'meta',
+        campaignName: 'Festive Collection Reel Ads',
+        status: 'active',
+        dailyBudget: 60,
+        spendToDate: 1890,
+        roas: 2.8,
+        keywords: [
+          'ethnic festive wear',
+          'diwali sarees',
+          'handloom sarees india',
+          'traditional jaipur fashion',
+        ],
+      },
+      {
+        id: 'dev-ad-x-1',
+        brandId: DEV_BRAND_ID,
+        platform: 'x',
+        campaignName: 'Royal Heritage Craft Awareness',
+        status: 'active',
+        dailyBudget: 20,
+        spendToDate: 420,
+        roas: 1.4,
+        keywords: [
+          'indian textiles',
+          'sustainable handloom',
+          'heritage craft',
+          'artisan sarees',
+        ],
+      },
+    ])
+    .onConflictDoNothing();
+
+  await db
+    .insert(schema.adOptimizations)
+    .values([
+      {
+        id: 'dev-opt-1',
+        brandId: DEV_BRAND_ID,
+        campaignId: 'dev-ad-meta-1',
+        suggestionType: 'budget_shift',
+        reasoning:
+          'Shift $15/day budget from Meta to Google Search. Competitor "Nalli Silks" is bidding aggressively on festive bridal search queries where your ROAS is 4.2x vs Meta\'s 2.8x.',
+        status: 'proposed',
+        impactEstimate: '+0.5x Blended ROAS',
+        actionPayload: { fromPlatform: 'meta', toPlatform: 'google', amount: 15 },
+      },
+      {
+        id: 'dev-opt-2',
+        brandId: DEV_BRAND_ID,
+        campaignId: 'dev-ad-google-1',
+        suggestionType: 'keyword_add',
+        reasoning:
+          'Add trending keywords "Karwa Chauth red banarasi" and "bridal lehenga saree" following a 42% spike in festive search volume identified in recent trend intelligence.',
+        status: 'proposed',
+        impactEstimate: '+18% High-Intent Clicks',
+        actionPayload: {
+          keywordsToAdd: ['Karwa Chauth red banarasi', 'bridal lehenga saree'],
+        },
+      },
+    ])
+    .onConflictDoNothing();
+
   console.warn(
-    `Seeded dev user (${DEV_USER_ID}), brand (${DEV_BRAND_ID}), a fixture Google connection with ${DEV_REVIEW_IDS.length} reviews, and 5 video templates.`,
+    `Seeded dev user (${DEV_USER_ID}), brand (${DEV_BRAND_ID}), a fixture Google connection with ${DEV_REVIEW_IDS.length} reviews, 5 video templates, and 3 ad campaigns with recommendations.`,
   );
 } catch (error) {
   console.error('Seed failed:', error);

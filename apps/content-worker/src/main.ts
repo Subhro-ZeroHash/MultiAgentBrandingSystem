@@ -13,6 +13,7 @@ import {
   contentPlanSynthesisJobSchema,
   instagramInboxDraftJobSchema,
   videoGenerationJobSchema,
+  adOptimizationJobSchema,
 } from '@bmas/shared';
 import { Queue, UnrecoverableError, Worker } from 'bullmq';
 import { createContext } from './context.js';
@@ -42,6 +43,7 @@ import { runPlanItemReplace } from './pipeline/plan-item-replace.js';
 import { schedulePendingPlanItemPosts, schedulePlanItemPost } from './pipeline/plan-item-post.js';
 import { runPlanSynthesis } from './pipeline/plan-synthesis.js';
 import { runTrendResearch } from './pipeline/trend-research.js';
+import { runAdOptimization } from './pipeline/ad-optimization.js';
 
 const ctx = createContext();
 
@@ -389,6 +391,16 @@ contentEditWorker.on('failed', (job, error) => {
   console.error(`[asset-edit] job ${job?.id} failed: ${describeError(error)}`);
 });
 
+const adOptimizationWorker = new Worker(
+  QUEUES.adOptimization,
+  async (job) => runAdOptimization(ctx, adOptimizationJobSchema.parse(job.data)),
+  { connection: ctx.redis, concurrency: 2 },
+);
+
+adOptimizationWorker.on('failed', (job, error) => {
+  console.error(`[ad-optimization] job ${job?.id} failed: ${describeError(error)}`);
+});
+
 console.warn(`content-worker started (concurrency ${ctx.concurrency})`);
 
 /** Draining waits on Redis, so an unreachable Redis makes `close()` hang
@@ -427,6 +439,7 @@ async function shutdown(signal: string): Promise<void> {
       instagramInsightsSyncWorker.close(),
       instagramInboxSyncWorker.close(),
       instagramInboxDraftWorker.close(),
+      adOptimizationWorker.close(),
       trendResearchProducer.close(),
       intelligenceResearchProducer.close(),
       researchSchedulerQueue.close(),

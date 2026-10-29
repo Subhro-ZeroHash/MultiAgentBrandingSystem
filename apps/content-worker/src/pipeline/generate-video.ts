@@ -91,6 +91,7 @@ async function recordCost(
 export const PROVIDER_FOR_MODE: Record<VideoMode, VideoProviderName> = {
   cinematic_broll: 'ltx',
   advertisement: 'google',
+  higgsfield_story: 'higgsfield',
 };
 
 /**
