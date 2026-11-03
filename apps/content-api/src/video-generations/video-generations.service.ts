@@ -33,6 +33,11 @@ import { ASSET_URLS, DATABASE, VIDEO_GENERATION_QUEUE } from '../core/core.modul
 /** Extend stops here: a Reel this long is already past what holds attention. */
 const MAX_EXTENDED_SECONDS = 60;
 
+/** Hard cap on videos a brand may enqueue per calendar day (UTC) — keeps a
+ *  burst of renders from spiking the AI bill. Checked (and claimed) in
+ *  `insertAndQueue` before any job row or BullMQ job exists. */
+const VIDEOS_PER_BRAND_PER_DAY = 2;
+
 @Injectable()
 export class VideoGenerationsService {
   constructor(
@@ -178,6 +183,16 @@ export class VideoGenerationsService {
   }
 
   private async insertAndQueue(request: VideoJobRequest, idempotencyKey: string) {
+    // Claim one slot of this brand's daily video allowance before any job row
+    // or BullMQ job exists — a brand at the cap can't be billed for a render
+    // it isn't allowed to make.
+    const claimed = await this.claimDailyVideoSlot(request.brandId);
+    if (!claimed) {
+      throw new BadRequestException(
+        `You've made ${VIDEOS_PER_BRAND_PER_DAY} videos today — the daily limit resets at midnight UTC. Come back tomorrow.`,
+      );
+    }
+
     const [job] = await this.db
       .insert(schema.videoGenerationJobs)
       .values({
@@ -202,6 +217,8 @@ export class VideoGenerationsService {
         },
       );
     } catch (error) {
+      // The job never runs, so give the slot back.
+      await this.refundDailyVideoSlot(request.brandId);
       await this.db
         .delete(schema.videoGenerationJobs)
         .where(eq(schema.videoGenerationJobs.id, job.id));
@@ -209,6 +226,38 @@ export class VideoGenerationsService {
     }
 
     return job;
+  }
+
+  /**
+   * Claims one video slot for `brandId` today. Atomic: the conditional UPDATE
+   * both resets the count on a new day and refuses the row once the cap is
+   * reached, so concurrent requests can't both slip through.
+   */
+  private async claimDailyVideoSlot(brandId: string): Promise<boolean> {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD, UTC
+    const todayStart = new Date(`${today}T00:00:00Z`);
+    const [updated] = await this.db
+      .update(schema.brands)
+      .set({
+        videoGenerationsCount: sql`CASE WHEN ${schema.brands.videoGenerationsCountDate} IS DISTINCT FROM ${today}::date THEN 1 ELSE ${schema.brands.videoGenerationsCount} + 1 END`,
+        videoGenerationsCountDate: todayStart,
+      })
+      .where(
+        and(
+          eq(schema.brands.id, brandId),
+          sql`date(${schema.brands.videoGenerationsCountDate}) IS DISTINCT FROM ${today}::date OR ${schema.brands.videoGenerationsCount} < ${VIDEOS_PER_BRAND_PER_DAY}`,
+        ),
+      )
+      .returning();
+    return Boolean(updated);
+  }
+
+  /** Puts one slot back after a claimed job never gets enqueued. */
+  private async refundDailyVideoSlot(brandId: string): Promise<void> {
+    await this.db
+      .update(schema.brands)
+      .set({ videoGenerationsCount: sql`greatest(${schema.brands.videoGenerationsCount} - 1, 0)` })
+      .where(eq(schema.brands.id, brandId));
   }
 
   async findOne(jobId: string, ownerId: string) {

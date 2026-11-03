@@ -29,6 +29,8 @@ const MAX_VIDEO_BYTES = 14 * 1024 * 1024;
 /** A linked reel is downloaded server-side, not sent as JSON, so it may be
  *  bigger; the worker shrinks anything over the inline limit before Gemini. */
 const MAX_LINKED_VIDEO_BYTES = 50 * 1024 * 1024;
+/** Hard cap on videos a brand may generate per calendar day (UTC). */
+const VIDEOS_PER_BRAND_PER_DAY = 2;
 const REFERENCE_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -106,6 +108,38 @@ export class BrandsService {
     if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
     if (brand.ownerId !== ownerId) throw new NotFoundException(`Brand ${brandId} not found`);
     return brand;
+  }
+
+  /**
+   * This brand's video credits for today: the daily cap, how many have been
+   *  used, how many remain, and when the allowance resets (midnight UTC).
+   *  The count self-resets on a new day — no cron job needed.
+   */
+  async getVideoUsage(brandId: string, ownerId: string) {
+    await this.assertBrandOwned(brandId, ownerId);
+    const today = new Date().toISOString().slice(0, 10);
+    const [brand] = await this.db
+      .select({
+        videoGenerationsCount: schema.brands.videoGenerationsCount,
+        videoGenerationsCountDate: schema.brands.videoGenerationsCountDate,
+      })
+      .from(schema.brands)
+      .where(eq(schema.brands.id, brandId))
+      .limit(1);
+    if (!brand) throw new NotFoundException(`Brand ${brandId} not found`);
+    const used =
+      brand.videoGenerationsCountDate !== null &&
+      new Date(brand.videoGenerationsCountDate).toISOString().slice(0, 10) === today
+        ? brand.videoGenerationsCount
+        : 0;
+    const resetsAt = new Date();
+    resetsAt.setUTCHours(24, 0, 0, 0);
+    return {
+      limit: VIDEOS_PER_BRAND_PER_DAY,
+      used,
+      remaining: Math.max(0, VIDEOS_PER_BRAND_PER_DAY - used),
+      resetsAt: resetsAt.toISOString(),
+    };
   }
 
   async update(brandId: string, ownerId: string, input: UpdateBrandKitInput) {

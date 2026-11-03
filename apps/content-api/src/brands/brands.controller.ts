@@ -88,6 +88,12 @@ export class BrandsController {
     return this.brands.findOne(id, req.user.id);
   }
 
+  /** This brand's video credits for today — limit, used, remaining, resetsAt. */
+  @Get(':id/video-usage')
+  getVideoUsage(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.brands.getVideoUsage(id, req.user.id);
+  }
+
   @Patch(':id')
   update(
     @Param('id') id: string,

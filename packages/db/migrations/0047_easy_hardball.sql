@@ -1,0 +1,2 @@
+ALTER TABLE "core"."brands" ADD COLUMN "video_generations_count" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "core"."brands" ADD COLUMN "video_generations_count_date" timestamp with time zone;

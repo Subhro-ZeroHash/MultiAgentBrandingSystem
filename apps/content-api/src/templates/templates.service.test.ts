@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
 import type { Database } from '@bmas/db';
+import type { AssetUrls } from '../core/asset-urls.js';
 import { TemplatesService } from './templates.service.js';
 
 describe('TemplatesService', () => {
+  const mockAssetUrls = {
+    sign: vi.fn().mockResolvedValue('https://signed.example.com/video.mp4'),
+  } as unknown as AssetUrls;
+
   it('lists all templates ordered by createdAt desc', async () => {
     const mockRows = [
       { id: 'tpl-1', title: 'Template 1', createdAt: new Date() },
@@ -15,7 +20,7 @@ describe('TemplatesService', () => {
       orderBy: vi.fn().mockResolvedValue(mockRows),
     };
 
-    const service = new TemplatesService(mockDb as unknown as Database);
+    const service = new TemplatesService(mockDb as unknown as Database, mockAssetUrls);
     const result = await service.list();
 
     expect(result).toEqual(mockRows);
@@ -31,7 +36,7 @@ describe('TemplatesService', () => {
       limit: vi.fn().mockResolvedValue([mockRow]),
     };
 
-    const service = new TemplatesService(mockDb as unknown as Database);
+    const service = new TemplatesService(mockDb as unknown as Database, mockAssetUrls);
     const result = await service.getById('tpl-1');
 
     expect(result).toEqual(mockRow);
@@ -45,7 +50,7 @@ describe('TemplatesService', () => {
       limit: vi.fn().mockResolvedValue([]),
     };
 
-    const service = new TemplatesService(mockDb as unknown as Database);
+    const service = new TemplatesService(mockDb as unknown as Database, mockAssetUrls);
     await expect(service.getById('non-existent')).rejects.toThrow(NotFoundException);
   });
 });

@@ -92,8 +92,16 @@ describe('PROVIDER_FOR_MODE', () => {
     expect(PROVIDER_FOR_MODE.advertisement).toBe('google');
   });
 
-  it('defines exactly these two modes, no silent fallthrough for a new one', () => {
-    expect(Object.keys(PROVIDER_FOR_MODE).sort()).toEqual(['advertisement', 'cinematic_broll']);
+  it('routes higgsfield_story to higgsfield only', () => {
+    expect(PROVIDER_FOR_MODE.higgsfield_story).toBe('higgsfield');
+  });
+
+  it('defines exactly these three modes, no silent fallthrough for a new one', () => {
+    expect(Object.keys(PROVIDER_FOR_MODE).sort()).toEqual([
+      'advertisement',
+      'cinematic_broll',
+      'higgsfield_story',
+    ]);
   });
 });
 

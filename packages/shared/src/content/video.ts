@@ -107,6 +107,16 @@ export const videoGenerationRequestSchema = z
       .string()
       .regex(/^https:\/\/www\.youtube\.com\/watch\?v=[\w-]{11}$/)
       .optional(),
+    /** A public URL of a sample reel whose motion the generated clip should
+     *  mimic (pose/motion transfer). Reaches Higgsfield's image-to-video
+     *  endpoint alongside the opening still; other engines ignore it. */
+    referenceVideoUrl: z.string().url().optional(),
+    /** A public URL of a brand style guide image. Higgsfield uses it as Soul
+     *  Mode style conditioning — every other engine ignores it. */
+    styleReferenceUrl: z.string().url().optional(),
+    /** A public URL of the image the video should end on — a logo or CTA card.
+     *  Reaches Higgsfield as its end-frame parameter; other engines ignore it. */
+    lastFrameUrl: z.string().url().optional(),
     /** Draw four candidate opening frames and stop; the user picks one and
      *  POST /video-generations/:id/animate renders it. */
     stillsOnly: z.boolean().optional(),
@@ -146,6 +156,10 @@ export const animateStillSchema = z.object({
   index: z.number().int().min(0).max(3).optional(),
   videoMode: videoModeSchema.default('cinematic_broll'),
   durationSeconds: z.number().int().min(10).max(20).default(10),
+  /** Brand style guide image URL for Higgsfield Soul Mode conditioning. */
+  styleReferenceUrl: z.string().url().optional(),
+  /** End-frame image URL (logo / CTA card). */
+  lastFrameUrl: z.string().url().optional(),
 });
 export type AnimateStillInput = z.infer<typeof animateStillSchema>;
 

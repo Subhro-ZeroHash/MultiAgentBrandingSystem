@@ -1,11 +1,7 @@
 import { ProviderError, ProviderNotConfiguredError, describeError } from '../errors.js';
 import { isQuotaExhausted, isRetryable } from '../resilience.js';
 import type { ProviderContext, ProviderResult } from '../types.js';
-import type {
-  GeneratedVideo,
-  VideoGenerateRequest,
-  VideoGenService,
-} from '../video.js';
+import type { GeneratedVideo, VideoGenerateRequest, VideoGenService } from '../video.js';
 
 export interface HiggsfieldVideoConfig {
   /** Combined key in the form `keyId:keySecret` as printed in the cloud dashboard. */
@@ -157,29 +153,81 @@ export class HiggsfieldVideoAdapter implements VideoGenService {
     return (await response.json()) as T;
   }
 
+  /** Fetch a public image URL and return it as a base64 data URL, mirroring
+   *  how an already-loaded `firstFrame` buffer is encoded. Data URLs are
+   *  returned as-is (no fetch needed — useful for client-uploaded images
+   *  passed through from the Studio frontend). */
+  private static async fetchDataUrl(url: string, ctx?: ProviderContext): Promise<string> {
+    // Data URLs are already base64-encoded; pass them through unchanged.
+    if (url.startsWith('data:')) return url;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+    const onAbort = () => controller.abort();
+    ctx?.signal?.addEventListener('abort', onAbort);
+
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: controller.signal });
+    } catch (error) {
+      throw HiggsfieldVideoAdapter.wrap(error, 'fetch-frame');
+    } finally {
+      clearTimeout(timer);
+      ctx?.signal?.removeEventListener('abort', onAbort);
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new ProviderError(
+        `higgsfield.fetch-frame: HTTP ${response.status} — ${body.slice(0, 300)}`,
+        'higgsfield',
+        { retryable: response.status >= 500 },
+      );
+    }
+
+    const contentType = response.headers.get('content-type') ?? 'image/jpeg';
+    const mediaType = (contentType.split(';')[0] ?? 'image/jpeg').trim() as
+      | 'image/png'
+      | 'image/jpeg'
+      | 'image/webp';
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return `data:${mediaType};base64,${bytes.toString('base64')}`;
+  }
+
   /** Submit a text-to-video generation job and return the request_id. */
-  private async submit(
-    req: VideoGenerateRequest,
-    ctx?: ProviderContext,
-  ): Promise<string> {
+  private async submit(req: VideoGenerateRequest, ctx?: ProviderContext): Promise<string> {
     const aspectRatio = aspectRatioFor(req.width, req.height);
     const duration = clampDuration(req.durationSeconds);
     // Resolution: use 1080p for landscape (1920×1080), 720p for portrait (1080×1920)
     // to keep costs reasonable while still being HD.
     const resolution = req.width >= 1920 || req.height >= 1920 ? '1080p' : '720p';
 
+    const body: Record<string, unknown> = {
+      prompt: req.prompt,
+      duration,
+      resolution,
+      aspect_ratio: aspectRatio,
+      output_format: 'mp4',
+    };
+    // Soul Mode style conditioning: fetch the brand style guide and send it as
+    // a base64 data URL, just like an input still.
+    if (req.styleReferenceUrl) {
+      body.style_reference_url = await HiggsfieldVideoAdapter.fetchDataUrl(
+        req.styleReferenceUrl,
+        ctx,
+      );
+    }
+    // End frame: land the video on a specific image (logo / CTA card).
+    if (req.lastFrameUrl) {
+      body.image_end = await HiggsfieldVideoAdapter.fetchDataUrl(req.lastFrameUrl, ctx);
+    }
+
     const result = await HiggsfieldVideoAdapter.fetchJson<SubmitResponse>(
       `${this.baseUrl}/${this.model}/text-to-video`,
       {
         method: 'POST',
         headers: this.headers(),
-        body: JSON.stringify({
-          prompt: req.prompt,
-          duration,
-          resolution,
-          aspect_ratio: aspectRatio,
-          output_format: 'mp4',
-        }),
+        body: JSON.stringify(body),
       },
       SUBMIT_TIMEOUT_MS,
       'submit',
@@ -189,11 +237,66 @@ export class HiggsfieldVideoAdapter implements VideoGenService {
     return result.request_id;
   }
 
-  /** Poll until the job completes (or fails / times out). */
-  private async poll(
-    requestId: string,
+  /** Submit a motion/pose-transfer job: the input still (`firstFrame`) is the
+   *  subject, `reference_video_url` is the sample reel whose movement it
+   *  mimics. Higgsfield exposes this as its own image-to-video endpoint
+   *  (distinct from text-to-video, the same way LTX splits them), carrying
+   *  the still as a base64 data URL and the reel as a public URL. */
+  private async submitMotionTransfer(
+    req: VideoGenerateRequest,
     ctx?: ProviderContext,
-  ): Promise<StatusResponse> {
+  ): Promise<string> {
+    if (!req.firstFrame) {
+      throw new ProviderError(
+        'higgsfield.submit-motion-transfer: motion transfer requires an input still',
+        'higgsfield',
+        { retryable: false },
+      );
+    }
+    const aspectRatio = aspectRatioFor(req.width, req.height);
+    const duration = clampDuration(req.durationSeconds);
+    const resolution = req.width >= 1920 || req.height >= 1920 ? '1080p' : '720p';
+    const image = `data:${req.firstFrame.mediaType};base64,${req.firstFrame.data.toString('base64')}`;
+
+    const body: Record<string, unknown> = {
+      image,
+      reference_video_url: req.referenceVideoUrl,
+      prompt: req.prompt,
+      duration,
+      resolution,
+      aspect_ratio: aspectRatio,
+      output_format: 'mp4',
+    };
+    // Soul Mode style conditioning: fetch the brand style guide and send it as
+    // a base64 data URL, just like an input still.
+    if (req.styleReferenceUrl) {
+      body.style_reference_url = await HiggsfieldVideoAdapter.fetchDataUrl(
+        req.styleReferenceUrl,
+        ctx,
+      );
+    }
+    // End frame: land the video on a specific image (logo / CTA card).
+    if (req.lastFrameUrl) {
+      body.image_end = await HiggsfieldVideoAdapter.fetchDataUrl(req.lastFrameUrl, ctx);
+    }
+
+    const result = await HiggsfieldVideoAdapter.fetchJson<SubmitResponse>(
+      `${this.baseUrl}/${this.model}/image-to-video`,
+      {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify(body),
+      },
+      SUBMIT_TIMEOUT_MS,
+      'submit-motion-transfer',
+      ctx,
+    );
+
+    return result.request_id;
+  }
+
+  /** Poll until the job completes (or fails / times out). */
+  private async poll(requestId: string, ctx?: ProviderContext): Promise<StatusResponse> {
     const deadline = Date.now() + MAX_POLL_WAIT_MS;
 
     while (Date.now() < deadline) {
@@ -233,10 +336,7 @@ export class HiggsfieldVideoAdapter implements VideoGenService {
   }
 
   /** Download the mp4 bytes from Higgsfield's CDN URL. */
-  private static async download(
-    videoUrl: string,
-    ctx?: ProviderContext,
-  ): Promise<Buffer> {
+  private static async download(videoUrl: string, ctx?: ProviderContext): Promise<Buffer> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
     const onAbort = () => controller.abort();
@@ -271,9 +371,14 @@ export class HiggsfieldVideoAdapter implements VideoGenService {
 
     let requestId: string;
     try {
-      requestId = await this.submit(req, ctx);
+      requestId = req.referenceVideoUrl
+        ? await this.submitMotionTransfer(req, ctx)
+        : await this.submit(req, ctx);
     } catch (error) {
-      throw HiggsfieldVideoAdapter.wrap(error, 'submit');
+      throw HiggsfieldVideoAdapter.wrap(
+        error,
+        req.referenceVideoUrl ? 'submit-motion-transfer' : 'submit',
+      );
     }
 
     let completed: StatusResponse;

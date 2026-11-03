@@ -746,12 +746,20 @@ async function renderOne(
   firstFrame: ConditioningFrame | undefined,
   durationSeconds: number,
 ): Promise<RenderedVideo> {
+  // The sample reel doubles as the motion-transfer reference: Higgsfield makes
+  // the still mimic its movement; LTX and Veo simply never read the field.
+  const referenceVideoUrl = request.referenceVideoUrl ?? request.sampleVideoUrl;
   const { value: video, cost } = await generateVideoForMode(
     ctx,
     request.videoMode,
     {
       prompt,
       ...(firstFrame ? { firstFrame } : {}),
+      ...(referenceVideoUrl ? { referenceVideoUrl } : {}),
+      ...(request.styleReferenceUrl
+        ? { styleReferenceUrl: request.styleReferenceUrl }
+        : {}),
+      ...(request.lastFrameUrl ? { lastFrameUrl: request.lastFrameUrl } : {}),
       width: request.width,
       height: request.height,
       durationSeconds,

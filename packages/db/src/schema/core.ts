@@ -119,6 +119,15 @@ export const brands = core.table(
     bannedTopics: jsonb('banned_topics').$type<string[]>().notNull().default([]),
     websiteUrl: text('website_url'),
     socialHandles: jsonb('social_handles').$type<Record<string, string>>().notNull().default({}),
+    /** Videos this brand has generated in the current calendar day (UTC). The
+     *  daily cap is enforced in content-api's video-generations service before
+     *  a job is enqueued — see `claimDailyVideoSlot`. Resets whenever a job is
+     *  enqueued on a new day (`video_generations_count_date` holds the day it
+     *  is for), so no cron job is needed to zero it. */
+    videoGenerationsCount: integer('video_generations_count').notNull().default(0),
+    /** The calendar day `video_generations_count` is for. Null on brands that
+     *  predate this feature; a null date reads as "not today" and resets. */
+    videoGenerationsCountDate: timestamp('video_generations_count_date', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

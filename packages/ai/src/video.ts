@@ -32,6 +32,17 @@ export interface VideoGenerateRequest {
    *  opening, not a specific close — but some providers support it and a
    *  brief occasionally wants to land on a specific end card. */
   lastFrame?: VideoFrameImage;
+  /** A public URL of a sample reel whose human movement the generated
+   *  character should mimic (exact motion/pose transfer). Only the Higgsfield
+   *  adapter acts on it; every other engine ignores it. Set alongside
+   *  `firstFrame` — the still is the subject, the reel is the movement. */
+  referenceVideoUrl?: string;
+  /** A public URL of a brand style guide image. Higgsfield uses it as Soul
+   *  Mode style conditioning; every other engine ignores it. */
+  styleReferenceUrl?: string;
+  /** A public URL of the image the video should end on — a logo or CTA card.
+   *  Higgsfield uses it as its end frame; every other engine ignores it. */
+  lastFrameUrl?: string;
   width: number;
   height: number;
   durationSeconds: number;
