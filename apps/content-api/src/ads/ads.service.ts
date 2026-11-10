@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, schema, type Database } from '@bmas/db';
 import { QUEUES, type AdCampaignDto } from '@bmas/shared';
 import type { Queue } from 'bullmq';
@@ -73,7 +68,12 @@ export class AdsService {
       platformBreakdown[c.platform] = p;
     }
 
-    const blendedRoas = totalSpend > 0 ? totalRoasWeight / totalSpend : rows.length > 0 ? rows.reduce((acc, c) => acc + c.roas, 0) / rows.length : 0;
+    const blendedRoas =
+      totalSpend > 0
+        ? totalRoasWeight / totalSpend
+        : rows.length > 0
+          ? rows.reduce((acc, c) => acc + c.roas, 0) / rows.length
+          : 0;
 
     return {
       totalSpend: Math.round(totalSpend * 100) / 100,

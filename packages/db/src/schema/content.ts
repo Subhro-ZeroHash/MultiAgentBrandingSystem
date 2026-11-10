@@ -2285,7 +2285,10 @@ export const adOptimizations = content.table(
 
 export const adOptimizationsRelations = relations(adOptimizations, ({ one }) => ({
   brand: one(brands, { fields: [adOptimizations.brandId], references: [brands.id] }),
-  campaign: one(adCampaigns, { fields: [adOptimizations.campaignId], references: [adCampaigns.id] }),
+  campaign: one(adCampaigns, {
+    fields: [adOptimizations.campaignId],
+    references: [adCampaigns.id],
+  }),
 }));
 
 export type AdCampaign = typeof adCampaigns.$inferSelect;

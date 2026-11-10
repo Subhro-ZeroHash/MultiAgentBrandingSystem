@@ -16,14 +16,9 @@ describe('AdsService', () => {
       add: vi.fn(),
     };
 
-    const service = new AdsService(
-      mockDb as unknown as Database,
-      mockQueue as unknown as Queue,
-    );
+    const service = new AdsService(mockDb as unknown as Database, mockQueue as unknown as Queue);
 
-    await expect(
-      service.listCampaigns('brand-1', 'other-user'),
-    ).rejects.toThrow(NotFoundException);
+    await expect(service.listCampaigns('brand-1', 'other-user')).rejects.toThrow(NotFoundException);
   });
 
   it('calculates aggregated metrics for campaigns correctly', async () => {
@@ -66,10 +61,7 @@ describe('AdsService', () => {
       add: vi.fn(),
     };
 
-    const service = new AdsService(
-      mockDb as unknown as Database,
-      mockQueue as unknown as Queue,
-    );
+    const service = new AdsService(mockDb as unknown as Database, mockQueue as unknown as Queue);
 
     const result = await service.listCampaigns('brand-1', 'user-1');
 
@@ -92,10 +84,7 @@ describe('AdsService', () => {
       add: vi.fn().mockResolvedValue({ id: 'job-123' }),
     };
 
-    const service = new AdsService(
-      mockDb as unknown as Database,
-      mockQueue as unknown as Queue,
-    );
+    const service = new AdsService(mockDb as unknown as Database, mockQueue as unknown as Queue);
 
     const res = await service.triggerOptimization('brand-1', 'user-1');
     expect(res.status).toBe('queued');

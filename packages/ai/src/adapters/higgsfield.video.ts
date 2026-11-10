@@ -187,9 +187,7 @@ export class HiggsfieldVideoAdapter implements VideoGenService {
 
     const contentType = response.headers.get('content-type') ?? 'image/jpeg';
     const mediaType = (contentType.split(';')[0] ?? 'image/jpeg').trim() as
-      | 'image/png'
-      | 'image/jpeg'
-      | 'image/webp';
+      'image/png' | 'image/jpeg' | 'image/webp';
     const bytes = Buffer.from(await response.arrayBuffer());
     return `data:${mediaType};base64,${bytes.toString('base64')}`;
   }

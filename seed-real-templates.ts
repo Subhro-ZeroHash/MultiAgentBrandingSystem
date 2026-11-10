@@ -30,7 +30,7 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadDotenv } from 'dotenv';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: resolve(here, '.env'), quiet: true });
@@ -55,11 +55,7 @@ const JOB_TIMEOUT_MS = 10 * 60_000;
 // ── Imports (relative paths; @bmas/* workspace packages don't resolve from
 // the monorepo root under plain tsx) ───────────────────────────────────────
 
-import {
-  createDatabase,
-  type Database,
-  closeDatabase,
-} from './packages/db/dist/index.js';
+import { createDatabase, type Database, closeDatabase } from './packages/db/dist/index.js';
 import * as schema from './packages/db/dist/schema/index.js';
 import { createAiRegistryFromEnv } from './packages/ai/dist/index.js';
 import { StubVideoAdapter } from './packages/ai/dist/adapters/stub.video.js';
@@ -67,9 +63,7 @@ import { createAssetUrls, type AssetUrls } from './apps/content-api/dist/core/as
 import { createStorage, type Storage } from './apps/content-worker/dist/storage.js';
 import { VideoGenerationsService } from './apps/content-api/dist/video-generations/video-generations.service.js';
 import { Queue } from 'bullmq';
-import {
-  QUEUES,
-} from './packages/shared/dist/queues.js';
+import { QUEUES } from './packages/shared/dist/queues.js';
 import {
   videoGenerationRequestSchema,
   type VideoGenerationRequest,
@@ -201,9 +195,7 @@ async function waitForJob(
     if (!row) throw new Error(`Job ${jobId} disappeared from database`);
     if (row.status === 'succeeded') return row;
     if (row.status === 'failed') {
-      throw new Error(
-        `Job ${jobId} (${label}) failed: ${row.error ?? 'no details'}`,
-      );
+      throw new Error(`Job ${jobId} (${label}) failed: ${row.error ?? 'no details'}`);
     }
     await sleep(POLL_INTERVAL_MS);
   }
@@ -252,8 +244,7 @@ async function publishToLibrary({
 
   const request = job.request as unknown as VideoGenerationRequest;
   const videoUrl = await assetUrls.sign(asset.storageKey);
-  const thumbnailKey =
-    asset.thumbnailStorageKey ?? (job.frames as string[] | null)?.[0] ?? null;
+  const thumbnailKey = asset.thumbnailStorageKey ?? (job.frames as string[] | null)?.[0] ?? null;
   const thumbnailUrl = thumbnailKey ? await assetUrls.sign(thumbnailKey) : videoUrl;
   const sceneDirection = request.prompt ?? (job.brief as string | null) ?? '';
   const title = `${brand.name}'s video${sceneDirection ? ` — ${sceneDirection.slice(0, 60)}` : ''}`;
@@ -377,9 +368,7 @@ async function main() {
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== 'false',
     expiresInSeconds: Number(process.env.ASSET_URL_TTL_SECONDS ?? 3600),
     ...(process.env.S3_ENDPOINT ? { endpoint: process.env.S3_ENDPOINT } : {}),
-    ...(process.env.S3_PUBLIC_ENDPOINT
-      ? { publicEndpoint: process.env.S3_PUBLIC_ENDPOINT }
-      : {}),
+    ...(process.env.S3_PUBLIC_ENDPOINT ? { publicEndpoint: process.env.S3_PUBLIC_ENDPOINT } : {}),
   });
 
   try {
@@ -433,23 +422,26 @@ async function main() {
     })
     .onConflictDoNothing();
 
-  // ── Clear mock template data ─────────────────────────────────────────
-  await db.delete(schema.videoTemplates).where(sql`id LIKE 'tpl-%'`);
+  // ── Clear all existing template rows (mock + prior seed runs) ────────
+  // video_templates is global (no brand FK), so wipe everything before
+  // re-seeding with real pipeline output.
+  await db.delete(schema.videoTemplates);
   const priorJobs = await db
     .select({ id: schema.videoGenerationJobs.id })
     .from(schema.videoGenerationJobs)
     .where(eq(schema.videoGenerationJobs.brandId, DEV_BRAND_ID));
   if (priorJobs.length > 0) {
-    await db
-      .delete(schema.videoAssets)
-      .where(inArray(schema.videoAssets.jobId, priorJobs.map((j) => j.id)));
+    await db.delete(schema.videoAssets).where(
+      inArray(
+        schema.videoAssets.jobId,
+        priorJobs.map((j) => j.id),
+      ),
+    );
   }
   await db
     .delete(schema.videoGenerationJobs)
     .where(eq(schema.videoGenerationJobs.brandId, DEV_BRAND_ID));
-  console.warn(
-    '[seed] cleared mock video_templates rows and prior video jobs/assets',
-  );
+  console.warn('[seed] cleared mock video_templates rows and prior video jobs/assets');
 
   // ── Set up BullMQ queue (for enqueue → insertAndQueue) ────────────────
   const queue = new Queue(QUEUES.videoGeneration, { connection: redisConnection });
@@ -484,11 +476,7 @@ async function main() {
 
     videoGenerationRequestSchema.parse(request);
 
-    const job = await videoGenService.enqueue(
-      request,
-      `seed-${recipe.id}`,
-      DEV_USER_ID,
-    );
+    const job = await videoGenService.enqueue(request, `seed-${recipe.id}`, DEV_USER_ID);
     jobIds.push(job.id);
     console.warn(
       `[seed] enqueued "${recipe.title}" → job ${job.id} (idempotency-key seed-${recipe.id})`,

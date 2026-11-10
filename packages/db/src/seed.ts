@@ -241,8 +241,7 @@ try {
         title: 'Golden Hour Lifestyle',
         thumbnailUrl:
           'https://images.pexels.com/photos/1536619/pexels-photo-1536619.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/mov_bbb.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
         sceneDirection:
           '@product held up against a golden-hour sunset on an open rooftop, soft bokeh background, warm orange tones.',
         camera: 'push_in',
@@ -253,8 +252,7 @@ try {
         title: 'Minimal Luxury Reveal',
         thumbnailUrl:
           'https://images.pexels.com/photos/3965545/pexels-photo-3965545.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/movie.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/movie.mp4',
         sceneDirection:
           '@product placed on polished marble, slow 360 reveal, muted cream and charcoal backdrop, single rim light.',
         camera: 'orbit',
@@ -265,8 +263,7 @@ try {
         title: 'Tech Dark Launch',
         thumbnailUrl:
           'https://images.pexels.com/photos/1714208/pexels-photo-1714208.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/mov_bbb.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
         sceneDirection:
           '@product emerging from darkness with a crisp rim light, dark navy gradient background, electronic ambient feel.',
         camera: 'pull_out',
@@ -277,8 +274,7 @@ try {
         title: 'Outdoor Natural Flow',
         thumbnailUrl:
           'https://images.pexels.com/photos/1234567/pexels-photo-1234567.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/movie.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/movie.mp4',
         sceneDirection:
           '@product photographed outdoors in dappled natural light, surrounded by fresh greenery, airy and fresh mood.',
         camera: 'pan',
@@ -289,8 +285,7 @@ try {
         title: 'Festive Celebration',
         thumbnailUrl:
           'https://images.pexels.com/photos/7180617/pexels-photo-7180617.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/mov_bbb.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
         sceneDirection:
           '@product displayed at the centre of a festive setup — marigolds, diyas, rich jewel tones — warm celebratory mood.',
         camera: 'crane_up',
@@ -301,8 +296,7 @@ try {
         title: 'Neon Cyber Launch',
         thumbnailUrl:
           'https://images.pexels.com/photos/2047905/pexels-photo-2047905.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/movie.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/movie.mp4',
         sceneDirection:
           '@product floating against a glowing cybernetic neon backdrop with electric blue and magenta pulses, reflections on wet asphalt.',
         camera: 'orbit',
@@ -313,8 +307,7 @@ try {
         title: 'High-Energy Flash Sale',
         thumbnailUrl:
           'https://images.pexels.com/photos/5632402/pexels-photo-5632402.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/mov_bbb.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
         sceneDirection:
           '@product bursting into frame through bright geometric shapes and typography, vibrant contrast, fast-paced retail urgency.',
         camera: 'push_in',
@@ -325,8 +318,7 @@ try {
         title: 'Clean Minimal Studio',
         thumbnailUrl:
           'https://images.pexels.com/photos/3373736/pexels-photo-3373736.jpeg?auto=compress&cs=tinysrgb&w=800',
-        referenceVideoUrl:
-          'https://www.w3schools.com/html/movie.mp4',
+        referenceVideoUrl: 'https://www.w3schools.com/html/movie.mp4',
         sceneDirection:
           '@product resting on pure white studio surface with soft natural shadow falloff, subtle slow panning motion, pristine clarity.',
         camera: 'top_down',
@@ -379,12 +371,7 @@ try {
         dailyBudget: 20,
         spendToDate: 420,
         roas: 1.4,
-        keywords: [
-          'indian textiles',
-          'sustainable handloom',
-          'heritage craft',
-          'artisan sarees',
-        ],
+        keywords: ['indian textiles', 'sustainable handloom', 'heritage craft', 'artisan sarees'],
       },
     ])
     .onConflictDoNothing();

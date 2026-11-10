@@ -1,12 +1,5 @@
 import { describeError, withRetry, withTimeout } from '@bmas/ai';
-import {
-  and,
-  desc,
-  eq,
-  getTrendContext,
-  inArray,
-  schema,
-} from '@bmas/db';
+import { and, desc, eq, getTrendContext, inArray, schema } from '@bmas/db';
 import type { AdOptimizationJob } from '@bmas/shared';
 import { z } from 'zod';
 import type { WorkerContext } from '../context.js';
@@ -89,7 +82,11 @@ export async function runAdOptimization(
         dailyBudget: 40,
         spendToDate: 820,
         roas: 3.8,
-        keywords: [`${brandName.toLowerCase()} online`, 'premium ethnic boutique', 'festive wear shop'],
+        keywords: [
+          `${brandName.toLowerCase()} online`,
+          'premium ethnic boutique',
+          'festive wear shop',
+        ],
       },
       {
         id: crypto.randomUUID(),
@@ -141,7 +138,12 @@ export async function runAdOptimization(
             whyItMatters: schema.intelligenceItems.whyItMatters,
           })
           .from(schema.intelligenceItems)
-          .where(inArray(schema.intelligenceItems.runId, intelligenceRuns.map((r) => r.id)))
+          .where(
+            inArray(
+              schema.intelligenceItems.runId,
+              intelligenceRuns.map((r) => r.id),
+            ),
+          )
           .limit(5)
       : [];
 
@@ -162,7 +164,12 @@ export async function runAdOptimization(
             score: schema.trendOpportunities.score,
           })
           .from(schema.trendOpportunities)
-          .where(inArray(schema.trendOpportunities.runId, trendRuns.map((r) => r.id)))
+          .where(
+            inArray(
+              schema.trendOpportunities.runId,
+              trendRuns.map((r) => r.id),
+            ),
+          )
           .limit(6)
       : [];
 
@@ -178,7 +185,9 @@ export async function runAdOptimization(
 
   const competitorsPrompt =
     trendContext.competitors.length > 0
-      ? trendContext.competitors.map((comp) => `- ${comp.name}${comp.note ? ` (${comp.note})` : ''}`).join('\n')
+      ? trendContext.competitors
+          .map((comp) => `- ${comp.name}${comp.note ? ` (${comp.note})` : ''}`)
+          .join('\n')
       : 'No explicitly configured competitors.';
 
   const intelligencePrompt =
@@ -188,7 +197,9 @@ export async function runAdOptimization(
 
   const trendsPrompt =
     trendOpportunities.length > 0
-      ? trendOpportunities.map((t) => `- "${t.title}" (Relevance Score: ${t.score}): ${t.summary}`).join('\n')
+      ? trendOpportunities
+          .map((t) => `- "${t.title}" (Relevance Score: ${t.score}): ${t.summary}`)
+          .join('\n')
       : 'Category keywords: festive ethnic wear, handloom fashion, bridal boutique.';
 
   const userPrompt = [

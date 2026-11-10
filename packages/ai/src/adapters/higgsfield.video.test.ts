@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ProviderNotConfiguredError } from '../errors.js';
-import {
-  HiggsfieldVideoAdapter,
-  aspectRatioFor,
-  clampDuration,
-} from './higgsfield.video.js';
+import { HiggsfieldVideoAdapter, aspectRatioFor, clampDuration } from './higgsfield.video.js';
 
 describe('aspectRatioFor', () => {
   it('maps landscape dimensions (width > height) to 16:9', () => {

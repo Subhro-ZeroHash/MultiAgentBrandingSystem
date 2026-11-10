@@ -1,17 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-  Request,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  triggerAdOptimizationSchema,
-  type TriggerAdOptimizationInput,
-} from '@bmas/shared';
+import { Body, Controller, Get, Param, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { triggerAdOptimizationSchema, type TriggerAdOptimizationInput } from '@bmas/shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
@@ -26,10 +14,7 @@ export class AdsController {
    * Returns active ad campaigns and performance metrics across platforms (Google, Meta, X).
    */
   @Get('campaigns')
-  listCampaigns(
-    @Request() req: AuthenticatedRequest,
-    @Query('brandId') brandId?: string,
-  ) {
+  listCampaigns(@Request() req: AuthenticatedRequest, @Query('brandId') brandId?: string) {
     return this.adsService.listCampaigns(brandId, req.user.id);
   }
 
@@ -49,10 +34,7 @@ export class AdsController {
    * Applies an AI optimization recommendation.
    */
   @Post('optimizations/:id/apply')
-  applyOptimization(
-    @Request() req: AuthenticatedRequest,
-    @Param('id') id: string,
-  ) {
+  applyOptimization(@Request() req: AuthenticatedRequest, @Param('id') id: string) {
     return this.adsService.applyOptimization(id, req.user.id);
   }
 
@@ -60,10 +42,7 @@ export class AdsController {
    * Dismisses an AI optimization recommendation.
    */
   @Post('optimizations/:id/dismiss')
-  dismissOptimization(
-    @Request() req: AuthenticatedRequest,
-    @Param('id') id: string,
-  ) {
+  dismissOptimization(@Request() req: AuthenticatedRequest, @Param('id') id: string) {
     return this.adsService.dismissOptimization(id, req.user.id);
   }
 

@@ -756,9 +756,7 @@ async function renderOne(
       prompt,
       ...(firstFrame ? { firstFrame } : {}),
       ...(referenceVideoUrl ? { referenceVideoUrl } : {}),
-      ...(request.styleReferenceUrl
-        ? { styleReferenceUrl: request.styleReferenceUrl }
-        : {}),
+      ...(request.styleReferenceUrl ? { styleReferenceUrl: request.styleReferenceUrl } : {}),
       ...(request.lastFrameUrl ? { lastFrameUrl: request.lastFrameUrl } : {}),
       width: request.width,
       height: request.height,
